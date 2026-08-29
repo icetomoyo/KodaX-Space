@@ -23,15 +23,22 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   controls, and the model picker. Unsupported ordered efforts fall back to the
   nearest lower supported rung before the SDK default, and profiles that use
   `none` to disable thinking correctly expose the Off choice.
-- **KodaX 0.7.96-alpha.2 sandbox v6 alignment** - Root and Desktop pin the
-  exact published prerelease and Registry integrity. SDK startup, daemon
-  admission, connected Runtime checks, and packaged smoke now require
+- **KodaX 0.7.96-alpha.3 scoped Runtime integration** - Root and Desktop pin
+  the exact published prerelease and Registry integrity. Space now requires
+  the v2 scoped Provider credential broker and effective-config API. Manual
+  Runtime `/compact` binds and revokes an operation-scoped keychain lease;
+  managed Runs and continuations allow known Provider identities and resolve credentials lazily
+  for fallback, classifier, sidecar, Agent, and Workflow work while enforcing
+  the originating Session and Run lineage. Partner/legacy embedded Runs use the
+  same lazy allowlist, and independently started Workflows keep an explicitly
+  derived lease only until their managed handle settles. Runtime settings status
+  reads the daemon's effective value and source instead of inferring from Electron state.
+  SDK startup, daemon admission, connected Runtime checks, and packaged smoke require
   `sandboxRuntime:6` plus its trusted-text/native-Windows authority markers.
   Release packaging unpacks the complete cross-platform `dist/native` bundle;
   the dependency gate requires every native target, and packaged smoke verifies
   the manifest-pinned hashes before exercising the real command sandbox.
-  The alpha.2 republish restores the Windows lifecycle PowerShell executable
-  resolver that was missing from alpha.1.
+  Alpha.3 retains the alpha.2 Windows lifecycle PowerShell resolver fix.
 - **KodaX 0.7.96 multimodal provider alignment** - Surface DeepSeek's vision-only
   `deepseek-v4-flash-vision-exp` route and `glm-5.3-flash` on `zhipu`,
   `zhipu-coding`, and `zai-coding`, keeping the latter's 1M-token renderer
@@ -1562,6 +1569,7 @@ v0.1.6（F011 + F026 + F038）是内部里程碑，**不单独 tag**，合并进
 ### Added
 
 - **F011 真 PTY 单 tab 终端** ([6844f1f](https://github.com/icetomoyo/KodaX-Space/commit/6844f1f)) — Terminal popout 从 "bash 工具历史 viewer" 升级为真 xterm.js + node-pty shell。
+
   - 4 IPC channels：`terminal.create` / `.write` / `.resize` / `.kill` + push `.output` / `.exit`
   - PtyHost 单例 Map<uuid, IPty>；UUID 服务端 mint，renderer 不能伪造
   - 跨平台 shell：Win cmd.exe / Mac+Linux $SHELL；renderer 不能注 arg
@@ -1573,6 +1581,7 @@ v0.1.6（F011 + F026 + F038）是内部里程碑，**不单独 tag**，合并进
   - hotfix [d984719](https://github.com/icetomoyo/KodaX-Space/commit/d984719)：xterm CJS 包让 vite 二次 reload 触发 renderer 白屏；改 lazy import + optimizeDeps.include
 
 - **F023 终端多 tab** ([160fbb3](https://github.com/icetomoyo/KodaX-Space/commit/160fbb3)) — Tab bar + 多 PTY 并存。
+
   - 单 useReducer 管 tabs/activeId/counter；pure reducer 抽 `tabsReducer.ts`
   - 非 active tab 用 `display:none` 隐藏，PTY 保活
   - Terminal.tsx ResizeObserver 加 0×0 guard，防 hidden tab 收到 1×1 SIGWINCH 炸 scrollback
@@ -1581,6 +1590,7 @@ v0.1.6（F011 + F026 + F038）是内部里程碑，**不单独 tag**，合并进
   - 12 reducer 单测
 
 - **F024 文件富预览 PDF / docx / xlsx** ([a570c37](https://github.com/icetomoyo/KodaX-Space/commit/a570c37)) — Preview popout 按 ext 路由。
+
   - 新 IPC `files.readBinary`：assertAllowed + resolveInsideProject + maxBytes 兜底
   - 3 个 lazy viewer，main bundle 不变（PDF 335KB / Docx 504KB / Xlsx 368KB chunk）
   - PdfViewer: pdfjs-dist 4.10 ESM; `isEvalSupported:false` + `disableAutoFetch:true` 硬化；DPI 上限 2
@@ -1590,6 +1600,7 @@ v0.1.6（F011 + F026 + F038）是内部里程碑，**不单独 tag**，合并进
   - 11 utils 单测 + 4 binary-read 单测
 
 - **F026 ⌘Shift+P 命令面板** ([85d0bf5](https://github.com/icetomoyo/KodaX-Space/commit/85d0bf5)) — 全局快捷键召出模糊搜索。
+
   - 4 group 候选：Actions / Sessions / Files / Slash
   - JS fzf-lite scorer 抽到 `lib/fuzzy.ts`，FuzzyMatcher 抽象方便未来 F042 NAPI 替换
   - 多起点 scan + 连续匹配累计 ramp + boundary bonus；11 单测

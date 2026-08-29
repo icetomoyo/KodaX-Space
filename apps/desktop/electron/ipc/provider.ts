@@ -130,7 +130,7 @@ function setManagedEnv(apiKeyEnv: string, value: string): void {
   setManagedProviderEnv(apiKeyEnv, value);
 }
 
-async function listKnownProviderIds(): Promise<readonly string[]> {
+export async function listKnownProviderIds(): Promise<readonly string[]> {
   await providerConfigStore.load();
   const ids = new Set<string>();
   for (const provider of BUILTIN_PROVIDERS) ids.add(provider.id);

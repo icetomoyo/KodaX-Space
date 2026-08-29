@@ -109,12 +109,6 @@ function compactSlashMessage(message: string, max = 1900): string {
   return `${message.slice(0, max - 12)}\n... truncated`;
 }
 
-function runtimeConfigRecord(value: unknown): Readonly<Record<string, unknown>> {
-  return value !== null && typeof value === 'object'
-    ? (value as Readonly<Record<string, unknown>>)
-    : {};
-}
-
 function fallbackChain(value: unknown): readonly string[] {
   const entries: readonly unknown[] = Array.isArray(value)
     ? value
@@ -127,10 +121,28 @@ function fallbackChain(value: unknown): readonly string[] {
     .filter(Boolean);
 }
 
-const RUNTIME_EFFECTIVE_CONFIG_NOTE =
-  'Runtime effective environment overrides are not exposed by the current KodaX SDK; this shows persisted daemon config only.';
-const RUNTIME_FALLBACK_CREDENTIAL_NOTE =
-  'Cross-Provider fallback is not available for Space-started Runtime or embedded Runs because their credential binding is exact-Provider; SDK multi-Provider credential brokering is required.';
+function runtimeEffectiveEntry(
+  snapshot: Awaited<ReturnType<typeof runtimeHostAdapter.readEffectiveRuntimeConfig>> | undefined,
+  key: string,
+) {
+  return snapshot?.entries[key];
+}
+
+function runtimeEffectiveValue(entry: ReturnType<typeof runtimeEffectiveEntry>): unknown {
+  return entry?.applied ? entry.value : undefined;
+}
+
+function runtimeEffectiveToggle(entry: ReturnType<typeof runtimeEffectiveEntry>): boolean {
+  const value = runtimeEffectiveValue(entry);
+  if (value === true || value === 1) return true;
+  if (typeof value === 'string') return parseToggleValue(value) === 'on';
+  return false;
+}
+
+function runtimeEffectiveSourceNote(entry: ReturnType<typeof runtimeEffectiveEntry>): string {
+  const source = entry?.source.replace('_', ' ') ?? 'unset';
+  return `Effective Runtime source: ${source}${entry && !entry.applied ? ' (not applied)' : ''}.`;
+}
 
 type AgentSdkModule = typeof import('@kodax-ai/kodax/agent');
 let agentSdkModule: Promise<AgentSdkModule> | null = null;
@@ -2757,19 +2769,16 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     source: 'builtin',
     handler: async (ctx) => {
       const usesRuntime = usesRuntimeSession(ctx.sessionId);
-      const configured = usesRuntime
-        ? runtimeConfigRecord(await runtimeHostAdapter.readRuntimeConfig()).fallbackProviders
+      const effective = usesRuntime
+        ? await runtimeHostAdapter.readEffectiveRuntimeConfig()
+        : undefined;
+      const configured = effective
+        ? runtimeEffectiveEntry(effective, 'fallbackProviders')
         : undefined;
       const currentSource = usesRuntime
-        ? Array.isArray(configured)
-          ? configured
-          : []
+        ? runtimeEffectiveValue(configured)
         : (process.env.KODAX_FALLBACK_PROVIDERS ?? '');
       const current = fallbackChain(currentSource);
-      const fallbackNotes = [
-        ...(usesRuntime ? [RUNTIME_EFFECTIVE_CONFIG_NOTE] : []),
-        RUNTIME_FALLBACK_CREDENTIAL_NOTE,
-      ];
       const sub = ctx.args[0]?.toLowerCase();
       if (!sub || sub === 'status') {
         const status =
@@ -2778,7 +2787,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
             : `Child-task provider fallback: on\n  Order: ${current.join(' -> ')}`;
         return {
           ok: true,
-          message: [status, ...fallbackNotes].join('\n'),
+          message: usesRuntime ? `${status}\n${runtimeEffectiveSourceNote(configured)}` : status,
           echo: true,
         };
       }
@@ -2788,7 +2797,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         return {
           ok: true,
           message: usesRuntime
-            ? `Child-task provider fallback disabled in persisted Coder daemon config.\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}`
+            ? 'Child-task provider fallback disabled in persisted Coder daemon config.'
             : 'Child-task provider fallback disabled for this Space process.',
           echo: true,
         };
@@ -2805,10 +2814,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       else process.env.KODAX_FALLBACK_PROVIDERS = chain.join(',');
       return {
         ok: true,
-        message: [
-          `Child-task fallback order: ${chain.join(' -> ')}\n${usesRuntime ? 'Saved to persisted Coder daemon config.' : 'Applied to the current Space process.'}`,
-          ...fallbackNotes,
-        ].join('\n'),
+        message: `Child-task fallback order: ${chain.join(' -> ')}\n${usesRuntime ? 'Saved to persisted Coder daemon config.' : 'Applied to the current Space process.'}`,
         echo: true,
       };
     },
@@ -2822,17 +2828,20 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     handler: async (ctx) => {
       const usesRuntime = usesRuntimeSession(ctx.sessionId);
       const runtimeConfig = usesRuntime
-        ? runtimeConfigRecord(await runtimeHostAdapter.readRuntimeConfig())
+        ? await runtimeHostAdapter.readEffectiveRuntimeConfig()
         : undefined;
       const parsed = parseToggleValue(ctx.args[0]);
       if (!ctx.args[0]) {
         const enabled = usesRuntime
-          ? runtimeConfig?.verifierLog === true
+          ? runtimeEffectiveToggle(runtimeEffectiveEntry(runtimeConfig, 'verifierLog'))
           : process.env.KODAX_VERIFIER_LOG === '1';
+        const source = usesRuntime
+          ? runtimeEffectiveSourceNote(runtimeEffectiveEntry(runtimeConfig, 'verifierLog'))
+          : undefined;
         return {
           ok: true,
           message: usesRuntime
-            ? `Sidecar Verifier log config: ${enabled ? 'on' : 'off'}\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}\nUsage: /verifier-log [on|off]`
+            ? `Sidecar Verifier log: ${enabled ? 'on' : 'off'}\n${source}\nUsage: /verifier-log [on|off]`
             : `Sidecar Verifier log: ${enabled ? 'on' : 'off'}\nUsage: /verifier-log [on|off]`,
           echo: true,
         };
@@ -2845,7 +2854,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       return {
         ok: true,
         message: usesRuntime
-          ? `Sidecar Verifier log config saved: ${parsed}.\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}`
+          ? `Sidecar Verifier log config saved: ${parsed}.`
           : `Sidecar Verifier log: ${parsed} for this Space process`,
         echo: true,
       };
@@ -2860,17 +2869,20 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
     handler: async (ctx) => {
       const usesRuntime = usesRuntimeSession(ctx.sessionId);
       const runtimeConfig = usesRuntime
-        ? runtimeConfigRecord(await runtimeHostAdapter.readRuntimeConfig())
+        ? await runtimeHostAdapter.readEffectiveRuntimeConfig()
         : undefined;
       const parsed = parseToggleValue(ctx.args[0]);
       if (!ctx.args[0]) {
         const enabled = usesRuntime
-          ? runtimeConfig?.stallLog === true
+          ? runtimeEffectiveToggle(runtimeEffectiveEntry(runtimeConfig, 'stallLog'))
           : process.env.KODAX_STALL_LOG === '1';
+        const source = usesRuntime
+          ? runtimeEffectiveSourceNote(runtimeEffectiveEntry(runtimeConfig, 'stallLog'))
+          : undefined;
         return {
           ok: true,
           message: usesRuntime
-            ? `Stall Sidecar log config: ${enabled ? 'on' : 'off'}\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}\nUsage: /stall-log [on|off]`
+            ? `Stall Sidecar log: ${enabled ? 'on' : 'off'}\n${source}\nUsage: /stall-log [on|off]`
             : `Stall Sidecar log: ${enabled ? 'on' : 'off'}\nUsage: /stall-log [on|off]`,
           echo: true,
         };
@@ -2883,7 +2895,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       return {
         ok: true,
         message: usesRuntime
-          ? `Stall Sidecar log config saved: ${parsed}.\n${RUNTIME_EFFECTIVE_CONFIG_NOTE}`
+          ? `Stall Sidecar log config saved: ${parsed}.`
           : `Stall Sidecar log: ${parsed} for this Space process`,
         echo: true,
       };

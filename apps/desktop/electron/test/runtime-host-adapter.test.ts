@@ -11,6 +11,7 @@ import type {
   RuntimeRunHandle,
   RuntimeRunResult,
   RuntimeRunStatus,
+  RuntimeScopedCredentialBroker,
   RuntimeSession,
   RuntimeSessionCursor,
   RuntimeSessionObservationSnapshot,
@@ -128,6 +129,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         crashOutcomeModel: 2,
         daemonOrphanExit: 1,
         daemonShutdownVerification: 1,
+        effectiveConfig: 1,
         liveOutputSegments: 1,
         managedRunDurability: 1,
         runtimeExitSettlement: 2,
@@ -146,6 +148,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           crashOutcomeModel: 2,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
+          effectiveConfig: 1,
           liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
@@ -165,6 +168,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           crashOutcomeModel: 2,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
+          effectiveConfig: 1,
           liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
@@ -184,6 +188,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           crashOutcomeModel: 2,
           daemonOrphanExit: 1,
           daemonShutdownVerification: 1,
+          effectiveConfig: 1,
           liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
@@ -195,7 +200,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*sandboxRuntime v6.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*effectiveConfig v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*sandboxRuntime v6.*sessionEventJournal v1/i,
   );
 });
 
@@ -281,6 +286,9 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         runId: string;
       }) => Promise<string | undefined>
     >,
+    scopedCredentialRegistrations: [] as unknown[],
+    scopedCredentialBrokers: [] as RuntimeScopedCredentialBroker[],
+    scopedCredentialResumes: [] as string[],
     credentialRevokes: [] as string[],
     hostToolRegistrations: [] as unknown[],
     hostToolRevokes: [] as string[],
@@ -424,7 +432,8 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       afterTurnInput: { version: 1 },
       askUserTransport: { version: 1 },
       permissionCas: { version: 1 },
-      providerCredentialBroker: { version: 1 },
+      providerCredentialBroker: { version: 2 },
+      effectiveConfig: { version: 1 },
       runBoundHostTools: { version: 1 },
       coderOwnerFencing: { version: 1 },
       crashOutcomeModel: { version: 2 },
@@ -480,6 +489,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       'learning:read',
       'learning:control',
       'credential:register',
+      'integration:admin',
       'host-tool:register',
       'owner:admin',
       'daemon:admin',
@@ -815,6 +825,19 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         return true;
       },
       resume: async (leaseId: string) => ({ id: leaseId, providers: [] }),
+      registerScoped: async (options: unknown, broker: RuntimeScopedCredentialBroker) => {
+        calls.scopedCredentialRegistrations.push(options);
+        calls.scopedCredentialBrokers.push(broker);
+        return {
+          id: `scoped_credential_${calls.scopedCredentialRegistrations.length}`,
+          providers: [],
+          brokerVersion: 2 as const,
+        };
+      },
+      resumeScoped: async (leaseId: string) => {
+        calls.scopedCredentialResumes.push(leaseId);
+        return { id: leaseId, providers: [], brokerVersion: 2 as const };
+      },
     },
     hostTools: {
       register: async (descriptors: unknown, handlers: unknown) => {
@@ -881,7 +904,28 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         calls.learningControls.push({ action: 'rollback', nameOrSlug });
       },
     },
-    config: {},
+    config: {
+      read: async () => ({}),
+      readEffective: async () => ({
+        schemaVersion: 1 as const,
+        capturedAt: '2026-08-29T00:00:00.000Z',
+        persistedConfig: { state: 'loaded' as const },
+        entries: {
+          fallbackProviders: {
+            present: true,
+            applied: true,
+            source: 'environment' as const,
+            priority: 2,
+            value: ['openai'],
+          },
+        },
+        credentials: {
+          OPENAI_API_KEY: { present: true, source: 'environment' as const },
+        },
+      }),
+      patch: async () => ({}),
+      reload: async () => ({ ok: true as const, config: {} }),
+    },
     catalog: {
       customProviders: async () =>
         [...customProviders.values()].map((config) => structuredClone(config)),
@@ -1102,6 +1146,28 @@ test('Runtime config patch reports the committed result even when profile refres
 
   assert.deepEqual(result, { fallbackProviders: ['ark-coding'] });
   assert.deepEqual(patches, [{ fallbackProviders: ['ark-coding'] }]);
+  await adapter.close();
+});
+
+test('Runtime effective config preserves daemon source provenance without credential values', async () => {
+  const fake = createFakeRuntime();
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+
+  const effective = await adapter.readEffectiveRuntimeConfig();
+
+  assert.equal(effective.entries.fallbackProviders?.source, 'environment');
+  assert.deepEqual(effective.entries.fallbackProviders?.value, ['openai']);
+  assert.deepEqual(effective.credentials.OPENAI_API_KEY, {
+    present: true,
+    source: 'environment',
+  });
+  assert.equal('value' in (effective.credentials.OPENAI_API_KEY ?? {}), false);
   await adapter.close();
 });
 
@@ -2628,7 +2694,7 @@ test('known credential recovery cannot hold Runtime readiness or history', async
   const resumeRelease = new Promise<void>((resolve) => {
     releaseResume = resolve;
   });
-  fake.runtime.credentials.resume = async (leaseId) => {
+  fake.runtime.credentials.resumeScoped = async (leaseId) => {
     signalResumeStarted();
     await resumeRelease;
     return { id: leaseId, providers: [] };
@@ -2715,7 +2781,7 @@ test('one post-attach binding stall cannot serialize other desired Session resto
       },
     };
   };
-  const originalResume = second.runtime.credentials.resume.bind(second.runtime.credentials);
+  const originalResume = second.runtime.credentials.resumeScoped.bind(second.runtime.credentials);
   let signalResumeStarted!: () => void;
   const resumeStarted = new Promise<void>((resolve) => {
     signalResumeStarted = resolve;
@@ -2724,7 +2790,7 @@ test('one post-attach binding stall cannot serialize other desired Session resto
   const resumeRelease = new Promise<void>((resolve) => {
     releaseResume = resolve;
   });
-  second.runtime.credentials.resume = async (...args) => {
+  second.runtime.credentials.resumeScoped = async (...args) => {
     if (args[0] === 'credential_restore_blocker') {
       signalResumeStarted();
       await resumeRelease;
@@ -2803,7 +2869,7 @@ test('snapshot binding recovery cannot hold its own core live projection', async
   const resumeRelease = new Promise<void>((resolve) => {
     releaseResume = resolve;
   });
-  fake.runtime.credentials.resume = async (leaseId) => {
+  fake.runtime.credentials.resumeScoped = async (leaseId) => {
     signalResumeStarted();
     await resumeRelease;
     return { id: leaseId, providers: [] };
@@ -2867,7 +2933,7 @@ test('terminal evidence fences a late same-Runtime snapshot binding', async () =
       },
     };
   };
-  const originalResume = fake.runtime.credentials.resume.bind(fake.runtime.credentials);
+  const originalResume = fake.runtime.credentials.resumeScoped.bind(fake.runtime.credentials);
   let signalResumeStarted!: () => void;
   const resumeStarted = new Promise<void>((resolve) => {
     signalResumeStarted = resolve;
@@ -2876,7 +2942,7 @@ test('terminal evidence fences a late same-Runtime snapshot binding', async () =
   const resumeRelease = new Promise<void>((resolve) => {
     releaseResume = resolve;
   });
-  fake.runtime.credentials.resume = async (...args) => {
+  fake.runtime.credentials.resumeScoped = async (...args) => {
     signalResumeStarted();
     await resumeRelease;
     return originalResume(...args);
@@ -2962,7 +3028,7 @@ test('queued terminal evidence fences a late same-Runtime snapshot binding', asy
   const resumeRelease = new Promise<void>((resolve) => {
     releaseResume = resolve;
   });
-  fake.runtime.credentials.resume = async (leaseIdToResume) => {
+  fake.runtime.credentials.resumeScoped = async (leaseIdToResume) => {
     signalResumeStarted();
     await resumeRelease;
     return { id: leaseIdToResume, providers: [] };
@@ -3527,7 +3593,7 @@ test('a retired Runtime cannot install credential bindings after observation att
       },
     };
   };
-  const originalResume = first.runtime.credentials.resume.bind(first.runtime.credentials);
+  const originalResume = first.runtime.credentials.resumeScoped.bind(first.runtime.credentials);
   let signalResumeStarted!: () => void;
   const resumeStarted = new Promise<void>((resolve) => {
     signalResumeStarted = resolve;
@@ -3536,7 +3602,7 @@ test('a retired Runtime cannot install credential bindings after observation att
   const resumeRelease = new Promise<void>((resolve) => {
     releaseResume = resolve;
   });
-  first.runtime.credentials.resume = async (...args) => {
+  first.runtime.credentials.resumeScoped = async (...args) => {
     signalResumeStarted();
     await resumeRelease;
     return originalResume(...args);
@@ -8467,6 +8533,36 @@ test('initialization requires the dedicated orphan-exit capability instead of a 
   assert.equal(fake.calls.close, 1);
 });
 
+test('initialization requires the v2 scoped Provider credential broker', async () => {
+  const fake = createFakeRuntime();
+  (fake.runtime.capabilities as Record<string, unknown>).providerCredentialBroker = { version: 1 };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /providerCredentialBroker v2/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
+test('initialization requires secret-safe effective Runtime config', async () => {
+  const fake = createFakeRuntime();
+  delete (fake.runtime.capabilities as Record<string, unknown>).effectiveConfig;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+
+  await assert.rejects(adapter.initialize(), /effectiveConfig v1/i);
+  assert.equal(adapter.snapshot().state, 'failed');
+  assert.equal(fake.calls.close, 1);
+});
+
 test('buffered Runtime events become visible before Actor bootstrap can block observation', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_buffered_before_actor');
@@ -9065,6 +9161,91 @@ test('Auto LLM default reconciliation retries CAS and preserves a concurrent cli
   });
 });
 
+test('manual Runtime compaction binds and revokes an operation-scoped credential lease', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_compact');
+  let credentialReads = 0;
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async (provider) => {
+      credentialReads += 1;
+      return provider === 'anthropic' ? 'compact-secret-from-keychain' : undefined;
+    },
+  });
+
+  const result = await adapter.compactSession({
+    sessionId: 's_compact',
+    provider: 'anthropic',
+  });
+
+  assert.equal(result.compacted, true);
+  assert.deepEqual(fake.calls.scopedCredentialRegistrations, [{ providers: ['anthropic'] }]);
+  const compactInput = fake.calls.compacted[0] as {
+    credential?: { leaseId: string; mode: string; providers: readonly string[] };
+    operation?: { operationId?: string };
+  };
+  assert.deepEqual(compactInput.credential, {
+    leaseId: 'scoped_credential_1',
+    mode: 'scoped',
+    providers: ['anthropic'],
+  });
+  assert.match(compactInput.operation?.operationId ?? '', /^space-compact-/);
+  assert.equal(credentialReads, 0, 'no-op Runtime setup must not preload a keychain secret');
+
+  const broker = fake.calls.scopedCredentialBrokers[0];
+  assert.ok(broker);
+  const operationId = compactInput.operation?.operationId ?? '';
+  const validRequest = {
+    requestId: 'credential_request_1',
+    leaseId: 'scoped_credential_1',
+    provider: 'anthropic',
+    sessionId: 's_compact',
+    target: { kind: 'operation' as const, operationId, operation: 'session.compact' as const },
+    purpose: 'compaction' as const,
+  };
+  assert.equal(await broker(validRequest), 'compact-secret-from-keychain');
+  assert.equal(credentialReads, 1);
+  assert.equal(await broker({ ...validRequest, sessionId: 's_other' }), undefined);
+  assert.equal(await broker({ ...validRequest, purpose: 'utility' }), undefined);
+  assert.equal(
+    await broker({
+      ...validRequest,
+      target: { ...validRequest.target, operationId: 'space-compact-other' },
+    }),
+    undefined,
+  );
+  assert.deepEqual(fake.calls.credentialRevokes, ['scoped_credential_1']);
+  await adapter.close();
+});
+
+test('failed manual Runtime compaction revokes its operation-scoped credential lease', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_compact_failure');
+  fake.runtime.sessions.compact = async () => {
+    throw new Error('compaction failed');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+    credentialResolver: async () => 'compact-secret-from-keychain',
+  });
+
+  await assert.rejects(
+    adapter.compactSession({ sessionId: 's_compact_failure', provider: 'anthropic' }),
+    /compaction failed/,
+  );
+
+  assert.deepEqual(fake.calls.credentialRevokes, ['scoped_credential_1']);
+  await adapter.close();
+});
+
 test('Space-started runs receive scoped credential and host-tool leases', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
@@ -9074,43 +9255,96 @@ test('Space-started runs receive scoped credential and host-tool leases', async 
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
-    credentialResolver: async (provider) =>
-      provider === 'anthropic' ? 'secret-from-keychain' : undefined,
+    credentialResolver: async (provider) => `${provider}-secret-from-keychain`,
+    credentialProvidersResolver: async () => ['anthropic', 'openai'],
   });
 
   const handle = await adapter.startManagedRun({
     sessionId: 's_1',
     prompt: 'hello',
     options: { provider: 'anthropic' },
+    operation: { journalEpoch: 'journal_start_1', expectedRevision: 4 },
   });
   assert.deepEqual(fake.calls.loaded, []);
   const started = fake.calls.started[0] as {
-    credential?: { leaseId: string; provider: string };
+    credential?: { leaseId: string; mode: string; providers: readonly string[] };
     hostTools?: { leaseId: string };
+    operation?: { operationId?: string; journalEpoch?: string; expectedRevision?: number };
   };
   assert.deepEqual(started.credential, {
-    leaseId: 'credential_1',
-    provider: 'anthropic',
+    leaseId: 'scoped_credential_1',
+    mode: 'scoped',
+    providers: ['anthropic', 'openai'],
   });
   assert.deepEqual(started.hostTools, { leaseId: 'tools_1' });
+  assert.match(started.operation?.operationId ?? '', /^space-run-/);
+  assert.equal(started.operation?.journalEpoch, 'journal_start_1');
+  assert.equal(started.operation?.expectedRevision, 4);
   const registration = fake.calls.hostToolRegistrations[0] as {
     descriptors: readonly { name: string }[];
   };
   assert.ok(registration.descriptors.some((item) => item.name === 'create_artifact'));
   assert.ok(registration.descriptors.some((item) => item.name === 'create_office_artifact'));
-  const broker = fake.calls.credentialBrokers[0];
+  const broker = fake.calls.scopedCredentialBrokers[0];
   assert.ok(broker);
+  const validRequest = {
+    requestId: 'request_1',
+    leaseId: 'scoped_credential_1',
+    provider: 'anthropic',
+    sessionId: 's_1',
+    target: {
+      kind: 'run' as const,
+      runId: handle.runId,
+      operationId: started.operation?.operationId,
+    },
+    purpose: 'primary' as const,
+  };
+  assert.equal(await broker({ ...validRequest, sessionId: 'wrong' }), undefined);
   assert.equal(
-    await broker({ provider: 'anthropic', sessionId: 'wrong', runId: handle.runId }),
+    await broker({ ...validRequest, target: { kind: 'run', runId: 'other_run' } }),
     undefined,
   );
   assert.equal(
-    await broker({ provider: 'anthropic', sessionId: 's_1', runId: 'other_run' }),
+    await broker({ ...validRequest, purpose: 'compaction' }),
+    'anthropic-secret-from-keychain',
+  );
+  assert.equal(await broker({ ...validRequest, purpose: 'workflow' }), undefined);
+  assert.equal(
+    await broker({
+      ...validRequest,
+      purpose: 'workflow',
+      target: {
+        kind: 'actor_turn',
+        actorPath: 'agent_1',
+        turnId: 'turn_1',
+        parentRunId: handle.runId,
+      },
+    }),
     undefined,
   );
   assert.equal(
-    await broker({ provider: 'anthropic', sessionId: 's_1', runId: handle.runId }),
-    'secret-from-keychain',
+    await broker({
+      ...validRequest,
+      target: { ...validRequest.target, operationId: 'space-run-other' },
+    }),
+    undefined,
+  );
+  assert.equal(await broker(validRequest), 'anthropic-secret-from-keychain');
+  assert.equal(
+    await broker({
+      ...validRequest,
+      provider: 'openai',
+      purpose: 'fallback',
+    }),
+    'openai-secret-from-keychain',
+  );
+  assert.equal(
+    await broker({
+      ...validRequest,
+      purpose: 'workflow',
+      target: { kind: 'workflow', workflowRunId: 'workflow_1', parentRunId: handle.runId },
+    }),
+    'anthropic-secret-from-keychain',
   );
   fake.pending.get(handle.runId)?.resolve({
     runId: handle.runId,
@@ -9118,7 +9352,7 @@ test('Space-started runs receive scoped credential and host-tool leases', async 
     phase: 'completed',
   });
   await handle.result;
-  assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
+  assert.deepEqual(fake.calls.credentialRevokes, ['scoped_credential_1']);
 });
 
 function testRuntimeDaemonDisconnectError(reconnectable = true): Error & {
@@ -9208,28 +9442,55 @@ test('an admitted Run resumes by the same runId after reconnect without replayin
   await adapter.close();
 });
 
-test('non-mock Runtime runs fail closed when Space cannot resolve the exact credential', async () => {
+test('non-mock Runtime runs resolve credentials lazily and fail closed in the broker', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_missing_credential');
+  let credentialReads = 0;
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     runtimeEventParser: testRuntimeEventParser,
-    credentialResolver: async () => undefined,
+    credentialResolver: async () => {
+      credentialReads += 1;
+      return undefined;
+    },
   });
 
-  await assert.rejects(
-    adapter.startManagedRun({
+  const handle = await adapter.startManagedRun({
+    sessionId: 's_missing_credential',
+    prompt: 'hello',
+    options: { provider: 'anthropic' },
+  });
+  assert.equal(credentialReads, 0);
+  assert.equal(fake.calls.scopedCredentialRegistrations.length, 1);
+  assert.equal(fake.calls.started.length, 1);
+  const started = fake.calls.started[0] as { operation?: { operationId?: string } };
+  const broker = fake.calls.scopedCredentialBrokers[0];
+  assert.ok(broker);
+  assert.equal(
+    await broker({
+      requestId: 'request_missing',
+      leaseId: 'scoped_credential_1',
+      provider: 'anthropic',
       sessionId: 's_missing_credential',
-      prompt: 'hello',
-      options: { provider: 'anthropic' },
+      target: {
+        kind: 'run',
+        runId: handle.runId,
+        operationId: started.operation?.operationId,
+      },
+      purpose: 'primary',
     }),
-    /no exact Space credential/i,
+    undefined,
   );
-  assert.equal(fake.calls.credentialRegistrations.length, 0);
-  assert.equal(fake.calls.started.length, 0);
+  assert.equal(credentialReads, 1);
+  fake.pending.get(handle.runId)?.resolve({
+    runId: handle.runId,
+    sessionId: 's_missing_credential',
+    phase: 'failed',
+  });
+  await handle.result;
   await adapter.close();
 });
 
@@ -9251,21 +9512,30 @@ test('true external env credentials are still bound exactly for a shared Runtime
     options: { provider: 'anthropic' },
   });
 
-  assert.equal(fake.calls.credentialRegistrations.length, 1);
+  assert.equal(fake.calls.scopedCredentialRegistrations.length, 1);
   const started = fake.calls.started[0] as {
-    credential?: { leaseId: string; provider: string };
+    credential?: { leaseId: string; mode: string; providers: readonly string[] };
+    operation?: { operationId?: string };
   };
   assert.deepEqual(started.credential, {
-    leaseId: 'credential_1',
-    provider: 'anthropic',
+    leaseId: 'scoped_credential_1',
+    mode: 'scoped',
+    providers: ['anthropic'],
   });
-  const broker = fake.calls.credentialBrokers[0];
+  const broker = fake.calls.scopedCredentialBrokers[0];
   assert.ok(broker);
   assert.equal(
     await broker({
+      requestId: 'request_1',
+      leaseId: 'scoped_credential_1',
       provider: 'anthropic',
       sessionId: 's_external_credential',
-      runId: 'run_1',
+      target: {
+        kind: 'run',
+        runId: 'run_1',
+        operationId: started.operation?.operationId,
+      },
+      purpose: 'primary',
     }),
     'external-credential',
   );
@@ -9722,7 +9992,7 @@ test('failed after-turn submission revokes its newly registered credential lease
     }),
     /transport failed/,
   );
-  assert.deepEqual(fake.calls.credentialRevokes, ['credential_1']);
+  assert.deepEqual(fake.calls.credentialRevokes, ['scoped_credential_1']);
   await adapter.close();
 });
 
@@ -9774,10 +10044,17 @@ test('after-turn submission uses the provider from the SDK active Run record', a
     afterRunId: 'run_observed_provider',
     delivery: 'after_turn',
     input: [{ type: 'text', text: 'continue after the turn' }],
+    operation: { journalEpoch: 'journal_after_turn_1', expectedRevision: 7 },
   });
 
   assert.equal(runReads, 1);
-  assert.deepEqual(fake.calls.credentialRegistrations, [{ providers: ['openai'] }]);
+  assert.deepEqual(fake.calls.scopedCredentialRegistrations, [{ providers: ['openai'] }]);
+  const submitted = fake.calls.submitted[0] as {
+    operation?: { operationId?: string; journalEpoch?: string; expectedRevision?: number };
+  };
+  assert.match(submitted.operation?.operationId ?? '', /^space-after-turn-/);
+  assert.equal(submitted.operation?.journalEpoch, 'journal_after_turn_1');
+  assert.equal(submitted.operation?.expectedRevision, 7);
   await adapter.close();
 });
 
@@ -9852,7 +10129,7 @@ test('interrupt submission reuses the active run bindings and returns the factua
       input: [{ type: 'text', text: 'steer now' }],
     },
   ]);
-  assert.deepEqual(fake.calls.credentialRegistrations, []);
+  assert.deepEqual(fake.calls.scopedCredentialRegistrations, []);
   assert.deepEqual(fake.calls.credentialRevokes, []);
   await adapter.close();
 });
@@ -10033,7 +10310,7 @@ test('interrupt submission rejects replacement bindings before reaching Runtime'
     /must reuse the active run credential and host-tool bindings/,
   );
   assert.deepEqual(fake.calls.submitted, []);
-  assert.deepEqual(fake.calls.credentialRegistrations, []);
+  assert.deepEqual(fake.calls.scopedCredentialRegistrations, []);
   await adapter.close();
 });
 

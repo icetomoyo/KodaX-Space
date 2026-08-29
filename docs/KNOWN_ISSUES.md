@@ -194,7 +194,7 @@ Last Updated: 2026-08-29
 | 196 | High     | Resolved in v0.1.45 | Live history replacement could shrink or reorder the transcript and leave loading or activity state stale until Ctrl+R                                                                              | v0.1.44 history paging and Runtime reconnect                 | 2026-08-23 |
 | 197 | High     | Resolved in v0.1.45 | Release dependency verification and startup recovery could keep build or quit alive after their work had ended                                                                                      | v0.1.44 release gate and exit recovery                       | 2026-08-23 |
 | 198 | Low      | Resolved in source  | Right-sidebar work-budget display is accurate but the SDK 90% budget-approval askUser loop has been retired from the main AMA loop in KodaX 0.7.95                                                  | KodaX 0.7.95 adoption                                        | 2026-08-27 |
-| 199 | Medium   | ready               | Manual `/compact` cannot use a Provider key stored only in the Space OS keychain                                                                                                                    | <= v0.1.37 / KodaX 0.7.83                                    | 2026-08-28 |
+| 199 | Medium   | Resolved in source  | Manual `/compact` cannot use a Provider key stored only in the Space OS keychain                                                                                                                    | <= v0.1.37 / KodaX 0.7.83                                    | 2026-08-28 |
 | 200 | Medium   | Resolved in source  | Fixed Space reasoning enums dropped provider-specific SDK efforts and could fall back from a stronger request to a distant model default                                                            | <= v0.1.45 reasoning picker                                  | 2026-08-28 |
 | 201 | High     | Resolved in source  | Space-owned Provider paths could reuse another Provider's keychain credential or bypass the active Runtime configuration                                                                            | <= v0.1.45                                                   | 2026-08-29 |
 
@@ -226,29 +226,28 @@ Coder lived in the already-running Runtime daemon.
   explicit bidirectional `openai` / `codex-cli` alias for `OPENAI_API_KEY`; a matching env name alone
   is never authorization to reuse a secret.
 - Space tracks startup environment credentials separately from managed keychain injection, so a
-  managed value cannot configure or auto-activate an unrelated Provider. Every Space-owned direct
-  LLM operation binds either source to one exact Provider for its full asynchronous lifetime; a
-  missing exact credential fails closed before SDK code can fall back to a concurrently changed
-  process environment.
+  managed value cannot configure or auto-activate an unrelated Provider. Exact single-Provider
+  probes remain scoped for their full asynchronous lifetime; Run and Workflow paths use explicit
+  lazy allowlists and never fall back to a concurrently changed process environment.
 - Provider testing invokes the constructed Provider instance inside that exact scope instead of a
   top-level helper that preflights `process.env`.
-- Runtime Run and after-turn admission now fail closed when Space cannot create an exact credential
-  lease. Environment-only credentials are also leased because a shared daemon's inherited
+- Runtime Run and after-turn admission now bind a v2 scoped credential lease. The lease exposes
+  only secret-free known Provider identities and resolves
+  each key lazily for authorized fallback, classifier, sidecar, Agent, or Workflow work within the
+  originating Session and Run lineage; an unavailable key fails closed only when a real wire call
+  requests it. Environment-only credentials are also leased because a shared daemon's inherited
   environment is not authoritative to the current Space process. An inherited Space-managed env
   value can no longer become an unbound fallback secret.
-- Runtime-backed slash settings now read and patch persisted daemon configuration only for Coder
-  Sessions. Partner/embedded Sessions continue to use the Space process environment even when
-  Runtime is globally selected. The current SDK does not expose effective daemon environment
-  overrides, so Space labels the displayed value as persisted config and does not infer daemon
-  state from Electron `process.env`.
-- Runtime manual compaction now fails closed for every credentialed Provider until Issue 199's SDK
-  contract exists. Space cannot prove or bind the shared daemon's credential source; automatic
-  threshold compaction remains bound to its admitted Run.
-- Exact primary-Provider scoping is intentionally safe but does not make secondary keychain
-  credentials available to fallback Providers, model tiers, or Provider-overridden sidecars. Space
-  surfaces that limitation on `/fallback`. Space-started Runtime Runs use an exact lease, and
-  Space-started embedded Runs use an exact scope, so cross-Provider routing in either host requires
-  an SDK multi-Provider credential broker.
+- Runtime-backed slash settings read the daemon's secret-safe effective config and source, honor
+  environment-string values and `applied:false`, then patch persisted daemon configuration for Coder Sessions. Partner/embedded Sessions continue to
+  use the Space process environment even when Runtime is globally selected.
+- Runtime manual compaction registers a v2 operation-scoped lease, binds it to one stable compact
+  operation ID, and revokes it on success or failure. The daemon receives no raw key in the command.
+- Partner/legacy embedded root Runs now use an SDK lazy lease over the primary and known Provider
+  identities, allowing KodaX to derive bounded Agent/Workflow scopes and resolve fallback,
+  classifier, or sidecar credentials per wire call. Independently started detached Workflows receive
+  a `workflowRunId`-attributed derived lease that is closed on handle success, failure, or start error.
+  External Agents remain on their independent `credentialRef` plane.
 
 ## Issue 200: Fixed Space reasoning enums dropped provider-specific SDK efforts and could fall back from a stronger request to a distant model default
 
@@ -287,7 +286,7 @@ slash/semantic controls, provider capability projection, and focused regression 
 ## Issue 199: Manual `/compact` cannot use a Provider key stored only in the Space OS keychain
 
 - Priority: Medium
-- Status: ready
+- Status: Resolved in source
 - Introduced: <= v0.1.37 / KodaX 0.7.83
 - Created: 2026-08-28
 
@@ -314,7 +313,7 @@ Reproduction:
 ### Context
 
 - Confirmed in the v0.1.37 screenshot with KodaX 0.7.83.
-- Reproduced against the current v0.1.45 working tree with KodaX 0.7.96-alpha.1: the manual
+- Reproduced against the earlier v0.1.45 working tree with KodaX 0.7.96-alpha.1: the manual
   compaction path performed zero Space credential-resolver reads and produced the same error twice.
 - Threshold-triggered automatic compaction runs inside an admitted Coder Run and inherits that
   Run's scoped credential, so the defect is specific to standalone manual compaction.
@@ -327,25 +326,18 @@ only by `runs.start()` / continuation admission. KodaX resolves the summarizer P
 `runWithProviderCredential()` scope, so its only remaining credential source is the daemon's
 environment variable.
 
-### Current Space Mitigation
+### Resolution
 
-Embedded manual compaction now uses Space's exact-Provider credential scope. Runtime-backed manual
-compaction fails closed for every credentialed Provider before invoking the daemon because the
-current SDK exposes neither a compact credential binding nor the shared daemon's effective
-environment source. This removes the misleading `API_KEY not set` failure and avoids trusting or
-copying process-global secrets. Automatic threshold compaction is unchanged because it already runs
-inside an admitted, credential-bound Run.
+KodaX 0.7.96-alpha.3 adds `RuntimeCompactSessionInput.credential` and an operation identity backed by
+`providerCredentialBroker:2`. Space now registers a scoped credential lease before invoking manual
+Runtime compaction, binds it to the exact Session, Provider allowlist, `session.compact` operation,
+operation ID, and `compaction` purpose, and revokes it in `finally`. The broker resolves keychain or
+external credentials only when the daemon asks for an authorized Provider; no secret is copied into
+Runtime config, IPC, or the compact input.
 
-### Proposed Solution
-
-- Extend the KodaX Runtime manual-compaction contract with an explicit credential lease bound to
-  the exact Provider and compaction operation.
-- Acquire the brokered credential inside the daemon and wrap only the compaction operation in
-  `runWithProviderCredential()`; never persist, log, or copy the secret into Provider config.
-- Have Space register, bind, and revoke the lease around `compactSession()`, preserving the current
-  run-scoped Provider/session authorization checks.
-- Add Runtime and Space regressions proving a keychain-only manual compaction succeeds, provider
-  mismatch fails closed, failure revokes the lease, and ordinary automatic compaction is unchanged.
+Regression coverage proves keychain-only compaction succeeds through the scoped broker, mismatched
+Session/purpose/operation requests return no credential, and the lease is revoked. Automatic
+threshold compaction remains inside its admitted credential-bound Run and is unchanged.
 
 ## Issue 198: Right-sidebar work-budget display is accurate but the SDK 90% budget-approval askUser loop has been retired from the main AMA loop
 

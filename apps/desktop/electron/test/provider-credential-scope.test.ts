@@ -1,8 +1,19 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { getScopedProviderCredential, runWithProviderCredential } from '@kodax-ai/kodax/llm';
-import { runWithExactProviderCredential } from '../providers/credential-scope.js';
+import {
+  createProviderCredentialLeaseScope,
+  deriveCurrentProviderCredentialLeaseScope,
+  getScopedProviderCredential,
+  runWithProviderCredential,
+  runWithProviderCredentialLeaseScope,
+  withProviderRequestCredential,
+} from '@kodax-ai/kodax/llm';
+import {
+  runDetachedWorkflowWithProviderCredentialLease,
+  runWithExactProviderCredential,
+  runWithSpaceProviderCredentialLease,
+} from '../providers/credential-scope.js';
 
 test('an exact Space credential remains scoped across asynchronous work', async () => {
   let release!: () => void;
@@ -48,7 +59,7 @@ test('keychain credential wins and remains scoped when a real external env also 
   assert.deepEqual(calls, ['anthropic:keychain-secret', 'operation']);
 });
 
-test('a detached workflow-style done chain keeps the scope after its handle is returned', async () => {
+test('an exact scope ends when a detached handle is returned', async () => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -69,7 +80,89 @@ test('a detached workflow-style done chain keeps the scope after its handle is r
   );
   release();
 
+  assert.equal(await handle.done, undefined);
+});
+
+test('a Space operation lazily resolves every allowed Provider identity inside one lease', async () => {
+  const reads: string[] = [];
+
+  const result = await runWithSpaceProviderCredentialLease(
+    'provider-a',
+    async () => {
+      const primary = await withProviderRequestCredential('provider-a', 'primary', undefined, () =>
+        getScopedProviderCredential('provider-a'),
+      );
+      const fallback = await withProviderRequestCredential(
+        'provider-b',
+        'fallback',
+        undefined,
+        () => getScopedProviderCredential('provider-b'),
+      );
+      return { primary, fallback };
+    },
+    {
+      readProviderCredential: async (provider) => {
+        reads.push(provider);
+        return `credential-${provider}`;
+      },
+      listProviderCredentialIds: async () => ['provider-b'],
+      createProviderCredentialLeaseScope,
+      runWithProviderCredentialLeaseScope,
+    },
+  );
+
+  assert.deepEqual(result, {
+    primary: 'credential-provider-a',
+    fallback: 'credential-provider-b',
+  });
+  assert.deepEqual(reads, ['provider-a', 'provider-b']);
+});
+
+test('a detached Workflow gets a lazy derived credential lease until done settles', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let releaseLateRequest!: () => void;
+  const lateRequestGate = new Promise<void>((resolve) => {
+    releaseLateRequest = resolve;
+  });
+  const attributions: unknown[] = [];
+  let lateRequest!: Promise<unknown>;
+
+  const handle = await runDetachedWorkflowWithProviderCredentialLease(
+    'provider-a',
+    'workflow-a',
+    () => {
+      const done = (async () => {
+        await gate;
+        return await withProviderRequestCredential('provider-a', 'primary', undefined, () =>
+          getScopedProviderCredential('provider-a'),
+        );
+      })();
+      lateRequest = (async () => {
+        await lateRequestGate;
+        return await withProviderRequestCredential('provider-a', 'primary', undefined, () =>
+          getScopedProviderCredential('provider-a'),
+        );
+      })();
+      return { done };
+    },
+    {
+      readProviderCredential: async () => 'credential-a',
+      listProviderCredentialIds: async () => [],
+      createProviderCredentialLeaseScope,
+      deriveCurrentProviderCredentialLeaseScope,
+      runWithProviderCredentialLeaseScope,
+      onAcquire: (attribution) => attributions.push(attribution),
+    },
+  );
+  release();
+
   assert.equal(await handle.done, 'credential-a');
+  assert.deepEqual(attributions, [{ kind: 'workflow', workflowRunId: 'workflow-a' }]);
+  releaseLateRequest();
+  await assert.rejects(lateRequest, /credential lease scope is no longer active/i);
 });
 
 test('an absent exact credential fails closed before the Provider operation starts', async () => {

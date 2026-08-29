@@ -2,12 +2,15 @@
 
 > **2026-08-24 当前发布基线**：v0.1.45 使用 root/Desktop/lockfile 精确锁定的 npm Registry KodaX `0.7.95`，并要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Space 在 SDK 启动门、daemon 协商、IPC status 与打包 smoke 四个边界保持同一版本；同一 boot 的临时 `unconfirmed-owner` 自动重试，等待会在应用退出时取消。
 >
-> **2026-08-28 当前源码候选**：root/Desktop/lockfile 精确锁定 KodaX
-> `0.7.96-alpha.2`，SDK 启动、daemon 协商和连接后门禁统一提升到
-> `sandboxRuntime:6`。`dist/native` 整体位于 `app.asar.unpacked`；dependency gate
+> **2026-08-29 当前源码候选**：root/Desktop/lockfile 精确锁定 KodaX
+> `0.7.96-alpha.3`。SDK 包启动门要求 `effectiveConfig:1` 与 `sandboxRuntime:6`；
+> `providerCredentialBroker:2` 由 daemon 准入 requirements 和连接后 Runtime capability
+> 两层门禁验证，因为 SDK 的静态 capability 常量不发布该字段。`dist/native` 整体位于 `app.asar.unpacked`；dependency gate
 > 验证 universal native 集合，packaged smoke 按每个 manifest 的 SHA-256 验证物理 sidecar。
-> alpha.2 已恢复 alpha.1 缺失的 Windows 生命周期 PowerShell 可执行文件解析器；Space
-> 直接消费完整性锁定的 Registry 字节，不补丁依赖。
+> alpha.3 保留 alpha.2 对 Windows 生命周期 PowerShell 可执行文件解析器的修复；Space
+> 直接消费完整性锁定的 Registry 字节，不补丁依赖。Daemon 与 embedded 根 Run 的
+> SDK lease 只列出无密钥的已知 Provider 身份，并在 wire call 时按需解析凭据；独立 detached Workflow 使用带 workflowRunId
+> 归属的 derived lease，并在 managed handle 终态显式关闭。
 >
 > **2026-08-20 v0.1.44 已发布历史基线**：v0.1.44 使用精确 npm Registry KodaX `0.7.93`，要求 `sandboxRuntime:4`、`crashOutcomeModel:2`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1` 与本地 `runtimeExitSettlement:1`。sandbox v4 在 v3 containment 基础上增加 stale coordinator-ticket / recorded-release 收敛；v0.1.43 / v0.1.42 作为历史正式产品基线保留。
 > `RuntimeHostAdapter` 要求 `managedRunDurability:1`，使 accepted prompt 与 completed turn
@@ -18,7 +21,7 @@
 > 只提供 SDK 计算后的有效 segment；Space 不运行 checkpoint/text replay 状态机。
 > owner reconciliation 与 daemon auto-start 前仍先恢复精确 complete-exit 票据。
 >
-> Last updated: 2026-08-28
+> Last updated: 2026-08-29
 > Status: 核心架构决策仍有效；当前正式发布基线为 KodaX Space 0.1.45（package 0.1.45）/ npm 正式发布的精确 KodaX 0.7.95。中间方案与否决理由见 [ADR/](ADR/)；当前能力边界见 [KODAX_CAPABILITY_LEDGER.md](KODAX_CAPABILITY_LEDGER.md)。
 > Companion doc: [PRD](PRD.md)
 
@@ -698,7 +701,7 @@ Space → CLI:
 | 终端组件    | xterm.js + node-pty                                                                                                                        |
 | KodaX 集成  | **双 owner**：Coder 通过 Runtime facade 连接 profile daemon；Partner 在 Electron main inline；均不走 ACP（[v0.1.32](features/v0.1.32.md)） |
 | Native 加速 | 仅按 profile 引入 NAPI-RS 热路径；无已承诺 native-helper feature ([ADR-002](ADR/ADR-002-rust-integration-napi.md))                         |
-| IPC schema  | zod，验证所有 renderer↔main channel                                                                                                        |
+| IPC schema  | zod，验证所有 renderer↔main channel                                                                                                       |
 | Keychain    | `@napi-rs/keyring`（Win Credential Manager / macOS Keychain / Linux Secret Service）                                                       |
 | 自动更新    | Squirrel.Mac + Squirrel.Windows                                                                                                            |
 | 安装包      | NSIS (Win) + DMG/ZIP (macOS x64/arm64) + AppImage/deb (Linux x64); signing/notarization/channel trust tracked by F101                      |
@@ -937,28 +940,28 @@ Space 严格遵守：
 
 ### 20.1 Active 0.1.x architecture lanes
 
-| Lane                | Architectural change                                                                                                                                                                                                |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `v0.1.31`           | `RuntimeHostAdapter` released for managed runs/transcript/compact/fork/rewind with explicit Space bridge ownership.                                                                                                 |
-| `v0.1.32`           | Move Coder to one shared profile daemon with multi-client live state/control; keep Partner embedded inline.                                                                                                         |
-| `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                                                                                                          |
-| corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release.                                                                               |
-| `v0.1.34`           | Adopt KodaX 0.7.78 safety contracts, resilient integration health, visible complete exit/orphan recovery, physical sandbox helpers, one startup overlay, and exact positional history replay.                       |
-| `v0.1.61`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                                      |
-| `v0.1.64`           | F130 Partner Composer-First Skill Workspace becomes the sole Partner task-workspace UX authority over the shipped F095/F103 shell.                                                                                  |
-| `v0.1.68`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                                        |
-| `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                                                                                                            |
-| `v0.1.36`           | Harden active-Session input admission, exact run/turn ownership, paged history reconciliation, and renderer recovery without adding a second Runtime store.                                                         |
-| `v0.1.37`           | Align the exact KodaX 0.7.83 package and release docs while preserving multi-Session recovery, safe-close recovery, and renderer ownership boundaries.                                                              |
-| `v0.1.39`           | Align the exact KodaX 0.7.85 package and manual while preserving Actor settlement convergence, Session journal epoch isolation, unknown Run admission, exact Stop, and idle-exit client boundaries.                 |
-| `v0.1.41`           | Consume the existing ordered KodaX provider.recovery event across daemon/live/history/reconnect projections, pin the latest npm KodaX package exactly, and keep Space as a bounded compatibility/presentation host. |
-| `v0.1.42`           | Align exact KodaX 0.7.89 Actor settlement v2 and preserve Session/Run/Turn ownership across canonical/live reconciliation, delayed terminals, continued Runs, and completion notifications.                         |
-| `v0.1.43`           | Align exact KodaX 0.7.92, consume SDK-owned complete-exit settlement, require sandboxRuntime v4 plus crashOutcomeModel v2, and project live output from SDK segments only.                                          |
-| `v0.1.44`           | Align exact KodaX 0.7.93, project one native attention count per Session, continue admitted exit settlement in the background, and align Task Dock, Repointel, history, and external-task recovery surfaces.        |
+| Lane                | Architectural change                                                                                                                                                                                                                                                                                  |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.31`           | `RuntimeHostAdapter` released for managed runs/transcript/compact/fork/rewind with explicit Space bridge ownership.                                                                                                                                                                                   |
+| `v0.1.32`           | Move Coder to one shared profile daemon with multi-client live state/control; keep Partner embedded inline.                                                                                                                                                                                           |
+| `v0.1.33`           | Stabilize KodaX 0.7.77 Actor/history/usage contracts and add bounded Shell/F140 desktop lifecycle control.                                                                                                                                                                                            |
+| corrected `v0.1.33` | Add safe customer-selectable Coder ownership and exact packaged Runtime dependency/boot gates before reissuing the withdrawn release.                                                                                                                                                                 |
+| `v0.1.34`           | Adopt KodaX 0.7.78 safety contracts, resilient integration health, visible complete exit/orphan recovery, physical sandbox helpers, one startup overlay, and exact positional history replay.                                                                                                         |
+| `v0.1.61`           | Add the independently authored F137 native document Skill suite and F139 semantic UI polish without weakening F138 boundaries.                                                                                                                                                                        |
+| `v0.1.64`           | F130 Partner Composer-First Skill Workspace becomes the sole Partner task-workspace UX authority over the shipped F095/F103 shell.                                                                                                                                                                    |
+| `v0.1.68`           | Host KX-F260 Memory Agent over existing F228/F088 governance when published.                                                                                                                                                                                                                          |
+| `v0.1.35`           | Host the minimum learned-Skill safety surface over published `learningCenter:1` + `skillLearningLoop:1`.                                                                                                                                                                                              |
+| `v0.1.36`           | Harden active-Session input admission, exact run/turn ownership, paged history reconciliation, and renderer recovery without adding a second Runtime store.                                                                                                                                           |
+| `v0.1.37`           | Align the exact KodaX 0.7.83 package and release docs while preserving multi-Session recovery, safe-close recovery, and renderer ownership boundaries.                                                                                                                                                |
+| `v0.1.39`           | Align the exact KodaX 0.7.85 package and manual while preserving Actor settlement convergence, Session journal epoch isolation, unknown Run admission, exact Stop, and idle-exit client boundaries.                                                                                                   |
+| `v0.1.41`           | Consume the existing ordered KodaX provider.recovery event across daemon/live/history/reconnect projections, pin the latest npm KodaX package exactly, and keep Space as a bounded compatibility/presentation host.                                                                                   |
+| `v0.1.42`           | Align exact KodaX 0.7.89 Actor settlement v2 and preserve Session/Run/Turn ownership across canonical/live reconciliation, delayed terminals, continued Runs, and completion notifications.                                                                                                           |
+| `v0.1.43`           | Align exact KodaX 0.7.92, consume SDK-owned complete-exit settlement, require sandboxRuntime v4 plus crashOutcomeModel v2, and project live output from SDK segments only.                                                                                                                            |
+| `v0.1.44`           | Align exact KodaX 0.7.93, project one native attention count per Session, continue admitted exit settlement in the background, and align Task Dock, Repointel, history, and external-task recovery surfaces.                                                                                          |
 | `v0.1.45`           | Align exact KodaX 0.7.95 with `conversationHistory:2`/`runtimeExitSettlement:2`/`sandboxRuntime:5`, replace the ask-user modal with inline conversation cards plus dock recall and head-card keyboard control, recover admitted Runs after daemon reconnect, and keep one bubble per idempotent send. |
-| `v0.1.40`           | Align the exact KodaX 0.7.86 package and manual, require sandboxRuntime v3, qualify the packaged Windows Shell chain, and reconcile stale inline owners through the SDK.                                            |
-| `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                                                    |
-| `v0.1.72`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                                                    |
+| `v0.1.40`           | Align the exact KodaX 0.7.86 package and manual, require sandboxRuntime v3, qualify the packaged Windows Shell chain, and reconcile stale inline owners through the SDK.                                                                                                                              |
+| `v0.1.38`           | Align the exact KodaX 0.7.84 package and manual while preserving bounded Agent progress, same-owner Stop recovery, and Session reactivation identity boundaries.                                                                                                                                      |
+| `v0.1.72`           | Complete locale gates, release diagnostics, channels/updater/distribution trust.                                                                                                                                                                                                                      |
 
 ### 20.2 Active 0.2.x architecture lanes
 

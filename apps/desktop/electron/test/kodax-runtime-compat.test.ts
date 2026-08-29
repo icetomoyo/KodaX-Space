@@ -9,7 +9,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.96-alpha.2';
+const EXPECTED_KODAX_VERSION = '0.7.96-alpha.3';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -332,7 +332,8 @@ const SHARED_DAEMON_REQUIREMENTS = {
   interruptInput: 1,
   askUserTransport: 1,
   permissionCas: 1,
-  providerCredentialBroker: 1,
+  providerCredentialBroker: 2,
+  effectiveConfig: 1,
   runBoundHostTools: 2,
   coderOwnerFencing: 1,
   crashOutcomeModel: 2,

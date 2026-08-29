@@ -65,6 +65,13 @@ test('custom Providers never reuse another keychain account solely by apiKeyEnv'
   assert.equal(await providerIpc.readProviderCredential(providerB), undefined);
 });
 
+test('credential lease allowlists use known Provider identities without requiring a stored secret', async () => {
+  const providerIds = await providerIpc.listKnownProviderIds();
+
+  assert.ok(providerIds.includes(providerA));
+  assert.ok(providerIds.includes(providerB));
+});
+
 test('a managed key for one custom Provider does not configure another custom Provider', () => {
   providerIpc._setManagedEnvForTesting(SHARED_ENV, 'credential-a');
 

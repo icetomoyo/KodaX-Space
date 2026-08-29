@@ -2,10 +2,11 @@
 
 > **2026-08-24 当前正式发布基线**：KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) 对齐 npm 正式发布的精确 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Session 历史在 Runtime-ready 重验时保留已加载 canonical 前缀；排队输入、live 回复、分页加载和当前 Runtime 身份保持同一因果投影。退出恢复自动重试临时 `unconfirmed-owner`，不要求人工删除标记，也不阻塞无关工作。v0.1.45 还把 ask_user 与 guardrail 授权从全屏模态改为对话流内的聚焦提问卡（召回停靠条与队首卡 1-9/Enter/Esc 键盘操作），恢复 daemon 重连后已准入的 Runs，并保证幂等发送只产生一个气泡。
 >
-> **2026-08-28 当前源码候选**：精确依赖升级为已发布的 KodaX `0.7.96-alpha.2`，
-> SDK 启动、daemon 准入与连接后检查统一要求 `sandboxRuntime:6` 及其可信文本/Windows
-> 原生 authority 标记。跨平台 native bundle 必须整体解包并通过 manifest hash smoke；
-> alpha.2 已恢复 alpha.1 缺失的 Windows 生命周期 PowerShell 可执行文件解析器；Space
+> **2026-08-29 当前源码候选**：精确依赖升级为已发布的 KodaX `0.7.96-alpha.3`，
+> SDK 包启动检查要求 `sandboxRuntime:6` 与 `effectiveConfig:1` 及其可信文本/Windows
+> 原生 authority 标记；`providerCredentialBroker:2` 由 daemon 准入 requirements 与连接后
+> Runtime capability 两层门禁验证。跨平台 native bundle 必须整体解包并通过 manifest hash smoke；
+> alpha.3 保留 alpha.2 的 Windows 生命周期 PowerShell 可执行文件解析修复；Space
 > 不修改完整性锁定的依赖字节。Space package 仍为 0.1.45，正式发布基线保持上一段历史事实。
 >
 > **2026-08-20 已发布历史基线**：KodaX Space [`v0.1.44`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.44) 对齐 npm 正式发布的精确 KodaX `0.7.93`，要求 sandboxRuntime v4、crashOutcomeModel v2、Actor settlement convergence v2、Session-scoped event journal、liveOutputSegments v1 与本地 runtimeExitSettlement v1；v0.1.43 / v0.1.42 保留为历史正式产品基线。
@@ -579,33 +580,33 @@ File panel 内点击 git diff
 
 ### 9.2 当前 0.1.x 版本链
 
-| Version lane      | Outcome                                                                                                                                                 |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `v0.1.31`         | 已交付 Runtime/platform trust、`app://space`、redacted diagnostics 与 typed semantic actions                                                            |
-| `v0.1.32`         | Shared Coder daemon/live state，以及 Space-owned Partner 本地 Sources、稳定引用、自动 grounded recall                                                   |
-| `v0.1.33`         | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                                             |
-| `v0.1.34`         | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固                       |
-| `v0.1.35`         | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center                         |
-| `v0.1.36`         | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口                                                               |
-| `v0.1.37`         | KodaX 0.7.83、多 Session 恢复、安全退出恢复与发布文档同步                                                                                               |
-| `v0.1.38`         | KodaX 0.7.84、Agent progress/同 owner Stop 收敛、Session 重新激活恢复、图标打包与发布文档同步                                                           |
-| `v0.1.39`         | KodaX 0.7.85、Actor settlement 自动收敛、unknown after-turn、精确 Stop、输入/历史保留与 Session journal epoch 隔离                                      |
-| `v0.1.40`         | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、Issue 180 stale owner 恢复与完整发布文档同步                                                     |
-| `v0.1.41`         | Latest KodaX 0.7.87 alignment, provider recovery transcript reconciliation, GLM-5.3 defaults, and complete release/manual documentation synchronization |
-| `v0.1.42`         | Latest KodaX 0.7.89 alignment, Actor settlement convergence v2, causal transcript ownership, and complete release/manual documentation synchronization  |
+| Version lane      | Outcome                                                                                                                                                  |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `v0.1.31`         | 已交付 Runtime/platform trust、`app://space`、redacted diagnostics 与 typed semantic actions                                                             |
+| `v0.1.32`         | Shared Coder daemon/live state，以及 Space-owned Partner 本地 Sources、稳定引用、自动 grounded recall                                                    |
+| `v0.1.33`         | KodaX 0.7.77 Runtime/Actor/history/usage 稳定化、Shell 控制与 F140 可配置关闭行为（已发布）                                                              |
+| `v0.1.34`         | KodaX 0.7.78 Runtime 安全、integration resilience、Auto v4、可见彻底退出/orphan recovery、sandbox helper 打包、启动与历史回放加固                        |
+| `v0.1.35`         | Learned Skill Safety Surface；复用已发布 `learningCenter:1` + `skillLearningLoop:1`，不建设超出契约的多 carrier Learning Center                          |
+| `v0.1.36`         | KodaX 0.7.82、活动 Session 输入准入、history/live 对齐、跨 Session 恢复隔离与发布文档收口                                                                |
+| `v0.1.37`         | KodaX 0.7.83、多 Session 恢复、安全退出恢复与发布文档同步                                                                                                |
+| `v0.1.38`         | KodaX 0.7.84、Agent progress/同 owner Stop 收敛、Session 重新激活恢复、图标打包与发布文档同步                                                            |
+| `v0.1.39`         | KodaX 0.7.85、Actor settlement 自动收敛、unknown after-turn、精确 Stop、输入/历史保留与 Session journal epoch 隔离                                       |
+| `v0.1.40`         | KodaX 0.7.86、sandboxRuntime v3、Issue 128 打包 Shell、Issue 180 stale owner 恢复与完整发布文档同步                                                      |
+| `v0.1.41`         | Latest KodaX 0.7.87 alignment, provider recovery transcript reconciliation, GLM-5.3 defaults, and complete release/manual documentation synchronization  |
+| `v0.1.42`         | Latest KodaX 0.7.89 alignment, Actor settlement convergence v2, causal transcript ownership, and complete release/manual documentation synchronization   |
 | `v0.1.43`         | Latest KodaX 0.7.92 alignment, SDK-owned complete-exit settlement, sandboxRuntime v4, crashOutcomeModel v2, live output segments, and documentation sync |
-| `v0.1.44`         | F145 跨平台原生提醒、后台完整退出、Task Dock/Repointel/历史页头对齐、外部任务恢复态与 KodaX 0.7.93                                                    |
-| `v0.1.45`         | FEATURE_032 v2 流内提问卡、KodaX 0.7.95（conversationHistory:2/runtimeExitSettlement:2/sandboxRuntime:5）、准入 Run 重连恢复与幂等发送单一气泡        |
-| `v0.1.46-v0.1.60` | 维护与稳定化预留；`v0.1.45` 之后无 feature 分配                                                                                                         |
-| `v0.1.61`         | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                                           |
-| `v0.1.64`         | Partner composer-first Skill workspace                                                                                                                  |
-| `v0.1.66`         | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                |
-| `v0.1.67`         | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                   |
-| `v0.1.68`         | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                                      |
-| `v0.1.70`         | Partner knowledge freshness、conflict 与 access integrity                                                                                               |
-| `v0.1.71`         | Partner knowledge integrity 稳定化预留                                                                                                                  |
-| `v0.1.72`         | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                                                 |
-| `v0.1.73`         | 0.1.x patch/RC reserve                                                                                                                                  |
+| `v0.1.44`         | F145 跨平台原生提醒、后台完整退出、Task Dock/Repointel/历史页头对齐、外部任务恢复态与 KodaX 0.7.93                                                       |
+| `v0.1.45`         | FEATURE_032 v2 流内提问卡、KodaX 0.7.95（conversationHistory:2/runtimeExitSettlement:2/sandboxRuntime:5）、准入 Run 重连恢复与幂等发送单一气泡           |
+| `v0.1.46-v0.1.60` | 维护与稳定化预留；`v0.1.45` 之后无 feature 分配                                                                                                          |
+| `v0.1.61`         | F137 中文优先 DOCX/PDF/XLSX/PPTX builtin 与 F139 语义 UI 精修                                                                                            |
+| `v0.1.64`         | Partner composer-first Skill workspace                                                                                                                   |
+| `v0.1.66`         | Partner hybrid retrieval/evidence ranking 与 curated knowledge lifecycle                                                                                 |
+| `v0.1.67`         | F129 Partner Presentation Project：复用 F137 PPTX format service，增加模板优先 Studio、真实预览和目标 Office 引擎验证                                    |
+| `v0.1.68`         | Memory Agent Desktop Host；硬门槛为已发布、兼容的 KX-F260 contract                                                                                       |
+| `v0.1.70`         | Partner knowledge freshness、conflict 与 access integrity                                                                                                |
+| `v0.1.71`         | Partner knowledge integrity 稳定化预留                                                                                                                   |
+| `v0.1.72`         | Localization、beta/release diagnostics、distribution trust 与 Partner knowledge quality                                                                  |
+| `v0.1.73`         | 0.1.x patch/RC reserve                                                                                                                                   |
 
 KX-F260/F266 未按时发布时，Space 调换 feature lane，不绕过 capability gate。
 
@@ -654,7 +655,7 @@ Worker/独立子进程、私有 staging、超时取消、禁宏/链接更新和�
 | 指标                                                  | 目标（M1 GA） |
 | ----------------------------------------------------- | ------------- |
 | Repointel 启用率（已安装用户中默认开 premium-native） | > 60%         |
-| CLI ↔ Space teleport 使用率（活跃用户）               | > 25%         |
+| CLI ↔ Space teleport 使用率（活跃用户）              | > 25%         |
 | 12 provider 中至少 2 个被使用的用户占比               | > 35%         |
 | `.mcpb` 安装的扩展数（平均每用户）                    | > 2           |
 
@@ -715,14 +716,14 @@ Worker/独立子进程、私有 staging、超时取消、禁宏/链接更新和�
 
 ## 14. 与 KodaX 内核 PRD 的对照表
 
-| KodaX 内核 PRD 概念             | KodaX Space 中的体现                                                  |
-| ------------------------------- | --------------------------------------------------------------------- |
-| Single-Agent First              | Coder 面板默认显示 H0/SA；不渲染多角色图                              |
+| KodaX 内核 PRD 概念             | KodaX Space 中的体现                                                      |
+| ------------------------------- | ------------------------------------------------------------------------- |
+| Single-Agent First              | Coder 面板默认显示 H0/SA；不渲染多角色图                                  |
 | Harness On Demand（H0/H1/H2）   | Task Dock 显示真实 Harness/Agent 状态，仅在升级时显示 Round               |
-| Evidence Before Confidence      | 任务完成展示 contract / handoff / verdict 摘要卡片（可折叠）          |
+| Evidence Before Confidence      | 任务完成展示 contract / handoff / verdict 摘要卡片（可折叠）              |
 | Work-First UX                   | 用计划、Agent 与 Runtime 状态表达进度；不把内部 work units 伪装成轮数上限 |
-| Scout-first AMA                 | UI 仅在 "Scout escalated" 时短暂高亮，不暴露 Scout/Planner 等内部角色 |
-| Skill as Progressive Disclosure | Skill 显示为 "skill-active" 标签，不渲染 workflow tree                |
+| Scout-first AMA                 | UI 仅在 "Scout escalated" 时短暂高亮，不暴露 Scout/Planner 等内部角色     |
+| Skill as Progressive Disclosure | Skill 显示为 "skill-active" 标签，不渲染 workflow tree                    |
 
 ---
 

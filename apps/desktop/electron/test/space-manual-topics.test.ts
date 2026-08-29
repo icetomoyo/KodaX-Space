@@ -84,7 +84,7 @@ test('Space kodax_manual documents the required current KodaX capability boundar
     }
   }
   assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.45 正式发布.*KodaX 0\.7\.95/);
-  assert.match(topics.get('runtime-host')?.body ?? '', /当前源码.*KodaX 0\.7\.96-alpha\.2/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /当前源码.*KodaX 0\.7\.96-alpha\.3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /conversationHistory v2/);
   assert.match(topics.get('runtime-host')?.body ?? '', /contextCompaction v3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /transcriptSearch v1/);

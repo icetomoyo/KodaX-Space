@@ -124,16 +124,26 @@ test('embedded manual compact receives the exact Space keychain credential', asy
   assert.equal(scopedCredential, 'compact-credential');
 });
 
-test('daemon manual compact fails closed for a Space keychain-only credential', async (t) => {
+test('daemon manual compact delegates Space keychain credentials to the Runtime adapter', async (t) => {
   _resetMemoryStoreForTesting();
   const originalEnv = process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
   await setKey('anthropic', 'compact-credential');
-  const adapter = runtimeHostAdapter as unknown as { hasReadyRuntime(): boolean };
-  const originalHasReadyRuntime = adapter.hasReadyRuntime;
-  adapter.hasReadyRuntime = () => true;
+  let compactInput: unknown;
+  const adapter = runtimeHostAdapter as unknown as {
+    compactSession(input: unknown): Promise<{
+      compacted: boolean;
+      tokensBefore: number;
+      tokensAfter: number;
+    }>;
+  };
+  const originalCompactSession = adapter.compactSession;
+  adapter.compactSession = async (input) => {
+    compactInput = input;
+    return { compacted: true, tokensBefore: 100, tokensAfter: 40 };
+  };
   t.after(() => {
-    adapter.hasReadyRuntime = originalHasReadyRuntime;
+    adapter.compactSession = originalCompactSession;
     if (originalEnv === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = originalEnv;
   });
@@ -145,20 +155,28 @@ test('daemon manual compact fails closed for a Space keychain-only credential', 
 
   const result = await kodaxHost.requestCompact(sessionId);
 
-  assert.equal(result.ok, false);
-  assert.match(result.reason ?? '', /compact credential binding/i);
-  assert.match(result.reason ?? '', /automatic threshold compaction remains credential-bound/i);
+  assert.equal(result.ok, true);
+  assert.equal(result.compacted, true);
+  assert.deepEqual(compactInput, {
+    sessionId,
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+  });
 });
 
-test('daemon manual compact fails closed when no exact or external credential is available', async (t) => {
+test('daemon manual compact surfaces a missing exact credential from the Runtime adapter', async (t) => {
   _resetMemoryStoreForTesting();
   const originalEnv = process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
-  const adapter = runtimeHostAdapter as unknown as { hasReadyRuntime(): boolean };
-  const originalHasReadyRuntime = adapter.hasReadyRuntime;
-  adapter.hasReadyRuntime = () => true;
+  const adapter = runtimeHostAdapter as unknown as {
+    compactSession(input: unknown): Promise<never>;
+  };
+  const originalCompactSession = adapter.compactSession;
+  adapter.compactSession = async () => {
+    throw new Error('Provider "anthropic" has no exact Space credential');
+  };
   t.after(() => {
-    adapter.hasReadyRuntime = originalHasReadyRuntime;
+    adapter.compactSession = originalCompactSession;
     if (originalEnv === undefined) delete process.env.ANTHROPIC_API_KEY;
     else process.env.ANTHROPIC_API_KEY = originalEnv;
   });
@@ -170,11 +188,12 @@ test('daemon manual compact fails closed when no exact or external credential is
 
   const result = await kodaxHost.requestCompact(sessionId);
 
-  assert.equal(result.ok, false);
-  assert.match(result.reason ?? '', /compact credential binding/i);
+  assert.equal(result.ok, true);
+  assert.equal(result.compacted, false);
+  assert.match(result.reason ?? '', /no exact Space credential/i);
 });
 
-test('daemon manual compact fails closed even when the Space process has an external credential', async (t) => {
+test('daemon manual compact delegates when the Space process has an external credential', async (t) => {
   _resetMemoryStoreForTesting();
   const originalEnv = process.env.ANTHROPIC_API_KEY;
   process.env.ANTHROPIC_API_KEY = 'external-compact-credential';
@@ -209,9 +228,9 @@ test('daemon manual compact fails closed even when the Space process has an exte
 
   const result = await kodaxHost.requestCompact(sessionId);
 
-  assert.equal(result.ok, false);
-  assert.match(result.reason ?? '', /compact credential binding/i);
-  assert.equal(compactCalled, false);
+  assert.equal(result.ok, true);
+  assert.equal(result.compacted, true);
+  assert.equal(compactCalled, true);
 });
 
 test('Runtime-owned manual compact cannot fall back to embedded storage while Runtime reconnects', async (t) => {
@@ -253,7 +272,7 @@ test('Runtime-owned manual compact cannot fall back to embedded storage while Ru
   adapter.hasReadyRuntime = () => false;
   adapter.compactSession = async () => {
     runtimeCompactCalled = true;
-    return { compacted: true, tokensBefore: 100, tokensAfter: 40 };
+    throw new Error('Runtime unavailable while reconnecting');
   };
   t.after(() => Object.assign(adapter, originals));
   const { sessionId } = kodaxHost.createSession({
@@ -264,10 +283,11 @@ test('Runtime-owned manual compact cannot fall back to embedded storage while Ru
 
   const result = await kodaxHost.requestCompact(sessionId);
 
-  assert.equal(result.ok, false);
-  assert.match(result.reason ?? '', /compact credential binding/i);
+  assert.equal(result.ok, true);
+  assert.equal(result.compacted, false);
+  assert.match(result.reason ?? '', /Runtime unavailable while reconnecting/i);
   assert.equal(embeddedCompactCalled, false);
-  assert.equal(runtimeCompactCalled, false);
+  assert.equal(runtimeCompactCalled, true);
 });
 
 test('createSession accepts canonical KodaX IDs for both Coder and Partner', async () => {

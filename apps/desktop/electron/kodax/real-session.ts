@@ -266,7 +266,7 @@ import { workflowController } from './workflow-controller.js';
 import { externalAgentGateway } from './external-agent-gateway.js';
 import { loadKodaxRunConfig } from './user-config.js';
 import { pushToRenderer } from '../ipc/push.js';
-import { runWithExactProviderCredential } from '../providers/credential-scope.js';
+import { runWithSpaceProviderCredentialLease } from '../providers/credential-scope.js';
 import {
   isTransientChildEvent,
   buildChildActivity,
@@ -2783,7 +2783,7 @@ export class RealKodaXSession implements ManagedSession {
           }
         } else {
           // Partner inline driver, or the explicitly selected legacy Coder rollback driver.
-          await runWithExactProviderCredential(this.provider, () =>
+          await runWithSpaceProviderCredentialLease(this.provider, () =>
             withSessionRunContext(
               {
                 sessionId: sid,

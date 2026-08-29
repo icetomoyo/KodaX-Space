@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 import type {
@@ -9,10 +10,11 @@ import type {
   RuntimeCompactSessionInput,
   RuntimeCompactSessionResult,
   RuntimeConfigPatch,
+  RuntimeCredentialBinding,
   RuntimeConversationHistory,
   RuntimeConversationHistoryBoundary,
   RuntimeConversationHistorySliceEntry,
-  RuntimeCredentialBroker,
+  RuntimeEffectiveConfigSnapshot,
   RuntimeDaemonManagementState,
   RuntimeDaemonPreflight,
   RuntimeDaemonRollbackResult,
@@ -37,6 +39,8 @@ import type {
   RuntimeSessionSettings,
   RuntimeSessionSettingsPatch,
   RuntimeSessionSummary,
+  RuntimeScopedCredentialBroker,
+  RuntimeScopedCredentialRequest,
   RuntimeStatusSnapshot,
   RuntimeDaemonStartRunInput,
   RuntimeSubmitInput,
@@ -1246,10 +1250,25 @@ interface RuntimeOwnerControl {
 
 interface SpaceCredentialLeaseBinding {
   readonly leaseId: string;
-  readonly provider: string;
+  readonly providers: readonly string[];
   readonly sessionId: string;
-  readonly runBinding: { boundRunId?: string };
-  readonly broker: RuntimeCredentialBroker;
+  readonly runBinding?: { boundRunId?: string };
+  readonly broker: RuntimeScopedCredentialBroker;
+}
+
+function isAuthorizedRunCredentialPurpose(
+  target: RuntimeScopedCredentialRequest['target'],
+  purpose: RuntimeScopedCredentialRequest['purpose'],
+): boolean {
+  switch (target.kind) {
+    case 'run':
+    case 'actor_turn':
+      return purpose !== 'workflow';
+    case 'workflow':
+      return true;
+    case 'operation':
+      return false;
+  }
 }
 
 interface RuntimeActorObservationState {
@@ -1310,6 +1329,7 @@ export interface RuntimeHostAdapterOptions {
   readonly projectionController?: RuntimeProjectionController;
   readonly push?: RuntimeProjectionPush;
   readonly credentialResolver?: RuntimeProviderCredentialResolver;
+  readonly credentialProvidersResolver?: () => Promise<readonly string[]>;
   readonly runtimeEventParser?: RuntimeEventParser;
   readonly ownerControl?: RuntimeOwnerControl;
   readonly autoModeDefaultsResolver?: () => Promise<KodaxAutoModeDefaults>;
@@ -1402,6 +1422,18 @@ function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): nu
 }
 
 function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
+  if (runtimeCapabilityVersion(runtime, 'providerCredentialBroker') < 2) {
+    throw new Error(
+      'KodaX Runtime does not support the required providerCredentialBroker v2 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
+  if (runtimeCapabilityVersion(runtime, 'effectiveConfig') < 1) {
+    throw new Error(
+      'KodaX Runtime does not support the required effectiveConfig v1 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
   if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 6) {
     throw new Error(
       'KodaX Runtime does not support the required sandboxRuntime v6 capability. ' +
@@ -1548,6 +1580,7 @@ async function createPublishedRuntime(
         readonly crashOutcomeModel?: number;
         readonly daemonOrphanExit?: number;
         readonly daemonShutdownVerification?: number;
+        readonly effectiveConfig?: number;
         readonly managedRunDurability?: number;
         readonly runtimeExitSettlement?: number;
         readonly runtimeEventCoalescing?: number;
@@ -1567,6 +1600,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     readonly crashOutcomeModel?: number;
     readonly daemonOrphanExit?: number;
     readonly daemonShutdownVerification?: number;
+    readonly effectiveConfig?: number;
     readonly liveOutputSegments?: number;
     readonly managedRunDurability?: number;
     readonly runtimeExitSettlement?: number;
@@ -1582,6 +1616,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.crashOutcomeModel === 2 ? [] : ['crashOutcomeModel v2']),
     ...(capabilities?.daemonOrphanExit === 1 ? [] : ['daemonOrphanExit v1']),
     ...(capabilities?.daemonShutdownVerification === 1 ? [] : ['daemonShutdownVerification v1']),
+    ...(capabilities?.effectiveConfig === 1 ? [] : ['effectiveConfig v1']),
     ...(capabilities?.liveOutputSegments === 1 ? [] : ['liveOutputSegments v1']),
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeExitSettlement === 2 ? [] : ['runtimeExitSettlement v2']),
@@ -1883,6 +1918,7 @@ export class RuntimeHostAdapter {
   private readonly projectionController: RuntimeProjectionController;
   private readonly push: RuntimeProjectionPush;
   private readonly credentialResolver: RuntimeProviderCredentialResolver;
+  private readonly credentialProvidersResolver: () => Promise<readonly string[]>;
   private readonly ownerControl: RuntimeOwnerControl;
   private readonly idleDaemonStop: () => Promise<SafeDaemonStopResult>;
   private readonly daemonShutdownVerifier: DaemonShutdownVerifier;
@@ -2042,6 +2078,11 @@ export class RuntimeHostAdapter {
     this.credentialResolver =
       options.credentialResolver ??
       (async (provider) => (await import('../ipc/provider.js')).readProviderCredential(provider));
+    this.credentialProvidersResolver =
+      options.credentialProvidersResolver ??
+      (options.credentialResolver
+        ? async () => []
+        : async () => (await import('../ipc/provider.js')).listKnownProviderIds());
   }
 
   selectedHost(): RuntimeHostMode {
@@ -2205,7 +2246,8 @@ export class RuntimeHostAdapter {
         interruptInput: 1,
         askUserTransport: 1,
         permissionCas: 1,
-        providerCredentialBroker: 1,
+        providerCredentialBroker: 2,
+        effectiveConfig: 1,
         runBoundHostTools: 2,
         coderOwnerFencing: 1,
         crashOutcomeModel: 2,
@@ -2671,6 +2713,7 @@ export class RuntimeHostAdapter {
       'learning:read',
       'learning:control',
       'credential:register',
+      'integration:admin',
       'host-tool:register',
       'owner:admin',
       'daemon:admin',
@@ -3546,6 +3589,7 @@ export class RuntimeHostAdapter {
   async compactSession(input: RuntimeCompactSessionInput): Promise<RuntimeCompactSessionResult> {
     const runtime = await this.requireRuntime();
     await this.assertCoderSession(runtime, input.sessionId);
+    const operationId = input.operation?.operationId ?? `space-compact-${randomUUID()}`;
     // Compaction lifecycle is Runtime-owned. Subscribe before issuing the command so the
     // renderer cannot miss the canonical start/finished/end sequence and the host does not need
     // to synthesize a second, revision-less compatibility sequence.
@@ -3556,12 +3600,31 @@ export class RuntimeHostAdapter {
       (this.localCompactionCallsBySession.get(input.sessionId) ?? 0) + 1,
     );
     let completedCompaction = false;
+    let registeredCredential:
+      | { readonly binding: RuntimeCredentialBinding; readonly leaseId: string }
+      | undefined;
     try {
-      const result = await runtime.sessions.compact(input);
+      registeredCredential =
+        !input.credential && input.provider && input.provider !== 'mock'
+          ? await this.registerCompactionCredentialLease(
+              runtime,
+              input.provider,
+              input.sessionId,
+              operationId,
+            )
+          : undefined;
+      const result = await runtime.sessions.compact({
+        ...input,
+        ...(registeredCredential ? { credential: registeredCredential.binding } : {}),
+        ...(input.provider !== 'mock' ? { operation: { ...input.operation, operationId } } : {}),
+      });
       completedCompaction = result.compacted;
       if (result.compacted) invalidatePersistedSessionCache(input.sessionId);
       return result;
     } finally {
+      if (registeredCredential) {
+        await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
+      }
       const remaining = (this.localCompactionCallsBySession.get(input.sessionId) ?? 1) - 1;
       if (remaining > 0) this.localCompactionCallsBySession.set(input.sessionId, remaining);
       else this.localCompactionCallsBySession.delete(input.sessionId);
@@ -4543,24 +4606,24 @@ export class RuntimeHostAdapter {
         state.bindingRunIds.has(run.runId) &&
         !this.credentialLeases.has(credential.leaseId)
       ) {
+        const providers = await this.resolveCredentialProviders(credential.provider);
+        const runBinding = { boundRunId: run.runId };
+        const leaseBinding: { leaseId?: string } = { leaseId: credential.leaseId };
         const binding: SpaceCredentialLeaseBinding = {
           leaseId: credential.leaseId,
-          provider: credential.provider,
+          providers,
           sessionId: run.sessionId,
-          runBinding: { boundRunId: run.runId },
-          broker: async (request) => {
-            if (
-              request.provider !== credential.provider ||
-              request.sessionId !== run.sessionId ||
-              request.runId !== run.runId
-            ) {
-              return undefined;
-            }
-            return this.credentialResolver(credential.provider);
-          },
+          runBinding,
+          broker: this.createRunCredentialBroker(
+            leaseBinding,
+            providers,
+            run.sessionId,
+            runBinding,
+            run.origin?.operationId,
+          ),
         };
         try {
-          await runtime.credentials.resume(credential.leaseId, binding.broker);
+          await runtime.credentials.resumeScoped(credential.leaseId, binding.broker);
           if (
             this.runtime === runtime &&
             this.state === 'ready' &&
@@ -5496,9 +5559,14 @@ export class RuntimeHostAdapter {
     // validate and admit the exact Session operation itself.
     await this.ensureObserved(input.sessionId);
     const provider = input.options?.provider;
+    const operationId =
+      input.operation?.operationId ??
+      (!input.credential && provider && provider !== 'mock'
+        ? `space-run-${randomUUID()}`
+        : undefined);
     const registeredCredential =
-      !input.credential && provider
-        ? await this.registerCredentialLease(runtime, provider, input.sessionId)
+      !input.credential && provider && provider !== 'mock' && operationId
+        ? await this.registerCredentialLease(runtime, provider, input.sessionId, operationId)
         : undefined;
     const credentialBinding = input.credential ?? registeredCredential?.binding;
     let handle: RuntimeRunHandle;
@@ -5506,6 +5574,7 @@ export class RuntimeHostAdapter {
       handle = await runtime.runs.start({
         ...input,
         ...(credentialBinding ? { credential: credentialBinding } : {}),
+        ...(operationId ? { operation: { ...input.operation, operationId } } : {}),
         ...(!input.hostTools && this.hostToolLeaseId
           ? { hostTools: { leaseId: this.hostToolLeaseId } }
           : {}),
@@ -5519,7 +5588,7 @@ export class RuntimeHostAdapter {
     }
     if (registeredCredential) {
       const lease = this.credentialLeases.get(registeredCredential.leaseId);
-      if (lease) lease.runBinding.boundRunId = handle.runId;
+      if (lease?.runBinding) lease.runBinding.boundRunId = handle.runId;
     }
     this.spaceOwnedRunIds.add(handle.runId);
     this.activeRuns.set(input.sessionId, handle.runId);
@@ -5626,47 +5695,123 @@ export class RuntimeHostAdapter {
     runtime: KodaXDaemonRuntime,
     provider: string,
     sessionId: string,
+    operationId: string,
   ): Promise<
     | {
-        readonly binding: { readonly leaseId: string; readonly provider: string };
+        readonly binding: RuntimeCredentialBinding;
         readonly leaseId: string;
       }
     | undefined
   > {
-    const credential = await this.credentialResolver(provider);
-    if (!credential) {
-      if (provider === 'mock') return undefined;
-      throw new Error(
-        `Provider "${provider}" has no exact Space credential; Runtime Run admission was refused.`,
-      );
-    }
-    const runBinding: SpaceCredentialLeaseBinding['runBinding'] = {};
-    const broker: RuntimeCredentialBroker = async (request) => {
-      if (request.provider !== provider || request.sessionId !== sessionId) return undefined;
-      if (runBinding.boundRunId !== undefined && request.runId !== runBinding.boundRunId) {
-        return undefined;
-      }
-      runBinding.boundRunId = request.runId;
-      return this.credentialResolver(provider);
-    };
-    const lease = await runtime.credentials.register({ providers: [provider] }, broker);
+    const providers = await this.resolveCredentialProviders(provider);
+    const runBinding: NonNullable<SpaceCredentialLeaseBinding['runBinding']> = {};
+    const leaseBinding: { leaseId?: string } = {};
+    const broker = this.createRunCredentialBroker(
+      leaseBinding,
+      providers,
+      sessionId,
+      runBinding,
+      operationId,
+    );
+    const lease = await runtime.credentials.registerScoped({ providers }, broker);
+    leaseBinding.leaseId = lease.id;
     const tracked: SpaceCredentialLeaseBinding = {
       leaseId: lease.id,
-      provider,
+      providers,
       sessionId,
       runBinding,
       broker,
     };
     this.credentialLeases.set(lease.id, tracked);
     return {
-      binding: { leaseId: lease.id, provider },
+      binding: { leaseId: lease.id, mode: 'scoped', providers },
       leaseId: lease.id,
+    };
+  }
+
+  private async registerCompactionCredentialLease(
+    runtime: KodaXDaemonRuntime,
+    provider: string,
+    sessionId: string,
+    operationId: string,
+  ): Promise<{ readonly binding: RuntimeCredentialBinding; readonly leaseId: string }> {
+    const providers = await this.resolveCredentialProviders(provider);
+    const leaseBinding: { leaseId?: string } = {};
+    const broker: RuntimeScopedCredentialBroker = async (request) => {
+      if (
+        request.leaseId !== leaseBinding.leaseId ||
+        request.sessionId !== sessionId ||
+        !providers.includes(request.provider) ||
+        request.purpose !== 'compaction' ||
+        request.target.kind !== 'operation' ||
+        request.target.operation !== 'session.compact' ||
+        request.target.operationId !== operationId
+      ) {
+        return undefined;
+      }
+      return this.credentialResolver(request.provider);
+    };
+    const lease = await runtime.credentials.registerScoped({ providers }, broker);
+    leaseBinding.leaseId = lease.id;
+    this.credentialLeases.set(lease.id, {
+      leaseId: lease.id,
+      providers,
+      sessionId,
+      broker,
+    });
+    return {
+      binding: { leaseId: lease.id, mode: 'scoped', providers },
+      leaseId: lease.id,
+    };
+  }
+
+  private async resolveCredentialProviders(primaryProvider: string): Promise<readonly string[]> {
+    return [
+      ...new Set(
+        [primaryProvider, ...(await this.credentialProvidersResolver())].filter(
+          (provider) => provider.length > 0 && provider !== 'mock',
+        ),
+      ),
+    ];
+  }
+
+  private createRunCredentialBroker(
+    leaseBinding: { leaseId?: string },
+    providers: readonly string[],
+    sessionId: string,
+    runBinding: { boundRunId?: string },
+    operationId?: string,
+  ): RuntimeScopedCredentialBroker {
+    return async (request: RuntimeScopedCredentialRequest) => {
+      if (
+        request.leaseId !== leaseBinding.leaseId ||
+        request.sessionId !== sessionId ||
+        !providers.includes(request.provider) ||
+        !isAuthorizedRunCredentialPurpose(request.target, request.purpose)
+      ) {
+        return undefined;
+      }
+      const target = request.target;
+      if (target.kind === 'run') {
+        if (operationId !== undefined && target.operationId !== operationId) return undefined;
+        if (runBinding.boundRunId !== undefined && target.runId !== runBinding.boundRunId) {
+          return undefined;
+        }
+        runBinding.boundRunId = target.runId;
+      } else if (
+        (target.kind !== 'actor_turn' && target.kind !== 'workflow') ||
+        runBinding.boundRunId === undefined ||
+        target.parentRunId !== runBinding.boundRunId
+      ) {
+        return undefined;
+      }
+      return this.credentialResolver(request.provider);
     };
   }
 
   private resumeKnownCredentialLeases(runtime: KodaXDaemonRuntime): void {
     for (const [leaseId, binding] of [...this.credentialLeases]) {
-      void runtime.credentials.resume(leaseId, binding.broker).then(
+      void runtime.credentials.resumeScoped(leaseId, binding.broker).then(
         () => {
           if (
             this.runtime === runtime &&
@@ -5915,12 +6060,16 @@ export class RuntimeHostAdapter {
         'Interrupt input must reuse the active run credential and host-tool bindings.',
       );
     }
+    const operationId =
+      input.operation?.operationId ??
+      (!isInterrupt && !input.credential ? `space-after-turn-${randomUUID()}` : undefined);
     const registeredCredential =
-      !isInterrupt && !input.credential
+      !isInterrupt && !input.credential && operationId
         ? await this.registerCredentialLease(
             runtime,
             (await runtime.runs.get(input.afterRunId)).provider,
             input.sessionId,
+            operationId,
           )
         : undefined;
     const credentialBinding = input.credential ?? registeredCredential?.binding;
@@ -5929,6 +6078,7 @@ export class RuntimeHostAdapter {
       result = await runtime.runs.submitInput({
         ...input,
         ...(!isInterrupt && credentialBinding ? { credential: credentialBinding } : {}),
+        ...(operationId ? { operation: { ...input.operation, operationId } } : {}),
         ...(!isInterrupt && !input.hostTools && this.hostToolLeaseId
           ? { hostTools: { leaseId: this.hostToolLeaseId } }
           : {}),
@@ -5944,7 +6094,7 @@ export class RuntimeHostAdapter {
       await this.revokeCredentialLease(runtime, registeredCredential.leaseId);
     } else if (result.accepted && registeredCredential) {
       const lease = this.credentialLeases.get(registeredCredential.leaseId);
-      if (lease) lease.runBinding.boundRunId = result.runId;
+      if (lease?.runBinding) lease.runBinding.boundRunId = result.runId;
       this.continuationCredentialLeases.set(result.runId, registeredCredential.leaseId);
     }
     if (result.accepted && result.delivery === 'after_turn') {
@@ -6108,6 +6258,10 @@ export class RuntimeHostAdapter {
 
   async readRuntimeConfig(): Promise<unknown> {
     return (await this.requireRuntime()).config.read();
+  }
+
+  async readEffectiveRuntimeConfig(): Promise<RuntimeEffectiveConfigSnapshot> {
+    return (await this.requireRuntime()).config.readEffective();
   }
 
   async patchRuntimeConfig(patch: RuntimeConfigPatch): Promise<unknown> {

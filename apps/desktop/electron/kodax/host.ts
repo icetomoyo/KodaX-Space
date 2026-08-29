@@ -890,13 +890,6 @@ class KodaXHost {
     if (!s) return { ok: false, reason: `session not found: ${sessionId}` };
 
     const usesRuntime = s.surface === 'code' && runtimeHostAdapter.isRuntimeSelected();
-    if (usesRuntime && s.provider !== 'mock') {
-      return {
-        ok: false,
-        reason:
-          'Manual Runtime compaction cannot safely bind this Provider credential until KodaX Runtime exposes a compact credential binding. The shared daemon environment source is not exposed to Space. Automatic threshold compaction remains credential-bound.',
-      };
-    }
     // Runtime-backed sessions emit their own revisioned lifecycle. The compatibility events below
     // are retained only for embedded/legacy sessions, which do not have a daemon observation.
     if (!usesRuntime) pushToRenderer('session.event', { kind: 'compact_start', sessionId });

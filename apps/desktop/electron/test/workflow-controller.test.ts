@@ -65,7 +65,10 @@ function fakeManager() {
     },
     startFromOptions(input) {
       started.push(input);
-      return { runId: (input as { runId?: string }).runId };
+      return {
+        runId: String((input as { runId?: string }).runId ?? ''),
+        done: Promise.resolve(undefined),
+      };
     },
     _emit(e) {
       snaps.set(e.snapshot.runId, e.snapshot);
@@ -840,24 +843,41 @@ test('generated workflow creation binds both generation and execution to its ses
         activeProvider = undefined;
       }
     }
+    async function runDetachedProviderOperation<T extends { readonly done: Promise<unknown> }>(
+      provider: string,
+      workflowRunId: string,
+      operation: () => T,
+    ): Promise<T> {
+      observed.push(`lease:${provider}`);
+      activeProvider = provider;
+      try {
+        const handle = operation();
+        assert.equal(handle.done instanceof Promise, true);
+        assert.equal(workflowRunId.startsWith('wf_'), true);
+        return handle;
+      } finally {
+        activeProvider = undefined;
+      }
+    }
     const ctrl = new WorkflowController(
       () => {},
       file,
       join(dir, 'workflow-runs'),
       runProviderOperation,
+      runDetachedProviderOperation,
     );
     const mgr = fakeManager();
     mgr.startFromOptions = (input) => {
       observed.push(`start:${activeProvider ?? 'none'}`);
       mgr.started.push(input);
-      return { runId: String(input.runId) };
+      return { runId: String(input.runId), done: Promise.resolve(undefined) };
     };
     await ctrl.init(mgr);
 
     const result = await ctrl.createGeneratedWorkflow('make it', LAUNCH_SESSION);
 
     assert.ok('runId' in result, JSON.stringify(result));
-    assert.deepEqual(observed, ['generate:mock', 'start:mock']);
+    assert.deepEqual(observed, ['generate:mock', 'lease:mock', 'start:mock']);
     await ctrl.flush();
   } finally {
     _setCodingSdkForTesting(null);

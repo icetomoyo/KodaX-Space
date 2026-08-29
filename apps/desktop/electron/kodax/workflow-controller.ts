@@ -28,7 +28,10 @@ import { externalAgentGateway } from './external-agent-gateway.js';
 import { repoIntelContextFields } from './repo-intel-gate.js';
 import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
 import { loadKodaxRunConfig } from './user-config.js';
-import { runWithExactProviderCredential } from '../providers/credential-scope.js';
+import {
+  runDetachedWorkflowWithProviderCredentialLease,
+  runWithExactProviderCredential,
+} from '../providers/credential-scope.js';
 
 // ---- SDK 形状(只取本控制器用到的子集,避免硬依赖 SDK 类型导出) ----
 interface SdkProcessSnapshot {
@@ -48,11 +51,15 @@ export interface WorkflowRunManagerLike {
     activeOnly?: boolean;
     limit?: number;
   }): readonly SdkProcessSnapshot[];
-  /** F063 启动:把已解析的 module + options 提交到进程管理器,事件经订阅回流。可能异步。 */
-  startFromOptions(input: Record<string, unknown>): unknown | Promise<unknown>;
+  /** F063 启动:把已解析的 module + options 提交到进程管理器,事件经订阅回流。 */
+  startFromOptions(input: Record<string, unknown>): {
+    readonly runId: string;
+    readonly done: Promise<unknown>;
+  };
 }
 
 type RunProviderOperation = typeof runWithExactProviderCredential;
+type RunDetachedProviderOperation = typeof runDetachedWorkflowWithProviderCredentialLease;
 
 // ---- F063 库 / 启动 类型 ----
 export interface WorkflowMetaLite {
@@ -1090,6 +1097,7 @@ export class WorkflowController {
     /** Space 自有 run base dir——F063 启动 run 与 F062 durable 控制(delete/prune)共用。 */
     private readonly runBaseDir: string = path.join(path.dirname(originsFile), 'workflow-runs'),
     private readonly runProviderOperation: RunProviderOperation = runWithExactProviderCredential,
+    private readonly runDetachedProviderOperation: RunDetachedProviderOperation = runDetachedWorkflowWithProviderCredentialLease,
   ) {}
 
   getRunBaseDir(): string {
@@ -1432,9 +1440,8 @@ export class WorkflowController {
     const runId = `wf_${randomUUID()}`;
     const runDir = path.join(this.runBaseDir, runId);
     try {
-      // await:startFromOptions 可能异步（建 run 目录/注册进程/spawn）。不 await 会让
-      // 异步错误变 unhandled rejection，且 registerOrigin 抢跑在启动确认之前（ghost run）。
-      await this.runProviderOperation(s.provider, () =>
+      // Detached Workflow 必须使用 SDK 的 derived lease；exact scope 会在 handle 返回时失效。
+      await this.runDetachedProviderOperation(s.provider, runId, () =>
         manager.startFromOptions({
           module,
           args: input.args ?? {},
@@ -1882,7 +1889,7 @@ export class WorkflowController {
     const displayName = workflowNameFromModule(input.module);
     try {
       const options = await this.launchOptions(input.session);
-      await this.runProviderOperation(input.session.provider, () =>
+      await this.runDetachedProviderOperation(input.session.provider, runId, () =>
         manager.startFromOptions({
           module: input.module,
           args: input.args ?? {},

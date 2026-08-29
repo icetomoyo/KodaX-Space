@@ -13,7 +13,7 @@
   <a href="https://github.com/icetomoyo/KodaX-Space/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/icetomoyo/KodaX-Space?style=flat-square"></a>
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-KAI--FCL-orange?style=flat-square"></a>
   <a href="https://github.com/icetomoyo/KodaX-Space/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/icetomoyo/KodaX-Space/ci.yml?style=flat-square&label=ci"></a>
-  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.96--alpha.2-2ea44f?style=flat-square">
+  <img alt="KodaX SDK" src="https://img.shields.io/badge/KodaX_SDK-0.7.96--alpha.3-2ea44f?style=flat-square">
   <img alt="platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-34495e?style=flat-square">
 </p>
 
@@ -90,7 +90,7 @@ npm run dev
 
 ## Current Source Baseline
 
-**The current source pins the published prerelease KodaX 0.7.96-alpha.2 and requires `sandboxRuntime:6`; support is never inferred from SemVer.** Root/Desktop manifests, lockfile, installed bytes, packaged ASAR, and the fully unpacked universal native bundle resolve one Registry URL and SRI. Startup and daemon gates verify the v6 trusted-text/native-Windows authority markers. Release smoke validates manifest-pinned native hashes before exercising the real command sandbox. The alpha.2 republish restores the Windows lifecycle PowerShell executable resolver that was missing from alpha.1; Space consumes the exact Registry bytes without patching them. The latest published Space release remains v0.1.45 with KodaX 0.7.95; this source alignment does not relabel that historical artifact.
+**The current source pins the published prerelease KodaX 0.7.96-alpha.3 and requires `sandboxRuntime:6`, `providerCredentialBroker:2`, and `effectiveConfig:1`; support is never inferred from SemVer.** Root/Desktop manifests, lockfile, installed bytes, packaged ASAR, and the fully unpacked universal native bundle resolve one Registry URL and SRI. Space binds keychain credentials through scoped Runtime leases for manual compaction and lazy multi-Provider Run routing, and reads effective daemon configuration with source provenance. Startup and daemon gates verify the v6 trusted-text/native-Windows authority markers. Release smoke validates manifest-pinned native hashes before exercising the real command sandbox. Alpha.3 retains the alpha.2 Windows lifecycle PowerShell resolver fix; Space consumes the exact Registry bytes without patching them. The latest published Space release remains v0.1.45 with KodaX 0.7.95; this source alignment does not relabel that historical artifact.
 
 KodaX 0.7.95 retains `conversationHistory:2`, `actorSettlementConvergence:2`, and `crashOutcomeModel:2`, and advances exit settlement to v2 and the Windows sandbox to v5. Same-boot `unconfirmed-owner` tickets are self-healing: the SDK retries process drain, ACL reset, and effect-fence release automatically, clearing the ticket only after an exact sandbox-user SID probe proves the account idle. A failed proof stays diagnosable and fail-closed for sandbox work without blocking unrelated non-sandbox work. Stale zero-byte authority locks are reclaimed through unchanged-byte/stat proof, and valid live or successor owners remain protected. The existing `sessionEventJournal:1` cursor `(sessionId, journalEpoch, seq)` remains explicit. Runtime Shell is sandbox-first; unavailable containment follows the existing permission policy without replay or a second classifier decision, and catastrophic destructive operations remain hard denials. `worker.configuredA2A` remains a KodaX CLI Worker-hosted embedded-runtime option, not a Space Settings toggle.
 
@@ -118,12 +118,12 @@ official Registry package without vendoring an SDK patch. See
 
 Released on 2026-08-24 as [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45), with package version `0.1.45` and the latest npm `@kodax-ai/kodax` release pinned exactly to `0.7.95`. The release replaces the full-screen ask-user modal with inline conversation cards, aligns to `conversationHistory:2`/`runtimeExitSettlement:2`/`sandboxRuntime:5`, and recovers admitted Runs after a daemon reconnect.
 
-| Area              | Summary                                                                                                                                                                                                           |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime contract  | Exact Registry KodaX 0.7.95 bytes; Space requires conversation-history v2, exit-settlement v2, and sandbox v5 before the corresponding lifecycle paths are used.                                                  |
-| Ask-user flow     | `ask_user_question` and guardrail prompts render as focusable inline cards in the conversation stream; a dock recall bar counts pending answers and flash-locates the head card, which accepts 1-9/Enter/Esc keys. |
-| Run recovery      | Admitted Runs resume by exact `runId` across daemon reconnects, idempotent sends keep one bubble, and history revalidation keeps the painted canonical prefix.                                                     |
-| Documentation     | README files, manuals, capability ledger, release design/readiness, regression guides, changelog, and `kodax_manual` share the v0.1.45 boundary.                                                                   |
+| Area             | Summary                                                                                                                                                                                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Runtime contract | Exact Registry KodaX 0.7.95 bytes; Space requires conversation-history v2, exit-settlement v2, and sandbox v5 before the corresponding lifecycle paths are used.                                                   |
+| Ask-user flow    | `ask_user_question` and guardrail prompts render as focusable inline cards in the conversation stream; a dock recall bar counts pending answers and flash-locates the head card, which accepts 1-9/Enter/Esc keys. |
+| Run recovery     | Admitted Runs resume by exact `runId` across daemon reconnects, idempotent sends keep one bubble, and history revalidation keeps the painted canonical prefix.                                                     |
+| Documentation    | README files, manuals, capability ledger, release design/readiness, regression guides, changelog, and `kodax_manual` share the v0.1.45 boundary.                                                                   |
 
 See [CHANGELOG.md](CHANGELOG.md), the [v0.1.45 design](docs/features/v0.1.45.md), and the [v0.1.45 release record](docs/releases/v0.1.45-release-readiness.md).
 

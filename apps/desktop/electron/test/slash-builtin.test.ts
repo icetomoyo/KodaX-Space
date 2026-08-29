@@ -78,6 +78,31 @@ async function runCmd(name: string, sessionId: string, args: string[] = []) {
   return handler!.handler({ sessionId, args });
 }
 
+function effectiveRuntimeConfig(
+  values: Readonly<Record<string, unknown>>,
+  source: 'runtime_override' | 'environment' | 'persisted' | 'unset' = 'persisted',
+  applied: boolean | Readonly<Record<string, boolean>> = true,
+) {
+  return {
+    schemaVersion: 1 as const,
+    capturedAt: '2026-08-29T00:00:00.000Z',
+    persistedConfig: { state: 'loaded' as const },
+    entries: Object.fromEntries(
+      Object.entries(values).map(([key, value]) => [
+        key,
+        {
+          present: true,
+          applied: typeof applied === 'boolean' ? applied : (applied[key] ?? true),
+          source,
+          priority: 1,
+          value,
+        },
+      ]),
+    ),
+    credentials: {},
+  };
+}
+
 function mockUserConfig(config: Record<string, unknown>): void {
   const impl: KodaxUserConfigImpl = {
     loadConfig: (() => config) as never,
@@ -209,17 +234,18 @@ test('/fallback reads and patches the selected Coder daemon config', async (t) =
   delete process.env.KODAX_FALLBACK_PROVIDERS;
   const adapter = runtimeHostAdapter as unknown as {
     isRuntimeSelected(): boolean;
-    readRuntimeConfig(): Promise<unknown>;
+    readEffectiveRuntimeConfig(): Promise<unknown>;
     patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
   };
   const originals = {
     isRuntimeSelected: adapter.isRuntimeSelected,
-    readRuntimeConfig: adapter.readRuntimeConfig,
+    readEffectiveRuntimeConfig: adapter.readEffectiveRuntimeConfig,
     patchRuntimeConfig: adapter.patchRuntimeConfig,
   };
   const patches: Record<string, unknown>[] = [];
   adapter.isRuntimeSelected = () => true;
-  adapter.readRuntimeConfig = async () => ({ fallbackProviders: ['old-provider'] });
+  adapter.readEffectiveRuntimeConfig = async () =>
+    effectiveRuntimeConfig({ fallbackProviders: 'old-provider,second-provider' }, 'environment');
   adapter.patchRuntimeConfig = async (patch) => {
     patches.push(patch);
     return {};
@@ -239,8 +265,8 @@ test('/fallback reads and patches the selected Coder daemon config', async (t) =
   const updated = await runCmd('fallback', sessionId, ['ark-coding,kimi-code']);
 
   assert.match(status.message ?? '', /old-provider/);
-  assert.match(status.message ?? '', /effective.*not exposed/i);
-  assert.match(status.message ?? '', /not available.*SDK/i);
+  assert.match(status.message ?? '', /second-provider/);
+  assert.match(status.message ?? '', /effective Runtime source: environment/i);
   assert.equal(updated.ok, true);
   assert.deepEqual(patches, [{ fallbackProviders: ['ark-coding', 'kimi-code'] }]);
 });
@@ -250,17 +276,18 @@ test('/fallback does not infer shared daemon state from the Electron environment
   process.env.KODAX_FALLBACK_PROVIDERS = 'env-provider';
   const adapter = runtimeHostAdapter as unknown as {
     isRuntimeSelected(): boolean;
-    readRuntimeConfig(): Promise<unknown>;
+    readEffectiveRuntimeConfig(): Promise<unknown>;
     patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
   };
   const originals = {
     isRuntimeSelected: adapter.isRuntimeSelected,
-    readRuntimeConfig: adapter.readRuntimeConfig,
+    readEffectiveRuntimeConfig: adapter.readEffectiveRuntimeConfig,
     patchRuntimeConfig: adapter.patchRuntimeConfig,
   };
   const patches: Record<string, unknown>[] = [];
   adapter.isRuntimeSelected = () => true;
-  adapter.readRuntimeConfig = async () => ({ fallbackProviders: ['config-provider'] });
+  adapter.readEffectiveRuntimeConfig = async () =>
+    effectiveRuntimeConfig({ fallbackProviders: ['config-provider'] }, 'persisted', false);
   adapter.patchRuntimeConfig = async (patch) => {
     patches.push(patch);
     return {};
@@ -280,8 +307,8 @@ test('/fallback does not infer shared daemon state from the Electron environment
   const update = await runCmd('fallback', sessionId, ['ark-coding']);
 
   assert.doesNotMatch(status.message ?? '', /env-provider/);
-  assert.match(status.message ?? '', /config-provider/);
-  assert.match(status.message ?? '', /effective.*not exposed/i);
+  assert.doesNotMatch(status.message ?? '', /config-provider/);
+  assert.match(status.message ?? '', /effective Runtime source: persisted \(not applied\)/i);
   assert.equal(update.ok, true);
   assert.match(update.message ?? '', /saved/i);
   assert.deepEqual(patches, [{ fallbackProviders: ['ark-coding'] }]);
@@ -294,17 +321,18 @@ test('daemon observability slash commands patch Runtime config instead of Electr
   delete process.env.KODAX_STALL_LOG;
   const adapter = runtimeHostAdapter as unknown as {
     isRuntimeSelected(): boolean;
-    readRuntimeConfig(): Promise<unknown>;
+    readEffectiveRuntimeConfig(): Promise<unknown>;
     patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
   };
   const originals = {
     isRuntimeSelected: adapter.isRuntimeSelected,
-    readRuntimeConfig: adapter.readRuntimeConfig,
+    readEffectiveRuntimeConfig: adapter.readEffectiveRuntimeConfig,
     patchRuntimeConfig: adapter.patchRuntimeConfig,
   };
   const patches: Record<string, unknown>[] = [];
   adapter.isRuntimeSelected = () => true;
-  adapter.readRuntimeConfig = async () => ({ verifierLog: true, stallLog: false });
+  adapter.readEffectiveRuntimeConfig = async () =>
+    effectiveRuntimeConfig({ verifierLog: true, stallLog: false });
   adapter.patchRuntimeConfig = async (patch) => {
     patches.push(patch);
     return {};
@@ -337,17 +365,21 @@ test('daemon observability commands do not infer shared daemon state from Electr
   process.env.KODAX_STALL_LOG = '0';
   const adapter = runtimeHostAdapter as unknown as {
     isRuntimeSelected(): boolean;
-    readRuntimeConfig(): Promise<unknown>;
+    readEffectiveRuntimeConfig(): Promise<unknown>;
     patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
   };
   const originals = {
     isRuntimeSelected: adapter.isRuntimeSelected,
-    readRuntimeConfig: adapter.readRuntimeConfig,
+    readEffectiveRuntimeConfig: adapter.readEffectiveRuntimeConfig,
     patchRuntimeConfig: adapter.patchRuntimeConfig,
   };
   const patches: Record<string, unknown>[] = [];
   adapter.isRuntimeSelected = () => true;
-  adapter.readRuntimeConfig = async () => ({ verifierLog: false, stallLog: true });
+  adapter.readEffectiveRuntimeConfig = async () =>
+    effectiveRuntimeConfig({ verifierLog: '1', stallLog: '1' }, 'environment', {
+      verifierLog: false,
+      stallLog: true,
+    });
   adapter.patchRuntimeConfig = async (patch) => {
     patches.push(patch);
     return {};
@@ -365,8 +397,12 @@ test('daemon observability commands do not infer shared daemon state from Electr
     provider: 'mock',
     surface: 'code',
   });
-  assert.match((await runCmd('verifier-log', sessionId)).message ?? '', /config: off/i);
-  assert.match((await runCmd('stall-log', sessionId)).message ?? '', /config: on/i);
+  assert.match((await runCmd('verifier-log', sessionId)).message ?? '', /log: off/i);
+  assert.match((await runCmd('stall-log', sessionId)).message ?? '', /log: on/i);
+  assert.match(
+    (await runCmd('verifier-log', sessionId)).message ?? '',
+    /effective Runtime source: environment \(not applied\)/i,
+  );
   assert.equal((await runCmd('verifier-log', sessionId, ['off'])).ok, true);
   assert.equal((await runCmd('stall-log', sessionId, ['on'])).ok, true);
   assert.deepEqual(patches, [{ verifierLog: false }, { stallLog: true }]);
@@ -381,16 +417,16 @@ test('Partner config commands stay on the embedded process when Runtime is selec
   process.env.KODAX_STALL_LOG = '1';
   const adapter = runtimeHostAdapter as unknown as {
     isRuntimeSelected(): boolean;
-    readRuntimeConfig(): Promise<unknown>;
+    readEffectiveRuntimeConfig(): Promise<unknown>;
     patchRuntimeConfig(patch: Record<string, unknown>): Promise<unknown>;
   };
   const originals = {
     isRuntimeSelected: adapter.isRuntimeSelected,
-    readRuntimeConfig: adapter.readRuntimeConfig,
+    readEffectiveRuntimeConfig: adapter.readEffectiveRuntimeConfig,
     patchRuntimeConfig: adapter.patchRuntimeConfig,
   };
   adapter.isRuntimeSelected = () => true;
-  adapter.readRuntimeConfig = async () => {
+  adapter.readEffectiveRuntimeConfig = async () => {
     throw new Error('Partner command must not read Runtime config');
   };
   adapter.patchRuntimeConfig = async () => {
