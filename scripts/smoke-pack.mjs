@@ -17,6 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { resolvePackagedLifecycleHome } from './packaged-lifecycle-home.mjs';
+import { createPackagedShellProbeToolInput } from './packaged-shell-probe.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -985,6 +986,7 @@ if (process.platform === 'win32') {
   }
 }
 const resolvePackagedLifecycleHome = ${resolvePackagedLifecycleHome.toString()};
+const createPackagedShellProbeToolInput = ${createPackagedShellProbeToolInput.toString()};
 const isolatedHome = await resolvePackagedLifecycleHome({
   platform: process.platform,
   configuredKodaXHome: process.env.KODAX_HOME?.trim(),
@@ -1053,7 +1055,10 @@ async function startProviderServer() {
                 index: 0,
                 id: 'call-space-pack-shell',
                 type: 'function',
-                function: { name: 'bash', arguments: JSON.stringify({ command }) },
+                function: {
+                  name: 'bash',
+                  arguments: JSON.stringify(createPackagedShellProbeToolInput(command)),
+                },
               }],
             },
             finish_reason: null,

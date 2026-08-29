@@ -60,6 +60,14 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   no longer invents a local context-threshold failure around completed tool
   results.
 
+### Fixed
+
+- **Reliable packaged Windows sandbox smoke** - The packaged daemon Shell probe
+  now reserves 180 seconds for sandbox authorization, command execution, and
+  Job-drain attestation instead of inheriting the SDK's 60-second interactive
+  command default. Slow or contended restricted-user startup no longer causes a
+  false packaging failure after the probe command has already executed.
+
 ## [0.1.45] - 2026-08-24
 
 ### Changed
