@@ -14,6 +14,8 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.46-alpha.1] - 2026-08-30
+
 ### Changed
 
 - **Truthful agent limits and SDK-driven reasoning efforts** - The Task Dock no

@@ -2,7 +2,7 @@
 
 > **2026-08-24 当前发布基线**：v0.1.45 使用 root/Desktop/lockfile 精确锁定的 npm Registry KodaX `0.7.95`，并要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Space 在 SDK 启动门、daemon 协商、IPC status 与打包 smoke 四个边界保持同一版本；同一 boot 的临时 `unconfirmed-owner` 自动重试，等待会在应用退出时取消。
 >
-> **2026-08-29 当前源码候选**：root/Desktop/lockfile 精确锁定 KodaX
+> **2026-08-30 当前源码候选**：Space package 统一为 `0.1.46-alpha.1`，root/Desktop/lockfile 精确锁定 KodaX
 > `0.7.96-alpha.3`。SDK 包启动门要求 `effectiveConfig:1` 与 `sandboxRuntime:6`；
 > `providerCredentialBroker:2` 由 daemon 准入 requirements 和连接后 Runtime capability
 > 两层门禁验证，因为 SDK 的静态 capability 常量不发布该字段。`dist/native` 整体位于 `app.asar.unpacked`；dependency gate
