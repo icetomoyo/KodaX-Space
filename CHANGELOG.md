@@ -14,6 +14,30 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Changed
+
+- **Credential and transcript boundaries** - Provider credential discovery now
+  lives below IPC, keeping the explicit OpenAI/Codex CLI keychain-sharing
+  policy in the credential domain and removing Provider-to-IPC dependency
+  cycles. Runtime Run and compaction brokers share one envelope-fencing helper
+  while retaining their distinct authorization policies. Transcript duplicate
+  folding now delegates merge-strategy selection to a tested pure module instead
+  of a six-level nested conditional.
+- **Focused AskUser components** - Guardrail and question presentation are split
+  from the stateful inline-card coordinator, and reasoning action validation is
+  carried by its descriptor rather than special-cased in the catalog dispatcher.
+
+### Fixed
+
+- **Safe, accessible AskUser keyboard interaction** - Enter on a focused option
+  or action button now activates that control instead of submitting the card's
+  existing answer. Dock recall focuses the guardrail Allow action rather than
+  visually focusing Block while Enter allowed. Text inputs expose truthful
+  Ctrl/Command+Enter and Escape shortcuts; selection roles, checked state,
+  descriptions, and errors are announced to assistive technology. A missing
+  renderer bridge now produces an actionable error instead of silently ignoring
+  the reply.
+
 ## [0.1.46-alpha.1] - 2026-08-30
 
 ### Changed
@@ -83,6 +107,12 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   The full-screen AskUserModal is removed.
 
 ### Fixed
+
+- **Issue 193 causal transcript recovery** - Canonical/live folding preserves
+  thinking, tools, text, and notices in causal order across bounded or mid-turn
+  history pages. Live Sidecar notices and accepted queued interrupts survive
+  renderer reload, and delivery promotes an interrupt into one user boundary
+  without hiding or duplicating it.
 
 - **KodaX 0.7.95 Registry alignment** - Root and Desktop now pin the exact
   published package and integrity. Space recognizes typed daemon disconnect

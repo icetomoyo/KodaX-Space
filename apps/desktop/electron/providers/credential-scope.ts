@@ -2,6 +2,11 @@ import type {
   ProviderCredentialAttribution,
   ProviderCredentialLeaseScope,
 } from '@kodax-ai/kodax/llm';
+import {
+  listKnownProviderIds,
+  readProviderCredential,
+  resolveCredentialProviderIds,
+} from './credentials.js';
 
 type SdkLlmModule = typeof import('@kodax-ai/kodax/llm');
 
@@ -51,21 +56,11 @@ function loadSdkLlm(): Promise<SdkLlmModule> {
 async function readSpaceProviderCredential(
   provider: string,
 ): ReturnType<ExactProviderCredentialScopeDependencies['readProviderCredential']> {
-  return (await import('../ipc/provider.js')).readProviderCredential(provider);
+  return readProviderCredential(provider);
 }
 
 async function listSpaceProviderCredentialIds(): Promise<readonly string[]> {
-  return (await import('../ipc/provider.js')).listKnownProviderIds();
-}
-
-async function resolveCredentialProviders(
-  primaryProvider: string,
-  resolver: () => Promise<readonly string[]>,
-): Promise<readonly string[]> {
-  const configuredProviders = await resolver();
-  return [...new Set([primaryProvider, ...configuredProviders])].filter(
-    (provider) => provider !== 'mock' && provider.trim().length > 0,
-  );
+  return listKnownProviderIds();
 }
 
 function createDetachedWorkflowRootScope(
@@ -125,7 +120,7 @@ export async function runWithSpaceProviderCredentialLease<T>(
 
   const sdk = await loadSdkLlm();
   const readCredential = dependencies?.readProviderCredential ?? readSpaceProviderCredential;
-  const providers = await resolveCredentialProviders(
+  const providers = await resolveCredentialProviderIds(
     primaryProvider,
     dependencies?.listProviderCredentialIds ?? listSpaceProviderCredentialIds,
   );
@@ -173,7 +168,7 @@ export async function runDetachedWorkflowWithProviderCredentialLease<
 
   const sdk = await loadSdkLlm();
   const readCredential = dependencies?.readProviderCredential ?? readSpaceProviderCredential;
-  const providers = await resolveCredentialProviders(
+  const providers = await resolveCredentialProviderIds(
     primaryProvider,
     dependencies?.listProviderCredentialIds ?? listSpaceProviderCredentialIds,
   );

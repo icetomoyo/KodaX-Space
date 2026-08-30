@@ -6,17 +6,24 @@
 //   - composer 上方停靠召回条（AskUserDockBar → BottomBar）：计数徽标 + 摘要 + 「查看」
 //     滚动定位闪光，回答完自动消失；
 //   - 键盘（仅队首卡）：1-9 选择选项、Enter 提交/允许、Esc 取消/阻止；
-//     输入框/文本域聚焦时不劫持按键。
+//     输入框/文本域保留普通输入，并显式支持 Ctrl/⌘+Enter 提交、Esc 取消。
 // 答复链路与原 modal 完全一致：askUser.reply IPC → dequeueAskUser，数据层零改动。
 // 持久化语义不变：待答在 runtime askUserBroker（观察快照重水合）、已答进 transcript、
 // 超时由 runtime expiresAt 权威控制（UI 无定时器）。
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react';
 import type {
   AskUserQuestionAnswer,
   AskUserReplyValue,
   AskUserRequestPayload,
-  AskUserSignal,
   AskUserVerdict,
 } from '@kodax-space/space-ipc-schema';
 import { ASK_USER_BACK_SIGNAL, ASK_USER_CUSTOM_INPUT_SIGNAL } from '@kodax-space/space-ipc-schema';
@@ -25,7 +32,6 @@ import { useAppStore } from '../../store/appStore.js';
 import { useI18n } from '../../i18n/I18nProvider.js';
 import { buildAskUserInteractionKey } from './ask-user-state.js';
 import { interactionsForSession } from '../session/sessionInteractionRouting.js';
-import { AutoModeDiagnosticsPanel } from '../permission/AutoModeDiagnosticsPanel.js';
 import {
   ASK_USER_ANSWER_MAX,
   allowsCustomInput,
@@ -40,23 +46,12 @@ import {
   type QuestionPayload,
   type QuestionSelectionAnswer,
 } from './askUserQuestionRules.js';
+import { resolveAskUserCardKey, resolveAskUserTextInputKey } from './askUserKeyboard.js';
+import { AskUserGuardrailContent } from './AskUserGuardrailContent.js';
+import { AskUserQuestionContent, type SelectableOption } from './AskUserQuestionContent.js';
 
-/** 数字键快选上限：1-9。超出部分仍可点击，只是不带角标。 */
-const MAX_KEYBOARD_OPTIONS = 9;
 /** 停靠条「查看」事件的窗口事件名（与 BottomBar 的 'kodax-space.focus-textarea' 同款模式）。 */
 export const FOCUS_ASK_USER_EVENT = 'kodax-space.focus-ask-user';
-
-const SEVERITY_STYLE: Record<AskUserSignal['severity'], string> = {
-  info: 'bg-info/12 text-info',
-  warning: 'bg-warn/12 text-warn',
-  danger: 'bg-danger/12 text-danger',
-};
-
-interface SelectableOption {
-  readonly value: string;
-  readonly label: string;
-  readonly description?: string;
-}
 
 function AskUserInlineCard({
   request,
@@ -81,6 +76,7 @@ function AskUserInlineCard({
   const [multiAnswers, setMultiAnswers] = useState<Readonly<Record<string, AskUserQuestionAnswer>>>(
     {},
   );
+  const errorId = useId();
   const initializedInteractionKeyRef = useRef<string | null>(null);
 
   const guardrail = isGuardrail(request) ? request : null;
@@ -125,15 +121,6 @@ function AskUserInlineCard({
     );
   }, [interactionKey, kind, question]);
 
-  const inputPreview = useMemo(() => {
-    if (!guardrail?.toolCall.input) return null;
-    try {
-      return truncate(JSON.stringify(guardrail.toolCall.input, null, 2), 2000);
-    } catch {
-      return t('askUser.unserializableInput');
-    }
-  }, [guardrail, t]);
-
   const selectHint = useMemo(() => selectionHint(question, t), [question, t]);
   const showCustomInput = kind === 'select' && allowsCustomInput(question);
 
@@ -165,7 +152,11 @@ function AskUserInlineCard({
     async (
       payload: { verdict: AskUserVerdict } | { value: AskUserReplyValue } | { cancelled: true },
     ): Promise<void> => {
-      if (!window.kodaxSpace || busy) return;
+      if (busy) return;
+      if (!window.kodaxSpace) {
+        setErr(t('askUser.bridgeUnavailable'));
+        return;
+      }
       setBusy(true);
       setErr(null);
       try {
@@ -186,7 +177,7 @@ function AskUserInlineCard({
         setBusy(false);
       }
     },
-    [request.reqId, busy, dequeue],
+    [request.reqId, busy, dequeue, t],
   );
 
   const answerGuardrail = useCallback(
@@ -245,6 +236,22 @@ function AskUserInlineCard({
   const cancelQuestion = useCallback((): void => {
     void reply({ cancelled: true });
   }, [reply]);
+
+  const onTextInputKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
+      if (busy || event.defaultPrevented || event.nativeEvent.isComposing) return;
+      const action = resolveAskUserTextInputKey({
+        key: event.key,
+        controlOrMeta: event.ctrlKey || event.metaKey,
+      });
+      if (action.type === 'ignore') return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (action.type === 'submit') submitQuestion();
+      else cancelQuestion();
+    },
+    [busy, cancelQuestion, submitQuestion],
+  );
 
   const toggleOption = useCallback(
     (value: string): void => {
@@ -307,7 +314,8 @@ function AskUserInlineCard({
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
       if (target.isContentEditable) return;
-      if (target.closest('input, textarea, select')) return;
+      if (target.closest('textarea, select, input:not([type="radio"]):not([type="checkbox"])'))
+        return;
       const ownsFocus =
         target.closest('[data-testid="conversation-stream"]') !== null ||
         target === document.body ||
@@ -315,31 +323,23 @@ function AskUserInlineCard({
       if (!ownsFocus) return;
       // M1：焦点在另一张卡内时让位——键盘只归队首卡，不能把队首卡的答复
       // 提交给用户正在交互的那张卡（全部卡可点选作答，鼠标语义归所在卡）。
-      const focusCardReq = target.closest<HTMLElement>('[data-ask-user-req]')?.dataset
-        .askUserReq;
+      const focusCardReq = target.closest<HTMLElement>('[data-ask-user-req]')?.dataset.askUserReq;
       if (focusCardReq !== undefined && focusCardReq !== request.reqId) return;
-      if (event.key === 'Enter') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        if (kind === 'guardrail') answerGuardrail('allow');
-        else submitQuestion();
-        return;
-      }
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        if (kind === 'guardrail') answerGuardrail('block');
-        else cancelQuestion();
-        return;
-      }
-      if (kind === 'select') {
-        const digit = Number(event.key);
-        if (Number.isInteger(digit) && digit >= 1 && digit <= keyboardOptions.length) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          toggleOption(keyboardOptions[digit - 1]!.value);
-        }
-      }
+      const action = resolveAskUserCardKey({
+        key: event.key,
+        kind,
+        focusedButton:
+          target.closest('button, input[type="radio"], input[type="checkbox"]') !== null,
+        keyboardOptionCount: keyboardOptions.length,
+      });
+      if (action.type === 'ignore') return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (action.type === 'allow') answerGuardrail('allow');
+      else if (action.type === 'block') answerGuardrail('block');
+      else if (action.type === 'submit') submitQuestion();
+      else if (action.type === 'cancel') cancelQuestion();
+      else toggleOption(keyboardOptions[action.index]!.value);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -392,204 +392,61 @@ function AskUserInlineCard({
             {t('askUser.pendingCount', { count: stackCount - 1 })}
           </span>
         )}
-        {isHead && kind !== 'guardrail' && (
+        {isHead && kind === 'select' && !customSelected && (
           <span className="ml-auto hidden font-mono text-[10px] text-fg-faint sm:inline">
             {t('askUser.inline.kbdHint')}
+          </span>
+        )}
+        {isHead && (kind === 'input' || customSelected) && (
+          <span className="ml-auto hidden font-mono text-[10px] text-fg-faint sm:inline">
+            {t('askUser.inline.inputKbdHint')}
           </span>
         )}
       </div>
 
       {guardrail ? (
-        <div className="space-y-3">
-          <div className="whitespace-pre-wrap text-sm leading-relaxed text-fg-primary">
-            {truncate(guardrail.reason, 1500)}
-          </div>
-
-          <AutoModeDiagnosticsPanel diagnostics={guardrail.autoModeDiagnostics} />
-
-          <div className="space-y-1">
-            <div className="font-mono text-[10px] uppercase text-fg-muted">{t('askUser.tool')}</div>
-            <div className="font-mono text-sm text-warn">{guardrail.toolCall.toolName}</div>
-          </div>
-
-          {inputPreview && (
-            <div className="space-y-1">
-              <div className="font-mono text-[10px] uppercase text-fg-muted">
-                {t('askUser.input')}
-              </div>
-              <pre className="max-h-48 overflow-x-auto rounded border border-border-default bg-surface p-2 font-mono text-xs">
-                {inputPreview}
-              </pre>
-            </div>
-          )}
-
-          {guardrail.signals && guardrail.signals.length > 0 && (
-            <div className="space-y-1">
-              <div className="font-mono text-[10px] uppercase text-fg-muted">
-                {t('askUser.signals')}
-              </div>
-              <div className="flex flex-wrap gap-1">
-                {guardrail.signals.map((sig, idx) => (
-                  <span
-                    key={`${sig.type}-${idx}`}
-                    className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${SEVERITY_STYLE[sig.severity]}`}
-                    title={sig.message}
-                  >
-                    {sig.type}
-                  </span>
-                ))}
-              </div>
-              {guardrail.signals.map((sig, idx) => (
-                <div key={`msg-${sig.type}-${idx}`} className="pl-2 text-xs text-fg-muted">
-                  · {truncate(sig.message, 200)}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => answerGuardrail('block')}
-              className="rounded bg-surface-3 px-3 py-1.5 text-xs text-fg-primary hover:bg-hover-bg disabled:opacity-50"
-            >
-              {t('askUser.blockEsc')}
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => answerGuardrail('allow')}
-              className="rounded border border-ok/50 bg-ok/15 px-3 py-1.5 text-xs font-medium text-ok hover:bg-ok/25 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {t('askUser.allowEnter')}
-            </button>
-          </div>
-        </div>
+        <AskUserGuardrailContent
+          guardrail={guardrail}
+          busy={busy}
+          error={err}
+          errorId={errorId}
+          onAnswer={answerGuardrail}
+        />
       ) : (
-        <div className="space-y-2">
-          {multi && (
-            <div className="font-mono text-[10px] text-fg-muted">
-              {multiQuestionIndex + 1}/{multi.questions.length}
-            </div>
-          )}
-          {question?.header && (
-            <div className="font-mono text-[10px] uppercase text-fg-muted">
-              {truncate(question.header, 96)}
-            </div>
-          )}
-          <div className="whitespace-pre-wrap text-sm leading-relaxed text-fg-primary">
-            {question ? truncate(question.question, 1500) : ''}
-          </div>
-          {selectHint && kind === 'select' && (
-            <div className="text-xs text-fg-muted">{selectHint}</div>
-          )}
-          {kind === 'input' ? (
-            <textarea
-              value={inputValue}
-              autoFocus={isHead}
-              disabled={busy}
-              onChange={(e) => setInputValue(e.target.value)}
-              className="min-h-24 w-full resize-y rounded border border-border-default bg-surface px-3 py-2 text-sm text-fg-primary outline-none focus:border-accent"
-            />
-          ) : (
-            <div className="space-y-2">
-              {selectableOptions.map((option) => {
-                const selected = selectedValues.has(option.value);
-                const isCustom = option.value === ASK_USER_CUSTOM_INPUT_SIGNAL;
-                const keyIndex = keyboardOptions.indexOf(option);
-                return (
-                  <button
-                    key={option.value}
-                    type="button"
-                    disabled={busy}
-                    onClick={() => toggleOption(option.value)}
-                    className={`w-full rounded border px-3 py-2 text-left transition ${
-                      selected
-                        ? 'border-ok bg-ok/12 text-fg-primary'
-                        : 'border-border-default bg-surface text-fg-primary hover:bg-hover-bg'
-                    } disabled:opacity-50`}
-                  >
-                    <div className="flex items-center gap-2">
-                      {question?.multiSelect ? (
-                        <span
-                          className={`h-3.5 w-3.5 rounded-sm border ${
-                            selected ? 'border-ok bg-ok' : 'border-fg-muted'
-                          }`}
-                        />
-                      ) : (
-                        <span
-                          className={`flex h-3.5 w-3.5 items-center justify-center rounded-full border ${
-                            selected ? 'border-ok' : 'border-fg-muted'
-                          }`}
-                        >
-                          {selected && <span className="h-1.5 w-1.5 rounded-full bg-ok" />}
-                        </span>
-                      )}
-                      <span className="text-sm font-medium">{truncate(option.label, 160)}</span>
-                      {keyIndex >= 0 && keyIndex < MAX_KEYBOARD_OPTIONS && (
-                        <span className="ml-auto rounded border border-border-default px-1 font-mono text-[10px] text-fg-muted">
-                          {keyIndex + 1}
-                        </span>
-                      )}
-                    </div>
-                    {!isCustom && option.description && (
-                      <div className="mt-1 text-xs text-fg-muted">
-                        {truncate(option.description, 300)}
-                      </div>
-                    )}
-                    {isCustom && question?.customInputPrompt && (
-                      <div className="mt-1 text-xs text-fg-muted">
-                        {truncate(question.customInputPrompt, 300)}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-              {customSelected && (
-                <textarea
-                  value={customInputValue}
-                  disabled={busy}
-                  onChange={(e) => {
-                    setCustomInputValue(e.target.value);
-                    if (err !== null && e.target.value.trim()) setErr(null);
-                  }}
-                  placeholder={question?.customInputPrompt ?? t('askUser.typeYourAnswer')}
-                  className="min-h-20 w-full resize-y rounded border border-border-default bg-surface px-3 py-2 text-sm text-fg-primary outline-none focus:border-accent"
-                />
-              )}
-            </div>
-          )}
-          {err && <div className="font-mono text-xs text-danger">{err}</div>}
-          <div className="flex items-center justify-end gap-2">
-            {multi && multiQuestionIndex > 0 && (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setMultiQuestionIndex((index) => Math.max(0, index - 1))}
-                className="rounded bg-surface-3 px-3 py-1.5 text-xs text-fg-primary hover:bg-hover-bg disabled:opacity-50"
-              >
-                {t('askUser.back')}
-              </button>
-            )}
-            <button
-              type="button"
-              disabled={busy}
-              onClick={cancelQuestion}
-              className="rounded bg-surface-3 px-3 py-1.5 text-xs text-fg-primary hover:bg-hover-bg disabled:opacity-50"
-            >
-              {t('askUser.cancelEsc')}
-            </button>
-            <button
-              type="button"
-              disabled={questionSubmitDisabled}
-              onClick={submitQuestion}
-              className="rounded border border-ok/50 bg-ok/15 px-3 py-1.5 text-xs font-medium text-ok hover:bg-ok/25 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {t('askUser.submit')}
-            </button>
-          </div>
-        </div>
+        question && (
+          <AskUserQuestionContent
+            question={question}
+            selectHint={selectHint}
+            selectableOptions={selectableOptions}
+            keyboardOptions={keyboardOptions}
+            selectedValues={selectedValues}
+            inputValue={inputValue}
+            customInputValue={customInputValue}
+            busy={busy}
+            error={err}
+            errorId={errorId}
+            submitDisabled={questionSubmitDisabled}
+            isHead={isHead}
+            multiProgress={
+              multi
+                ? {
+                    index: multiQuestionIndex,
+                    total: multi.questions.length,
+                    onBack: () => setMultiQuestionIndex((index) => Math.max(0, index - 1)),
+                  }
+                : undefined
+            }
+            onInputChange={setInputValue}
+            onCustomInputChange={(value) => {
+              setCustomInputValue(value);
+              if (err !== null && value.trim()) setErr(null);
+            }}
+            onTextInputKeyDown={onTextInputKeyDown}
+            onToggleOption={toggleOption}
+            onCancel={cancelQuestion}
+            onSubmit={submitQuestion}
+          />
+        )
       )}
     </div>
   );
@@ -599,10 +456,7 @@ function AskUserInlineCard({
 export function AskUserInlineStack(): JSX.Element | null {
   const queue = useAppStore((s) => s.askUserQueue);
   const sessionId = useAppStore((s) => s.currentSessionId);
-  const requests = useMemo(
-    () => interactionsForSession(queue, sessionId),
-    [queue, sessionId],
-  );
+  const requests = useMemo(() => interactionsForSession(queue, sessionId), [queue, sessionId]);
   const [flashingReqId, setFlashingReqId] = useState<string | null>(null);
   const flashTimerRef = useRef<number>(0);
 
@@ -621,7 +475,9 @@ export function AskUserInlineStack(): JSX.Element | null {
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             card.scrollIntoView({ block: 'center' });
-            card.querySelector<HTMLElement>('button, textarea, input')?.focus();
+            card
+              .querySelector<HTMLElement>('[data-ask-user-primary-focus], textarea, input, button')
+              ?.focus();
           });
         });
       }
@@ -659,10 +515,7 @@ export function AskUserDockBar(): JSX.Element | null {
   const { t } = useI18n();
   const queue = useAppStore((s) => s.askUserQueue);
   const sessionId = useAppStore((s) => s.currentSessionId);
-  const requests = useMemo(
-    () => interactionsForSession(queue, sessionId),
-    [queue, sessionId],
-  );
+  const requests = useMemo(() => interactionsForSession(queue, sessionId), [queue, sessionId]);
   if (requests.length === 0) return null;
   const head = requests[0]!;
   const summary =

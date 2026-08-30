@@ -34,7 +34,6 @@ import {
   deleteKey,
   getKey,
   listConfiguredAccounts,
-  hasKey,
   getBackendStatus,
 } from '../providers/keychain.js';
 import { testProvider } from '../providers/test-connection.js';
@@ -52,12 +51,17 @@ import {
   removeSpaceCustomProvider,
   updateSpaceCustomProvider,
 } from '../providers/custom-provider-mutations.js';
+import { restoreManagedProviderEnvs } from '../providers/managed-env.js';
 import {
-  externalProviderEnvValue,
-  restoreManagedProviderEnv,
-  restoreManagedProviderEnvs,
-  setManagedProviderEnv,
-} from '../providers/managed-env.js';
+  ensureProviderKeyInjected,
+  listKnownProviderIds,
+  providerCredentialSource,
+  readProviderCredential,
+  resolveProviderCredentialInfo,
+  setManagedProviderCredentialEnv,
+} from '../providers/credentials.js';
+
+export { ensureProviderKeyInjected, listKnownProviderIds, readProviderCredential };
 
 type KnownProvider = BuiltinProvider | CustomProvider | CustomProviderProbe;
 type ConfiguredSource = ProviderInfo['configuredSource'];
@@ -73,44 +77,12 @@ async function reloadCoderConfigBestEffort(context: string): Promise<void> {
   });
 }
 
-function hasNonEmptyEnvValue(v: string | undefined): boolean {
-  return typeof v === 'string' && v.trim().length > 0;
-}
-
-function hasExternalEnvKey(apiKeyEnv: string): boolean {
-  return externalProviderEnvValue(apiKeyEnv) !== undefined;
-}
-
-function trustedSharedCredentialAccounts(providerId: string, apiKeyEnv: string): readonly string[] {
-  if (apiKeyEnv !== 'OPENAI_API_KEY') return [];
-  if (providerId === 'openai') return ['codex-cli'];
-  if (providerId === 'codex-cli') return ['openai'];
-  return [];
-}
-
-function credentialSource(
-  providerId: string,
-  apiKeyEnv: string,
-  keychainAccounts: ReadonlySet<string>,
-): ConfiguredSource {
-  const hasKeychain = keychainAccounts.has(providerId);
-  const hasEnv = hasExternalEnvKey(apiKeyEnv);
-  const hasTrustedSharedKeychain = trustedSharedCredentialAccounts(providerId, apiKeyEnv).some(
-    (account) => keychainAccounts.has(account),
-  );
-  if (hasKeychain && hasEnv) return 'both';
-  if (hasKeychain) return 'keychain';
-  if (hasEnv) return 'env';
-  if (hasTrustedSharedKeychain) return 'runtime';
-  return 'none';
-}
-
 export function _credentialSourceForTesting(
   providerId: string,
   apiKeyEnv: string,
   keychainAccounts: ReadonlySet<string>,
 ): ConfiguredSource {
-  return credentialSource(providerId, apiKeyEnv, keychainAccounts);
+  return providerCredentialSource(providerId, apiKeyEnv, keychainAccounts);
 }
 
 export function _setManagedEnvForTesting(apiKeyEnv: string, value: string): void {
@@ -122,21 +94,7 @@ export function _restoreManagedEnvsForTesting(): void {
 }
 
 function setManagedEnv(apiKeyEnv: string, value: string): void {
-  const envErr = validateApiKeyEnv(apiKeyEnv);
-  if (envErr) {
-    console.warn(`[provider] refusing to inject unsafe apiKeyEnv "${apiKeyEnv}": ${envErr}`);
-    return;
-  }
-  setManagedProviderEnv(apiKeyEnv, value);
-}
-
-export async function listKnownProviderIds(): Promise<readonly string[]> {
-  await providerConfigStore.load();
-  const ids = new Set<string>();
-  for (const provider of BUILTIN_PROVIDERS) ids.add(provider.id);
-  for (const provider of providerConfigStore.listCustom()) ids.add(provider.id);
-  for (const provider of await loadKodaxCustomProviders()) ids.add(provider.id);
-  return [...ids];
+  setManagedProviderCredentialEnv(apiKeyEnv, value);
 }
 
 /** 校验 apiKey 不含会破坏 HTTP header 的字符（review C2-sec：CRLF injection）。*/
@@ -196,7 +154,7 @@ async function injectAllKeysToEnvUnlocked(): Promise<void> {
   const accounts = await listConfiguredAccounts(await listKnownProviderIds());
   const orphanAccounts: string[] = [];
   for (const acct of accounts) {
-    const info = await resolveProviderInfo(acct);
+    const info = await resolveProviderCredentialInfo(acct);
     if (!info) {
       orphanAccounts.push(acct);
       continue;
@@ -221,66 +179,12 @@ async function injectAllKeysToEnvUnlocked(): Promise<void> {
   }
   // 4) 默认 provider 的 key 最后注入一次——保证共享 env 时它胜出
   if (defaultId) {
-    const info = await resolveProviderInfo(defaultId);
+    const info = await resolveProviderCredentialInfo(defaultId);
     if (info) {
       const value = await getKey(defaultId);
       if (value) setManagedEnv(info.apiKeyEnv, value);
     }
   }
-}
-
-async function resolveProviderInfo(id: string): Promise<{ apiKeyEnv: string } | undefined> {
-  if (isBuiltinId(id)) {
-    const b = getBuiltin(id);
-    return b ? { apiKeyEnv: b.apiKeyEnv } : undefined;
-  }
-  const c = providerConfigStore.getCustom(id);
-  if (c) return { apiKeyEnv: c.apiKeyEnv };
-  const sdkCustom = (await loadKodaxCustomProviders()).find((p) => p.id === id);
-  return sdkCustom ? { apiKeyEnv: sdkCustom.apiKeyEnv } : undefined;
-}
-
-async function resolveCredentialAccountForProvider(
-  providerId: string,
-  apiKeyEnv: string,
-): Promise<string | undefined> {
-  if (await hasKey(providerId)) return providerId;
-  for (const candidateId of trustedSharedCredentialAccounts(providerId, apiKeyEnv)) {
-    if (await hasKey(candidateId)) return candidateId;
-  }
-  return undefined;
-}
-
-export async function ensureProviderKeyInjected(providerId: string): Promise<boolean> {
-  if (providerId === 'mock') return false;
-  await providerConfigStore.load();
-  const info = await resolveProviderInfo(providerId);
-  if (!info) return false;
-  const credential = await readProviderCredential(providerId);
-  if (!credential) {
-    restoreManagedProviderEnv(info.apiKeyEnv);
-    return false;
-  }
-  setManagedEnv(info.apiKeyEnv, credential);
-  return true;
-}
-
-/**
- * Main-process-only credential lookup for the daemon credential broker.
- * The value is returned only to a trusted callback and never crosses IPC.
- */
-export async function readProviderCredential(providerId: string): Promise<string | undefined> {
-  if (providerId === 'mock') return undefined;
-  await providerConfigStore.load();
-  const info = await resolveProviderInfo(providerId);
-  if (!info) return undefined;
-  const account = await resolveCredentialAccountForProvider(providerId, info.apiKeyEnv);
-  const stored = account ? await getKey(account) : undefined;
-  const external = externalProviderEnvValue(info.apiKeyEnv);
-  if (typeof stored === 'string' && hasNonEmptyEnvValue(stored)) {
-    return stored;
-  }
-  return external;
 }
 
 async function resolveKnownProvider(id: string): Promise<KnownProvider | undefined> {
@@ -315,7 +219,7 @@ export function registerProviderChannels(): void {
     // BuiltinProvider 的 apiKeyEnv / defaultModel / models 就是 SDK 的真相，
     // 不再需要每次 provider.list 调用时二次 dynamic-import SDK 取值。
     for (const b of BUILTIN_PROVIDERS) {
-      const source = credentialSource(b.id, b.apiKeyEnv, keychainAccounts);
+      const source = providerCredentialSource(b.id, b.apiKeyEnv, keychainAccounts);
       seenProviderIds.add(b.id);
       list.push({
         id: b.id,
@@ -331,7 +235,7 @@ export function registerProviderChannels(): void {
       });
     }
     for (const c of providerConfigStore.listCustom()) {
-      const source = credentialSource(c.id, c.apiKeyEnv, keychainAccounts);
+      const source = providerCredentialSource(c.id, c.apiKeyEnv, keychainAccounts);
       seenProviderIds.add(c.id);
       list.push({
         id: c.id,
@@ -354,7 +258,7 @@ export function registerProviderChannels(): void {
     }
     for (const c of await loadKodaxCustomProviders()) {
       if (seenProviderIds.has(c.id)) continue;
-      const source = credentialSource(c.id, c.apiKeyEnv, keychainAccounts);
+      const source = providerCredentialSource(c.id, c.apiKeyEnv, keychainAccounts);
       seenProviderIds.add(c.id);
       list.push({
         id: c.id,

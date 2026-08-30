@@ -15,6 +15,7 @@ export interface SpaceActionDescriptor {
   readonly planModeAllowed: boolean;
   readonly valueType: 'boolean' | 'enum' | 'string';
   readonly allowedValues?: readonly string[];
+  readonly validateValue?: (value: unknown) => boolean;
   readonly aliases: readonly string[];
 }
 
@@ -102,6 +103,7 @@ export const SPACE_ACTION_DESCRIPTORS: readonly SpaceActionDescriptor[] = [
     surfaces: ['code'],
     planModeAllowed: false,
     valueType: 'string',
+    validateValue: (value) => reasoningModeSchema.safeParse(value).success,
     aliases: ['reasoning', 'thinking', 'deep reasoning', 'effort default'],
   },
 ] as const;
@@ -119,9 +121,7 @@ export function validateSpaceActionArgs(
   args: SpaceActionArgsT,
 ): args is { value: SpaceActionValueT } {
   if (descriptor.valueType === 'boolean') return typeof args.value === 'boolean';
-  if (descriptor.id === 'settings.reasoningMode.setDefault') {
-    return reasoningModeSchema.safeParse(args.value).success;
-  }
+  if (descriptor.validateValue) return descriptor.validateValue(args.value);
   return typeof args.value === 'string' && Boolean(descriptor.allowedValues?.includes(args.value));
 }
 

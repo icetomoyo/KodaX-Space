@@ -20,6 +20,7 @@ import {
   getSpaceActionDescriptor,
   listSpaceActionDescriptors,
   validateSpaceActionArgs,
+  type SpaceActionDescriptor,
 } from '../space-control/catalog.js';
 import { SPACE_CONTROL_INVENTORY } from '../space-control/classification.js';
 
@@ -63,6 +64,16 @@ test('space action catalog filters by product surface and validates bounded valu
     }),
     false,
   );
+});
+
+test('string action validation is owned by its descriptor instead of the catalog dispatcher', () => {
+  const descriptor: SpaceActionDescriptor = {
+    ...getSpaceActionDescriptor('settings.reasoningMode.setDefault'),
+    validateValue: (value) => value === 'provider-native',
+  };
+
+  assert.equal(validateSpaceActionArgs(descriptor, { value: 'provider-native' }), true);
+  assert.equal(validateSpaceActionArgs(descriptor, { value: 'xhigh' }), false);
 });
 
 test('space control rollout gate is explicit and defaults on', () => {

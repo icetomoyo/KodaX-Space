@@ -128,6 +128,12 @@ import {
   createRuntimeStartupTiming,
   type RuntimeStartupTimingFactory,
 } from './runtime-startup-timing.js';
+import {
+  listKnownProviderIds,
+  readProviderCredential,
+  resolveCredentialProviderIds,
+} from '../providers/credentials.js';
+import { createScopedRuntimeCredentialBroker } from '../providers/runtime-credential-broker.js';
 
 export type RuntimeHostMode = 'legacy' | 'runtime';
 export type RuntimeHostState =
@@ -2075,14 +2081,10 @@ export class RuntimeHostAdapter {
       options.integrationHealthPollMs ?? (options.runtimeFactory === undefined ? 2_000 : 0);
     this.startupTimingFactory =
       options.startupTimingFactory ?? ((scope) => createRuntimeStartupTiming(scope));
-    this.credentialResolver =
-      options.credentialResolver ??
-      (async (provider) => (await import('../ipc/provider.js')).readProviderCredential(provider));
+    this.credentialResolver = options.credentialResolver ?? readProviderCredential;
     this.credentialProvidersResolver =
       options.credentialProvidersResolver ??
-      (options.credentialResolver
-        ? async () => []
-        : async () => (await import('../ipc/provider.js')).listKnownProviderIds());
+      (options.credentialResolver ? async () => [] : listKnownProviderIds);
   }
 
   selectedHost(): RuntimeHostMode {
@@ -4606,7 +4608,10 @@ export class RuntimeHostAdapter {
         state.bindingRunIds.has(run.runId) &&
         !this.credentialLeases.has(credential.leaseId)
       ) {
-        const providers = await this.resolveCredentialProviders(credential.provider);
+        const providers = await resolveCredentialProviderIds(
+          credential.provider,
+          this.credentialProvidersResolver,
+        );
         const runBinding = { boundRunId: run.runId };
         const leaseBinding: { leaseId?: string } = { leaseId: credential.leaseId };
         const binding: SpaceCredentialLeaseBinding = {
@@ -5703,7 +5708,10 @@ export class RuntimeHostAdapter {
       }
     | undefined
   > {
-    const providers = await this.resolveCredentialProviders(provider);
+    const providers = await resolveCredentialProviderIds(
+      provider,
+      this.credentialProvidersResolver,
+    );
     const runBinding: NonNullable<SpaceCredentialLeaseBinding['runBinding']> = {};
     const leaseBinding: { leaseId?: string } = {};
     const broker = this.createRunCredentialBroker(
@@ -5735,22 +5743,22 @@ export class RuntimeHostAdapter {
     sessionId: string,
     operationId: string,
   ): Promise<{ readonly binding: RuntimeCredentialBinding; readonly leaseId: string }> {
-    const providers = await this.resolveCredentialProviders(provider);
+    const providers = await resolveCredentialProviderIds(
+      provider,
+      this.credentialProvidersResolver,
+    );
     const leaseBinding: { leaseId?: string } = {};
-    const broker: RuntimeScopedCredentialBroker = async (request) => {
-      if (
-        request.leaseId !== leaseBinding.leaseId ||
-        request.sessionId !== sessionId ||
-        !providers.includes(request.provider) ||
-        request.purpose !== 'compaction' ||
-        request.target.kind !== 'operation' ||
-        request.target.operation !== 'session.compact' ||
-        request.target.operationId !== operationId
-      ) {
-        return undefined;
-      }
-      return this.credentialResolver(request.provider);
-    };
+    const broker = createScopedRuntimeCredentialBroker({
+      leaseBinding,
+      providers,
+      sessionId,
+      authorize: (request) =>
+        request.purpose === 'compaction' &&
+        request.target.kind === 'operation' &&
+        request.target.operation === 'session.compact' &&
+        request.target.operationId === operationId,
+      readCredential: this.credentialResolver,
+    });
     const lease = await runtime.credentials.registerScoped({ providers }, broker);
     leaseBinding.leaseId = lease.id;
     this.credentialLeases.set(lease.id, {
@@ -5765,16 +5773,6 @@ export class RuntimeHostAdapter {
     };
   }
 
-  private async resolveCredentialProviders(primaryProvider: string): Promise<readonly string[]> {
-    return [
-      ...new Set(
-        [primaryProvider, ...(await this.credentialProvidersResolver())].filter(
-          (provider) => provider.length > 0 && provider !== 'mock',
-        ),
-      ),
-    ];
-  }
-
   private createRunCredentialBroker(
     leaseBinding: { leaseId?: string },
     providers: readonly string[],
@@ -5782,31 +5780,29 @@ export class RuntimeHostAdapter {
     runBinding: { boundRunId?: string },
     operationId?: string,
   ): RuntimeScopedCredentialBroker {
-    return async (request: RuntimeScopedCredentialRequest) => {
-      if (
-        request.leaseId !== leaseBinding.leaseId ||
-        request.sessionId !== sessionId ||
-        !providers.includes(request.provider) ||
-        !isAuthorizedRunCredentialPurpose(request.target, request.purpose)
-      ) {
-        return undefined;
-      }
-      const target = request.target;
-      if (target.kind === 'run') {
-        if (operationId !== undefined && target.operationId !== operationId) return undefined;
-        if (runBinding.boundRunId !== undefined && target.runId !== runBinding.boundRunId) {
-          return undefined;
+    return createScopedRuntimeCredentialBroker({
+      leaseBinding,
+      providers,
+      sessionId,
+      authorize: (request) => {
+        if (!isAuthorizedRunCredentialPurpose(request.target, request.purpose)) return false;
+        const target = request.target;
+        if (target.kind === 'run') {
+          if (operationId !== undefined && target.operationId !== operationId) return false;
+          if (runBinding.boundRunId !== undefined && target.runId !== runBinding.boundRunId) {
+            return false;
+          }
+          runBinding.boundRunId = target.runId;
+          return true;
         }
-        runBinding.boundRunId = target.runId;
-      } else if (
-        (target.kind !== 'actor_turn' && target.kind !== 'workflow') ||
-        runBinding.boundRunId === undefined ||
-        target.parentRunId !== runBinding.boundRunId
-      ) {
-        return undefined;
-      }
-      return this.credentialResolver(request.provider);
-    };
+        return (
+          (target.kind === 'actor_turn' || target.kind === 'workflow') &&
+          runBinding.boundRunId !== undefined &&
+          target.parentRunId === runBinding.boundRunId
+        );
+      },
+      readCredential: this.credentialResolver,
+    });
   }
 
   private resumeKnownCredentialLeases(runtime: KodaXDaemonRuntime): void {

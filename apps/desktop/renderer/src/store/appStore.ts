@@ -75,6 +75,7 @@ import {
   mergeRuntimeActivityIntoSessions,
   mergeRuntimeSettingsIntoSessions,
 } from './runtimeSessionSettings.js';
+import { selectTranscriptProjectionMergeStrategy } from './transcriptProjection.js';
 import { pushToast, useToastStore } from './toastStore.js';
 import { translateMessage } from '../i18n/I18nProvider.js';
 import { isCancelledSessionError } from '../features/session/sessionError.js';
@@ -3559,6 +3560,57 @@ function stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
   );
 }
 
+interface DuplicateTranscriptTurnPair {
+  readonly durable: TranscriptTurnSnapshot;
+  readonly duplicate: TranscriptTurnSnapshot;
+  readonly ownerResolution?: LeadingHistoryOwnerResolution;
+  readonly openLiveAdoption?: OpenLiveAdoption;
+  readonly closedCausalAdoption?: ClosedCausalAdoption;
+}
+
+function mergeDuplicateTurnProjection(
+  pair: DuplicateTranscriptTurnPair,
+  durableSegment: readonly SessionEvent[],
+  duplicateSegment: readonly SessionEvent[],
+): SessionEvent[] {
+  const strategy = selectTranscriptProjectionMergeStrategy({
+    hasClosedCausalAdoption: pair.closedCausalAdoption !== undefined,
+    openLiveAdoptionKind: pair.openLiveAdoption?.kind,
+    ownerResolutionKind: pair.ownerResolution?.kind,
+  });
+  if (strategy === 'closed-causal' && pair.closedCausalAdoption) {
+    return mergeClosedCausalProjection(durableSegment, pair.closedCausalAdoption);
+  }
+  if (strategy === 'open-live-causal' && pair.openLiveAdoption?.kind === 'causal_merge') {
+    return mergeOrderedCausalProjection(
+      pair.openLiveAdoption.liveEvents,
+      durableSegment.find(isPromptSegmentBoundary) ??
+        pair.openLiveAdoption.liveEvents.find(isPromptSegmentBoundary),
+      pair.openLiveAdoption.match,
+    );
+  }
+  if (strategy === 'open-live' && pair.openLiveAdoption) {
+    return mergeOpenLiveTurnProjections(pair.durable, durableSegment, duplicateSegment);
+  }
+  if (
+    strategy === 'promote-open-live-owner' &&
+    pair.ownerResolution?.kind === 'promote_open_live_owner'
+  ) {
+    return mergeOrderedCausalProjection(
+      pair.ownerResolution.liveEvents,
+      durableSegment.find(isPromptSegmentBoundary) ??
+        pair.ownerResolution.liveEvents.find(isPromptSegmentBoundary),
+      pair.ownerResolution.match,
+    );
+  }
+  if (strategy === 'promote-live-owner') return [...duplicateSegment];
+  return mergeLegacyUnsegmentedTurnProjections(
+    durableSegment,
+    duplicateSegment,
+    userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
+  );
+}
+
 /**
  * Fold duplicate projections only with canonical identity. No content/timestamp heuristic is
  * allowed here: a fast, intentional repeat must remain a distinct turn even when its text and
@@ -3576,15 +3628,7 @@ function foldStrongIdentityDuplicateTurns(
   const canonicalizedLiveOwners: CanonicalizedLiveOwner[] = [];
   for (;;) {
     const turns = transcriptTurnSnapshots(nextUsers, nextEvents);
-    let pair:
-      | {
-          readonly durable: TranscriptTurnSnapshot;
-          readonly duplicate: TranscriptTurnSnapshot;
-          readonly ownerResolution?: LeadingHistoryOwnerResolution;
-          readonly openLiveAdoption?: OpenLiveAdoption;
-          readonly closedCausalAdoption?: ClosedCausalAdoption;
-        }
-      | undefined;
+    let pair: DuplicateTranscriptTurnPair | undefined;
 
     for (let duplicateIndex = 0; duplicateIndex < turns.length && !pair; duplicateIndex++) {
       const duplicate = turns[duplicateIndex]!;
@@ -3707,32 +3751,7 @@ function foldStrongIdentityDuplicateTurns(
     const promotesLiveOwner =
       pair.ownerResolution?.kind === 'promote_live_owner' ||
       pair.ownerResolution?.kind === 'promote_open_live_owner';
-    const mergedProjection =
-      pair.closedCausalAdoption !== undefined
-        ? mergeClosedCausalProjection(durableSegment, pair.closedCausalAdoption)
-        : pair.openLiveAdoption?.kind === 'causal_merge'
-          ? mergeOrderedCausalProjection(
-              pair.openLiveAdoption.liveEvents,
-              durableSegment.find(isPromptSegmentBoundary) ??
-                pair.openLiveAdoption.liveEvents.find(isPromptSegmentBoundary),
-              pair.openLiveAdoption.match,
-            )
-          : pair.openLiveAdoption !== undefined
-            ? mergeOpenLiveTurnProjections(pair.durable, durableSegment, duplicateSegment)
-            : pair.ownerResolution?.kind === 'promote_open_live_owner'
-              ? mergeOrderedCausalProjection(
-                  pair.ownerResolution.liveEvents,
-                  durableSegment.find(isPromptSegmentBoundary) ??
-                    pair.ownerResolution.liveEvents.find(isPromptSegmentBoundary),
-                  pair.ownerResolution.match,
-                )
-              : promotesLiveOwner
-                ? [...duplicateSegment]
-                : mergeLegacyUnsegmentedTurnProjections(
-                    durableSegment,
-                    duplicateSegment,
-                    userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
-                  );
+    const mergedProjection = mergeDuplicateTurnProjection(pair, durableSegment, duplicateSegment);
     const retainsOpenLiveProjection =
       pair.openLiveAdoption !== undefined ||
       pair.ownerResolution?.kind === 'promote_open_live_owner';
