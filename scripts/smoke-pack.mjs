@@ -960,7 +960,7 @@ function checkKodaxWorkersExecuteFromAsar(asarPath) {
   );
   const marker = 'KODAX_ASAR_WORKER_PROBE=';
   const probeSource = `
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -1126,9 +1126,14 @@ async function configureProbeProvider(runtime, providerBaseUrl) {
 }
 async function runDaemonShellProbe(runtime, marker) {
   pendingDaemonShellMarker = marker;
+  // Scope the probe workspace to a dedicated directory that is disjoint from
+  // the Runtime home so no derived read policy targets the SDK's protected
+  // native text state (darwin refuses such policies).
+  const daemonProbeWorkDir = path.join(homeDir, 'daemon-probe-work');
+  await mkdir(daemonProbeWorkDir, { recursive: true });
   const session = await runtime.sessions.create({
     title: 'Packaged daemon Shell probe',
-    projectPath: homeDir,
+    projectPath: daemonProbeWorkDir,
     surface: 'space-desktop',
     tag: 'code',
   });
@@ -1137,7 +1142,7 @@ async function runDaemonShellProbe(runtime, marker) {
     provider: providerName,
     model: providerModel,
     permissionMode: 'accept-edits',
-    executionCwd: homeDir,
+    executionCwd: daemonProbeWorkDir,
     shellExecution: contract,
     agentMode: 'sa',
   });
@@ -1164,8 +1169,8 @@ async function runDaemonShellProbe(runtime, marker) {
         agentMode: 'sa',
         maxIter: 2,
         context: {
-          gitRoot: homeDir,
-          executionCwd: homeDir,
+          gitRoot: daemonProbeWorkDir,
+          executionCwd: daemonProbeWorkDir,
           shellExecution: contract,
         },
       },
@@ -1312,6 +1317,11 @@ try {
   let directSandboxProbe;
   if (sandboxDoctor.ready) {
     const sandboxMarker = 'KODAX_ASAR_SANDBOX_PROBE=ok';
+    // Scope the explicit policy to a dedicated work directory that is disjoint
+    // from the Runtime home: a read policy targeting the home itself also
+    // targets the SDK's protected native text state, which darwin refuses.
+    const sandboxProbeWorkDir = path.join(homeDir, 'sandbox-probe-work');
+    await mkdir(sandboxProbeWorkDir, { recursive: true });
     const command =
       process.platform === 'win32'
         ? path.join(
@@ -1329,8 +1339,8 @@ try {
     directSandboxProbe = await runKodaXSandboxed({
       command,
       args,
-      cwd: homeDir,
-      filesystem: { allowRead: [homeDir], allowWrite: [homeDir] },
+      cwd: sandboxProbeWorkDir,
+      filesystem: { allowRead: [sandboxProbeWorkDir], allowWrite: [sandboxProbeWorkDir] },
       network: { mode: 'deny' },
       inheritEnvironment: true,
       timeoutMs: 30_000,

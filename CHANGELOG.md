@@ -47,9 +47,10 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   executable from macOS/Linux packages. A unified afterPack hook restores any
   pruned native artifact from the exact locked install before distributables
   are produced, the packaged smoke asserts the alpha.5 sandbox facade v9
-  contract it verifies, and the daemon Shell probe gets a generous cold-start
-  budget so slow first command admission cannot masquerade as a contract
-  failure.
+  contract it verifies, and the packaged daemon Shell probe gets a generous
+  cold-start budget and workspaces disjoint from the Runtime home so slow
+  admission and darwin's protected-native-state read guard cannot masquerade
+  as a contract failure.
 - **Safe, accessible AskUser keyboard interaction** - Enter on a focused option
   or action button now activates that control instead of submitting the card's
   existing answer. Dock recall focuses the guardrail Allow action rather than
