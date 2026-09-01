@@ -1978,7 +1978,6 @@ export function ConversationStreamV2(): JSX.Element {
         provider: session.provider,
         reasoningMode: session.reasoningMode,
         permissionMode: session.permissionMode,
-        autoModeEngine: session.autoModeEngine,
         agentMode: session.agentMode,
         surface: session.surface,
         title: childTitle,

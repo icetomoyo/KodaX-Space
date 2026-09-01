@@ -6,7 +6,7 @@
 
 > 当前发布精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。
 >
-> 当前源码候选为 Space `0.1.46-alpha.1`，精确锁定 KodaX `0.7.96-alpha.3`，并要求 `sandboxRuntime:6`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
+> 当前源码候选为 Space `0.1.46-alpha.1`，精确锁定 KodaX `0.7.96-alpha.5`，并要求 `sandboxRuntime:9`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
 > Windows 既有安装首次迁移可能需要用户在 Settings → Runtime 明确执行一次 Sandbox Setup；
 > 普通启动、Refresh 和工具调用不会隐式提升权限。正式发布版的 0.7.95 说明保留为历史事实。
 >
@@ -262,15 +262,17 @@ flowchart LR
 
 多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。当前发布版要求 `conversationHistory:2`、`runtimeExitSettlement:2`、`sandboxRuntime:5`、`crashOutcomeModel:2`、`daemonOrphanExit:1`、`managedRunDurability:1`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1`、`integrationConfigResilience:1`、`runtimeAutoModeGuardrail:4`、`skillLearningLoop:1`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 与 `transcriptSearch:1`；Runtime 不可用或能力不足时 Coder fail closed，不会在背后重放到 inline owner。`conversationHistory:2` 下 Space 只消费 SDK 返回的 canonical conversation 顺序与稳定身份，不按时间戳重排、不按正文猜测去重；`sandboxRuntime:5` 的过期 coordinator ticket 与已记录释放事实收敛由 SDK 独占，普通权限执行仍须取得同一个 filesystem-effect fence；`crashOutcomeModel:2` 要求 canonical Session 提交先于 managed terminal。Space 不删除锁、不按错误文本选择 native shell，也不把 Stop unknown 强制改成 idle。Partner 不受 daemon 可用性影响。
 
-Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少上述契约的长驻 daemon 会被拒绝并提示安全重启。`sandboxRuntime:5` 在 v3 containment/termination-proof 与 v4 过期票据收敛的基础上，把同一 Windows boot 内暂时无法证明的 unconfirmed-owner 交给 SDK 后台自动重试，并只在精确 SID 探针证明 sandbox 账号空闲后清除残留；只有 stale 且不持有精确 coordinator lock 的票据可恢复，精确 active lock 与结果未知的进程树继续 fail closed。`sessionEventJournal:1` 让每个 observation 使用 `(sessionId, journalEpoch, seq)` cursor，Space 在 epoch 改变时重置水位，绝不跨 Session 比较 seq。`daemonOrphanExit:1` 只在当前 host 确实启用了孤儿回收策略时出现，不能由语义版本号替代。compaction v3 会先耐久化精确 pre-compaction lineage，再缩减活动上下文；Runtime 会复用精确 checkpoint/恢复指引字节，并在命令式手动压缩前把精确 flat Session history 对齐进 lineage，使 compaction entry、first-kept pointer 与压缩后附件留在同一 active path，同时继续读取旧的无后缀 checkpoint。Space 使用 revision-bound page/chunk/search 恢复可见历史，root 与持久 child 的历史保持隔离。Coder Session 使用 KodaX 的公开 `resolveAutoModeSettings()` 解析 `engine`、classifier model、timeout 与 `speculativeWindowMs`，并把缺失值写入可修订的 Runtime 设置；`0` 是有效的 speculative window 值。未显式配置时，KodaX 0.7.95 使用首次 `45000ms`、一次重试 `90000ms`。底部会直接显示 `Auto[LLM]` 或 `Auto[RULES]`；快速连续切换按最后一次动作收敛。只有用户手动选择或持久化选择的 `Auto[RULES]` 才保持粘性，并需用 `/auto-engine llm` 显式切回。Auto v4 的 classifier 超时、Provider 错误或输出契约错误会立即重试一次；仍失败时仅对当前工具调用采用 Accept-edits 兼容回退，`engine` 继续是 `llm`，不会静默切到 Rules。Agent Home/root 控制面破坏不可授权。Runtime Shell 先尝试 sandbox；containment 无法准备且可证明命令未启动时，已授权命令按普通权限策略执行；该路径仍需共享 effect fence，不会重放命令或再次调用 classifier。Auto[rules] 会对工作区内可完整建模的编辑直接放行，对工作区外、受保护、动态或无法完整建模的效果继续请求确认；Auto[LLM] 中合法的 `decision=allow|ask` 是单次调用的最终权限决策，Space 不再用静态危险模式二次覆盖。项目内编辑、删除、移动、Git stash 及正常的全局依赖安装/卸载/升级/重装，不会仅因“是写动作”而确认；只有明确读取密钥、令牌或凭据存储，或者正常工作区域外有具体证据会破坏系统稳定性、导致其他软件不可用的异常写入，才应请求确认。Auto[LLM] 缺失 classifier model 时不请求 Provider，并走同一有界的当前调用回退，不改变 engine。输入 `/auto-denials` 可以查看当前 Runtime 版本、classifier model、timeout、speculative window 及不含提示正文的 classifier 时序/终止阶段。
+Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少必需契约的长驻 daemon 会被拒绝并提示安全重启。当前源码要求 `sandboxRuntime:9`、`runtimeAutoModeGuardrail:5` 与 `sharedSessionSettings:2`。Alpha.5 的 Windows native host 支持无机器级命令锁的并发准入、逐命令 Job/pipe/终态证据和 content-addressed native artifact 自愈；空闲旧 daemon 可安全替换，繁忙旧 daemon 保持运行并返回可恢复升级提示，未知或更新版本不会被改动。`sessionEventJournal:1` 仍按 `(sessionId, journalEpoch, seq)` 隔离 observation；compaction v3 与 revision-bound page/chunk/search 继续保护 root/child 历史边界。
+
+权限档位统一为 Plan、Edits、Auto[LLM]、Full Access。旧 `auto-in-project`、Auto Rules、engine、timeout 和 speculative window 只作为迁移输入，归一为 Auto[LLM] 后不再持久化或暴露。Auto 先尝试 sandbox；只有可证明命令尚未启动的宿主边界才进入 Exec Policy 与固定 LLM reviewer，已启动或结果不确定的命令绝不重放。Full Access 跳过 sandbox 与 Auto review，直接在宿主执行，但管理员和用户 Exec Policy 仍然生效。沙箱默认继承宿主环境，固定执行控制变量继续禁止；旧 `sandbox.envPass` 已失效，Space 不再编辑或投影它。
 
 如果 daemon 启动时发现 inline owner，Space 不删除 `~/.kodax` 试图恢复；它把可读的 owner 状态交给 KodaX 的原子 daemon-enable reconciliation。只有 SDK 证明 owner 已废弃时才允许恢复，活动、不可读或不可验证 owner 继续 fail closed。Space 关闭时保留 inline owner handle，短暂 close 失败会重试；重试耗尽会报告清理错误，而不是把 ownership fence 静默遗留。
 
-> **历史 v0.1.38/v0.1.39 说明**：本节此前任何“未配置时 classifier timeout 为 `30000ms`”的表述均已失效。KodaX 0.7.84/0.7.85 在未显式配置 timeout 时使用首次 `45000ms`、一次重试 `90000ms`；v0.1.43 使用 KodaX 0.7.92，Space 只转发用户显式配置的值。
+> **历史 v0.1.38-v0.1.45 说明**：旧版 classifier timeout/engine/window 配置不再适用于当前源码。KodaX 0.7.96 使用固定的 90 秒 reviewer deadline 和一次 180 秒重试；Space 不再暴露或转发这些旧设置。
 
 ### Runtime 失败详情
 
-当前源码候选继续接入 KodaX 0.7.96-alpha.3 的凭据安全
+当前源码候选继续接入 KodaX 0.7.96-alpha.5 的凭据安全
 `RuntimeFailureDetail`。真实 Run 失败时，错误条优先显示 SDK 固定且有界的
 `safeMessage`；展开“Runtime 失败详情”可以查看稳定 KodaX 错误码、失败阶段、
 Run/Request ID、HTTP 状态、上游短错误码、建议等待时间和上下文容量数据（仅在

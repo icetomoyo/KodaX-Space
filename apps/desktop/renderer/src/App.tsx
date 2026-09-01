@@ -90,7 +90,6 @@ export default function App(): JSX.Element {
   const invalidateSessionLiveProjection = useAppStore((s) => s.invalidateSessionLiveProjection);
   const setPendingReasoningMode = useAppStore((s) => s.setPendingReasoningMode);
   const setPendingPermissionMode = useAppStore((s) => s.setPendingPermissionMode);
-  const setPendingAutoModeEngine = useAppStore((s) => s.setPendingAutoModeEngine);
   const setPendingAgentMode = useAppStore((s) => s.setPendingAgentMode);
   const setQueueState = useAppStore((s) => s.setQueueState);
   const upsertWorkflowRun = useAppStore((s) => s.upsertWorkflowRun);
@@ -706,11 +705,6 @@ export default function App(): JSX.Element {
         else if (state.pendingPermissionMode !== null)
           patch.permissionMode = state.pendingPermissionMode;
 
-        if (defaults.autoModeEngine !== undefined)
-          setPendingAutoModeEngine(defaults.autoModeEngine);
-        else if (state.pendingAutoModeEngine !== null)
-          patch.autoModeEngine = state.pendingAutoModeEngine;
-
         if (defaults.agentMode !== undefined) setPendingAgentMode(defaults.agentMode);
         else if (state.pendingAgentMode !== null) patch.agentMode = state.pendingAgentMode;
 
@@ -723,7 +717,6 @@ export default function App(): JSX.Element {
             setRuntimeDefaults(next);
             if (next.reasoningMode !== undefined) setPendingReasoningMode(next.reasoningMode);
             if (next.permissionMode !== undefined) setPendingPermissionMode(next.permissionMode);
-            if (next.autoModeEngine !== undefined) setPendingAutoModeEngine(next.autoModeEngine);
             if (next.agentMode !== undefined) setPendingAgentMode(next.agentMode);
           })
           .catch(() => {});
@@ -920,7 +913,6 @@ export default function App(): JSX.Element {
     invalidateSessionLiveProjection,
     setPendingReasoningMode,
     setPendingPermissionMode,
-    setPendingAutoModeEngine,
     setPendingAgentMode,
     setQueueState,
     upsertWorkflowRun,

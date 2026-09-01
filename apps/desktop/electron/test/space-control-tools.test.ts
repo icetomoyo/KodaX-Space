@@ -174,7 +174,6 @@ test('space control keeps the run-owned permission mode after the Session settin
       provider: opts.provider,
       reasoningMode: opts.reasoningMode,
       permissionMode: opts.permissionMode,
-      autoModeEngine: opts.autoModeEngine ?? 'llm',
       agentMode: opts.agentMode ?? 'ama',
       surface: opts.surface ?? 'code',
       createdAt: Date.now(),

@@ -13,7 +13,6 @@ function mkSession(input: {
     provider: 'mock',
     reasoningMode: 'auto',
     permissionMode: 'accept-edits',
-    autoModeEngine: 'llm',
     agentMode: 'ama',
     surface: input.surface,
     createdAt: 1700000000000,

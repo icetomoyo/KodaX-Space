@@ -812,7 +812,6 @@ interface AppState {
   pendingProviderId: string | null;
   pendingReasoningMode: SessionMeta['reasoningMode'] | null;
   pendingPermissionMode: SessionMeta['permissionMode'] | null;
-  pendingAutoModeEngine: SessionMeta['autoModeEngine'] | null;
   /** Pending agent mode (AMA / SA)。默认 'ama'；下次 session.create 时随入参传给 main。*/
   pendingAgentMode: SessionMeta['agentMode'] | null;
   /** Pending model — 用户在右下角 picker 选的 model 名 (provider.models 之一)。
@@ -1099,7 +1098,6 @@ interface AppState {
   setPendingProviderId(id: string | null): void;
   setPendingReasoningMode(mode: SessionMeta['reasoningMode'] | null): void;
   setPendingPermissionMode(mode: SessionMeta['permissionMode'] | null): void;
-  setPendingAutoModeEngine(engine: SessionMeta['autoModeEngine'] | null): void;
   setPendingAgentMode(mode: SessionMeta['agentMode'] | null): void;
   setPendingModel(model: string | null): void;
   /** Session UX flags — 局部状态 (alpha.1 不持久化)。toggle 形 + 合并形 set 函数。*/
@@ -1192,7 +1190,6 @@ const LS_KEY_PROJECT = 'kodax-space.currentProjectPath';
 const LS_KEY_EXPANDED_PROJECTS = 'kodax-space.expandedProjects';
 const LS_KEY_PENDING_PERMISSION = 'kodax-space.pendingPermissionMode';
 const LS_KEY_PENDING_REASONING = 'kodax-space.pendingReasoningMode';
-const LS_KEY_PENDING_AUTO_ENGINE = 'kodax-space.pendingAutoModeEngine';
 const LS_KEY_PENDING_AGENT = 'kodax-space.pendingAgentMode';
 // pendingModel 是 provider-specific 字符串 (eg "anthropic/claude-opus-4-8")，
 // 不像 mode 是封闭 enum——用宽校验：非空 + 长度上限避免 LS 被改成异常长字符串。
@@ -1208,8 +1205,7 @@ const PENDING_MODEL_MAX_LEN = 256;
 const MASCOT_MODE_VALUES = ['legacy', 'sprite', 'off'] as const;
 
 // 持久化 pending* 模式时校验合法 enum 值，避免 LS 被改成非法值后崩 (typescript 编译期没法知道)
-const PERMISSION_MODE_VALUES = ['plan', 'accept-edits', 'auto'] as const;
-const AUTO_MODE_ENGINE_VALUES = ['llm', 'rules'] as const;
+const PERMISSION_MODE_VALUES = ['plan', 'accept-edits', 'auto', 'full-access'] as const;
 const AGENT_MODE_VALUES = ['ama', 'sa'] as const;
 
 function readPersistedPermissionMode(): SessionMeta['permissionMode'] | null {
@@ -1222,12 +1218,6 @@ function readPersistedReasoningMode(): SessionMeta['reasoningMode'] | null {
   const v = lsGet(LS_KEY_PENDING_REASONING);
   const parsed = reasoningModeSchema.safeParse(v);
   return parsed.success ? parsed.data : null;
-}
-function readPersistedAutoModeEngine(): SessionMeta['autoModeEngine'] | null {
-  const v = lsGet(LS_KEY_PENDING_AUTO_ENGINE);
-  return v !== null && (AUTO_MODE_ENGINE_VALUES as readonly string[]).includes(v)
-    ? (v as SessionMeta['autoModeEngine'])
-    : null;
 }
 function readPersistedAgentMode(): SessionMeta['agentMode'] | null {
   const v = lsGet(LS_KEY_PENDING_AGENT);
@@ -6059,7 +6049,6 @@ export const useAppStore = create<AppState>((set) => ({
   // 用户在 Settings / picker 切的值落 localStorage；新 session 创建时如不显式给值就用这个。
   pendingReasoningMode: readPersistedReasoningMode(),
   pendingPermissionMode: readPersistedPermissionMode(),
-  pendingAutoModeEngine: readPersistedAutoModeEngine(),
   pendingAgentMode: readPersistedAgentMode(),
   pendingModel: readPersistedModel(),
   sessionFlags: {},
@@ -8130,37 +8119,6 @@ export const useAppStore = create<AppState>((set) => ({
             next.todoDriftDismissedPendingCountBySession = restDriftPending;
           }
         }
-      } else if (event.kind === 'auto_engine_change') {
-        // FEATURE_029: auto-mode engine 切换（user manual / denial threshold / circuit breaker
-        // / bootstrap_failed）。更新 session.autoModeEngine 让 ModeSelector 立即反映；
-        // 本地 store 不持久化，重启后 main 端 list 重新拉权威值。
-        next.sessions = state.sessions.map((s) =>
-          s.sessionId === event.sessionId ? { ...s, autoModeEngine: event.engine } : s,
-        );
-        // Non-manual fallback (denial_threshold / circuit_breaker / bootstrap_failed)
-        // → 推一条持久通知。"manual" 是用户主动切换不弹。
-        if (event.reason && event.reason !== 'manual') {
-          // v0.1.4：bootstrap_failed 带 details 的话用 details 全文（含失败原因 + 排查指引）；
-          // denial_threshold / circuit_breaker 沿用 reason→label 模板。
-          let text: string;
-          if (event.reason === 'bootstrap_failed') {
-            text =
-              event.details ?? `Auto-mode bootstrap failed; engine fell back to ${event.engine}.`;
-          } else {
-            const reasonLabel =
-              event.reason === 'denial_threshold' ? 'denial threshold' : 'circuit breaker';
-            text = `Auto-mode engine fell back to ${event.engine} (${reasonLabel}).`;
-          }
-          // 用 next.notifications ?? state.notifications 作输入: 防止未来其他分支也写
-          // next.notifications 时本分支误覆盖。当前只有这一处写,fragile-defense (审查 L1)。
-          next.notifications = pushNotificationLocal(next.notifications ?? state.notifications, {
-            id: `auto-fallback:${event.sessionId}:${event.reason}`,
-            severity: event.reason === 'bootstrap_failed' ? 'error' : 'warning',
-            text,
-            sessionId: event.sessionId,
-            createdAt: Date.now(),
-          });
-        }
       } else if (event.kind === 'tool_start') {
         // F009：记 toolId → path 暂存；等 tool_result 来配对决定要不要 jump 到 diff
         // input.path 由 mock-session / real adapter 在 tool_start 时附上
@@ -9073,10 +9031,6 @@ export const useAppStore = create<AppState>((set) => ({
   setPendingPermissionMode: (mode) => {
     lsSet(LS_KEY_PENDING_PERMISSION, mode);
     set({ pendingPermissionMode: mode });
-  },
-  setPendingAutoModeEngine: (engine) => {
-    lsSet(LS_KEY_PENDING_AUTO_ENGINE, engine);
-    set({ pendingAutoModeEngine: engine });
   },
   setPendingAgentMode: (mode) => {
     lsSet(LS_KEY_PENDING_AGENT, mode);

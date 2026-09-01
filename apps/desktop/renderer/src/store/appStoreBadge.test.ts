@@ -9,7 +9,6 @@ const session = (sessionId: string) => ({
   provider: 'mock',
   reasoningMode: 'auto' as const,
   permissionMode: 'accept-edits' as const,
-  autoModeEngine: 'llm' as const,
   agentMode: 'ama' as const,
   surface: 'code' as const,
   createdAt: 1,

@@ -24,7 +24,6 @@ test('SessionRuntimeStore merges partial runtime patches', async () => {
     model: 'glm-5.2',
     thinking: true,
     permissionMode: 'auto',
-    autoModeEngine: 'rules',
   });
   await store.set('s_runtime-1', { reasoningMode: 'ultra', agentMode: 'sa' });
 
@@ -33,7 +32,6 @@ test('SessionRuntimeStore merges partial runtime patches', async () => {
     model: 'glm-5.2',
     thinking: true,
     permissionMode: 'auto',
-    autoModeEngine: 'rules',
     reasoningMode: 'ultra',
     agentMode: 'sa',
   });
@@ -143,14 +141,14 @@ test('SessionRuntimeStore ignores unsafe session ids', async () => {
 test('SessionRuntimeStore serializes concurrent partial runtime writes', async () => {
   await Promise.all([
     store.set('s_runtime-concurrent', { permissionMode: 'auto' }),
-    store.set('s_runtime-concurrent', { autoModeEngine: 'rules' }),
+    store.set('s_runtime-concurrent', { thinking: true }),
     store.set('s_runtime-concurrent', { reasoningMode: 'max' }),
     store.set('s_runtime-concurrent', { agentMode: 'sa' }),
   ]);
 
   assert.deepEqual(await store.read('s_runtime-concurrent'), {
     permissionMode: 'auto',
-    autoModeEngine: 'rules',
+    thinking: true,
     reasoningMode: 'max',
     agentMode: 'sa',
   });

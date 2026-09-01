@@ -13,9 +13,9 @@
 > root/Desktop manifest、lockfile、物理安装与打包 ASAR 必须解析到同一个正式 Registry URL/SRI。
 > v0.1.44 / KodaX 0.7.93 及更早的发布记录保持历史事实。
 
-> **2026-08-30 当前源码候选**：Space package 已统一升级到 `0.1.46-alpha.1`，root/Desktop/lockfile 已精确锁定已发布的
-> `@kodax-ai/kodax@0.7.96-alpha.3`。SDK 包门要求 `sandboxRuntime:6` 与 `effectiveConfig:1`；daemon 准入与连接后 Runtime 门额外要求 `providerCredentialBroker:2`。KodaX
-> universal native bundle 会整体解包，并在 packaged smoke 中按 manifest hash 校验；这不会
+> **2026-09-01 当前源码候选**：Space package 为 `0.1.46-alpha.1`，root/Desktop/lockfile 已精确锁定已发布的
+> `@kodax-ai/kodax@0.7.96-alpha.5`。SDK 包门要求 `sandboxRuntime:9`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2` 与 `effectiveConfig:1`；daemon 准入与连接后 Runtime 门额外要求 `providerCredentialBroker:2`。KodaX
+> universal native bundle 会整体解包，并在 packaged smoke 中按 manifest hash 校验；权限面统一为 Plan、Edits、Auto[LLM]、Full Access 四档；这不会
 > 把 v0.1.45 / KodaX 0.7.95 的正式发布记录改写成 alpha 版本。
 
 > 历史发布基线：KodaX Space [`v0.1.40`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.40)（package `0.1.40`）/ npm 正式发布的精确 KodaX `0.7.86`；历史 release 文档继续保留当时事实。
@@ -32,10 +32,9 @@ KodaX 版本号或 guardrail 版本推断。Partner 继续由 Space inline owner
 
 KodaX 0.7.95 的配置说明也已收口：核心配置仍在 `~/.kodax/config.json`，MCP、可信 Extension 路径和 A2A 分别位于 `~/.kodax/integrations/mcp.json`、`extensions.json`、`a2a.json`。Settings → Runtime 会显示三个域的来源、revision、watcher、最近 reload 和有界诊断；Runtime 对无效更新保留 last-known-good 配置，并发写冲突要求 reload 后重试。应用内 `kodax_manual` 会继承当前安装 SDK 推荐的原始底层能力主题，再叠加 Space 操作说明。当前发布版 Coder 要求 `sandboxRuntime:5`、`conversationHistory:2`、`crashOutcomeModel:2`、`actorSettlementConvergence:2` 与 `sessionEventJournal:1`，并按 `(sessionId, journalEpoch, seq)` 隔离事件水位。
 
-当前 KodaX 0.7.95 还提供 Run-scoped `sandbox.envPass`。Settings → Runtime
-可编辑变量名 allow-list；Space 将显式列表投影到所有 Coder、Partner、legacy 与 Workflow
-Run，变量值只在命令执行 host 读取。超出有界编辑器限制的 CLI 配置会完整保留并以只读方式
-显示，避免静默截断。
+当前源码采用 KodaX 0.7.96 的 sandbox-first 环境契约：命令沙箱继承宿主环境，但固定的
+KodaX/Electron 执行控制变量仍被阻止。旧 `sandbox.envPass` 输入已经失效，Space 不再提供
+编辑入口，也不会把它投影到 Coder、Partner、legacy 或 Workflow Run。
 
 ## 我想要……
 

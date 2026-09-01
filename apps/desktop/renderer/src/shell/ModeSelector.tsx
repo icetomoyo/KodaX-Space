@@ -1,4 +1,4 @@
-// ModeSelector — FEATURE_029 canonical 3 mode + auto engine 子档
+// ModeSelector — KodaX 0.7.96 canonical four permission profiles
 //
 // 对齐 KodaX REPL (ADR-005)：
 //
@@ -6,51 +6,36 @@
 //   │ Mode                Ctrl+M   │
 //   │   Plan                 1     │
 //   │   Accept edits  ✓      2     │
-//   │   Auto                 3     │
-//   │     ┌─ engine ──────────┐    │
-//   │     │ ● llm             │    │  (auto 选中时显示子菜单)
-//   │     │ ○ rules           │    │
-//   │     └───────────────────┘    │
+//   │   Auto[LLM]            3     │
+//   │   Full access          4     │
 //   └──────────────────────────────┘
 //
 // 切 mode 立即生效（main 端 broker 下次 tool call 走新短路）。
-// 切 engine 同上 — 即便当前 mode 不是 auto 也接受（下次切到 auto 时按新 engine bootstrap guardrail）。
-// Shift-Tab / Ctrl+M 循环 3 档；数字键 1/2/3 直接切。
+// Shift-Tab / Ctrl+M 循环 4 档；数字键 1/2/3/4 直接切。
 
 import { useEffect, useRef, useState } from 'react';
-import type { AutoModeEngine, PermissionMode } from '@kodax-space/space-ipc-schema';
+import type { PermissionMode } from '@kodax-space/space-ipc-schema';
 import { useAppStore } from '../store/appStore.js';
 import { pushToast } from '../store/toastStore.js';
 import { useI18n } from '../i18n/I18nProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 import { useIsStreaming } from './ActivitySpinner.js';
 
-// #14 fix: MODE_DESCRIPTIONS / ENGINE_DESCRIPTIONS / 底部说明之前硬编码中文，跟当前语言
-// 设置无关——英文界面下弹出中文 tooltip。llm/rules 是引擎配置项标识符（同 ~/.kodax/
-// auto-rules.jsonc 里的字面量），保持原样不翻译。
 const MODE_LABEL_KEYS: Record<PermissionMode, MessageKey> = {
   plan: 'mode.label.plan',
   'accept-edits': 'mode.label.acceptEdits',
   auto: 'mode.label.auto',
+  'full-access': 'mode.label.fullAccess',
 };
 
 const MODE_DESCRIPTION_KEYS: Record<PermissionMode, MessageKey> = {
   plan: 'mode.description.plan',
   'accept-edits': 'mode.description.acceptEdits',
   auto: 'mode.description.auto',
+  'full-access': 'mode.description.fullAccess',
 };
 
-const MODE_ORDER: readonly PermissionMode[] = ['plan', 'accept-edits', 'auto'];
-
-const ENGINE_LABELS: Record<AutoModeEngine, string> = {
-  llm: 'llm',
-  rules: 'rules',
-};
-
-const ENGINE_DESCRIPTION_KEYS: Record<AutoModeEngine, MessageKey> = {
-  llm: 'mode.engineDescription.llm',
-  rules: 'mode.engineDescription.rules',
-};
+const MODE_ORDER: readonly PermissionMode[] = ['plan', 'accept-edits', 'auto', 'full-access'];
 
 interface OptimisticMutationState<T> {
   acknowledged: T;
@@ -77,8 +62,7 @@ function mutationStateFor<T>(
     states.set(key, created);
     return created;
   }
-  // Store updates received while no local mutation is pending are authoritative
-  // (for example a Rules engine explicitly selected by another Runtime client).
+  // Store updates received while no local mutation is pending are authoritative.
   if (existing.pending === 0 && existing.intended !== authoritative) {
     existing.acknowledged = authoritative;
     existing.intended = authoritative;
@@ -94,15 +78,12 @@ export function ModeSelector(): JSX.Element {
   const kodaxDefaults = useAppStore((s) => s.kodaxDefaults);
   const runtimeDefaults = useAppStore((s) => s.runtimeDefaults);
   const pendingPermissionMode = useAppStore((s) => s.pendingPermissionMode);
-  const pendingAutoModeEngine = useAppStore((s) => s.pendingAutoModeEngine);
   const setPendingPermissionMode = useAppStore((s) => s.setPendingPermissionMode);
-  const setPendingAutoModeEngine = useAppStore((s) => s.setPendingAutoModeEngine);
   const setRuntimeDefaults = useAppStore((s) => s.setRuntimeDefaults);
   const session = sessions.find((x) => x.sessionId === currentSessionId);
 
   const [open, setOpen] = useState(false);
   const modeMutations = useRef(new Map<string, OptimisticMutationState<PermissionMode>>());
-  const engineMutations = useRef(new Map<string, OptimisticMutationState<AutoModeEngine>>());
   // v0.1.4：spinner 修复 —— "切 auto 时 session 还在跑"的提示从 main 端 push
   // session_error 改成 renderer 端 pushToast，避免 ActivitySpinner 误判 session 已结束
   const isStreaming = useIsStreaming();
@@ -114,13 +95,10 @@ export function ModeSelector(): JSX.Element {
     runtimeDefaults.permissionMode ??
     kodaxDefaults?.permissionMode ??
     'accept-edits';
-  const engine: AutoModeEngine =
-    session?.autoModeEngine ?? pendingAutoModeEngine ?? runtimeDefaults.autoModeEngine ?? 'llm';
   const mutationKey = session?.sessionId ?? '__next-session__';
   mutationStateFor(modeMutations.current, mutationKey, current);
-  mutationStateFor(engineMutations.current, mutationKey, engine);
 
-  // Ctrl+M 切换打开；数字键 1/2/3 切 mode；L/R 切 engine（auto 时）
+  // Ctrl+M 切换打开；数字键 1/2/3/4 切 mode。
   // Shift+Tab 循环 mode（对齐 KodaX TUI）。
   // 不再 gate 在 session 上——无 session 时也能 toggle pending mode
   useEffect(() => {
@@ -146,7 +124,7 @@ export function ModeSelector(): JSX.Element {
         return;
       }
       if (open && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
-        const idx = ['1', '2', '3'].indexOf(e.key);
+        const idx = ['1', '2', '3', '4'].indexOf(e.key);
         if (idx >= 0) {
           e.preventDefault();
           void setMode(MODE_ORDER[idx]);
@@ -160,7 +138,6 @@ export function ModeSelector(): JSX.Element {
 
   async function persistRuntimeDefaults(runtimeDefaults: {
     readonly permissionMode?: PermissionMode;
-    readonly autoModeEngine?: AutoModeEngine;
   }): Promise<void> {
     if (!window.kodaxSpace) return;
     try {
@@ -252,73 +229,7 @@ export function ModeSelector(): JSX.Element {
     await operation;
   }
 
-  async function setEngine(next: AutoModeEngine): Promise<void> {
-    const state =
-      engineMutations.current.get(mutationKey) ??
-      mutationStateFor(engineMutations.current, mutationKey, engine);
-    if (next === state.intended) return;
-    state.intended = next;
-    state.latestSequence += 1;
-    state.pending += 1;
-    const sequence = state.latestSequence;
-    setPendingAutoModeEngine(next);
-    if (session) {
-      const latestSession = useAppStore
-        .getState()
-        .sessions.find((candidate) => candidate.sessionId === session.sessionId);
-      if (latestSession) upsertSession({ ...latestSession, autoModeEngine: next });
-    }
-    void persistRuntimeDefaults({ autoModeEngine: next });
-    const operation = state.tail.then(async () => {
-      try {
-        if (session && window.kodaxSpace) {
-          const r = await window.kodaxSpace.invoke('session.setAutoModeEngine', {
-            sessionId: session.sessionId,
-            engine: next,
-          });
-          if (!r.ok) {
-            if (sequence === state.latestSequence) {
-              state.intended = state.acknowledged;
-              const latestSession = useAppStore
-                .getState()
-                .sessions.find((candidate) => candidate.sessionId === session.sessionId);
-              if (latestSession) {
-                upsertSession({ ...latestSession, autoModeEngine: state.acknowledged });
-              }
-            }
-            pushToast(r.error?.message ?? t('mode.autoEngineUpdateFailed'), 'error');
-          } else {
-            state.acknowledged = next;
-          }
-        } else {
-          state.acknowledged = next;
-        }
-      } catch (error) {
-        if (sequence === state.latestSequence) {
-          state.intended = state.acknowledged;
-          const latestSession = useAppStore
-            .getState()
-            .sessions.find((candidate) => candidate.sessionId === session?.sessionId);
-          if (latestSession) {
-            upsertSession({ ...latestSession, autoModeEngine: state.acknowledged });
-          }
-        }
-        pushToast(
-          error instanceof Error ? error.message : t('mode.autoEngineUpdateFailed'),
-          'error',
-        );
-      } finally {
-        state.pending = Math.max(0, state.pending - 1);
-      }
-    });
-    state.tail = operation;
-    await operation;
-  }
-
-  const baseLabel =
-    current === 'auto'
-      ? `${t('mode.label.auto')}[${ENGINE_LABELS[engine].toUpperCase()}]`
-      : t(MODE_LABEL_KEYS[current]);
+  const baseLabel = current === 'auto' ? 'Auto[LLM]' : t(MODE_LABEL_KEYS[current]);
   // 无 session 时这个选择会直接用于即将创建的会话，所以仍显示普通模式名；
   // 附加“(next) / 下次”会让用户误以为它不会对即将发送的首条消息生效。
   const statusLabel = baseLabel;
@@ -369,33 +280,6 @@ export function ModeSelector(): JSX.Element {
             </button>
           ))}
 
-          {current === 'auto' && (
-            <div className="border-t border-border-default mt-1 pt-1">
-              <div className="px-3 py-1 text-fg-muted text-[11px] uppercase tracking-wider">
-                {t('mode.autoEngineHeader')}
-              </div>
-              {(['llm', 'rules'] as const).map((eng) => (
-                <button
-                  key={eng}
-                  type="button"
-                  onClick={() => void setEngine(eng)}
-                  className={`w-full text-left px-3 py-1 hover:bg-hover-bg flex items-center gap-2 ${
-                    engine === eng ? 'text-fg-primary' : 'text-fg-secondary'
-                  }`}
-                  title={t(ENGINE_DESCRIPTION_KEYS[eng])}
-                >
-                  <span className="flex-1">{ENGINE_LABELS[eng]}</span>
-                  {engine === eng && (
-                    <span className="text-ok" aria-hidden>
-                      ✓
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* 底部说明：Space Auto = KodaX guardrail；Claude Desktop "Bypass" 没有 1:1 对应 */}
           <div className="border-t border-border-default mt-1 pt-1 px-3 py-1 text-[11px] text-fg-muted leading-tight">
             {t('mode.footer')}
           </div>

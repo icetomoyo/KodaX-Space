@@ -16,6 +16,16 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
+- **KodaX 0.7.96-alpha.5 permission and sandbox alignment** - Root and Desktop
+  now pin the exact published alpha.5 Registry package and require
+  `sandboxRuntime:9`, `runtimeAutoModeGuardrail:5`, and
+  `sharedSessionSettings:2`. Space exposes Plan, Edits, Auto[LLM], and Full
+  Access across IPC, persistence, slash commands, Runtime projection, and the
+  renderer. Legacy Auto Rules/engine/timing and `sandbox.envPass` controls are
+  removed or normalized away. Auto is sandbox-first; Full Access runs directly
+  on the host while remaining subject to Exec Policy. Startup, daemon admission,
+  compatibility probes, and packaged smoke now verify the alpha.5 Windows
+  concurrency, native self-healing, and version-safe daemon boundary.
 - **Credential and transcript boundaries** - Provider credential discovery now
   lives below IPC, keeping the explicit OpenAI/Codex CLI keychain-sharing
   policy in the credential domain and removing Provider-to-IPC dependency

@@ -37,7 +37,6 @@ export function SessionList(): JSX.Element {
   const runtimeDefaults = useAppStore((s) => s.runtimeDefaults);
   const pendingReasoningMode = useAppStore((s) => s.pendingReasoningMode);
   const pendingPermissionMode = useAppStore((s) => s.pendingPermissionMode);
-  const pendingAutoModeEngine = useAppStore((s) => s.pendingAutoModeEngine);
   const pendingAgentMode = useAppStore((s) => s.pendingAgentMode);
   const [creating, setCreating] = useState<boolean>(false);
 
@@ -121,9 +120,6 @@ export function SessionList(): JSX.Element {
       ...(pendingPermissionMode !== null && pendingPermissionMode !== runtimeDefaults.permissionMode
         ? { permissionMode: pendingPermissionMode }
         : {}),
-      ...(pendingAutoModeEngine !== null && pendingAutoModeEngine !== runtimeDefaults.autoModeEngine
-        ? { autoModeEngine: pendingAutoModeEngine }
-        : {}),
       ...(pendingAgentMode !== null && pendingAgentMode !== runtimeDefaults.agentMode
         ? { agentMode: pendingAgentMode }
         : {}),
@@ -161,7 +157,6 @@ export function SessionList(): JSX.Element {
         ...(model ? { model } : {}),
         reasoningMode: result.data.reasoningMode,
         permissionMode: result.data.permissionMode,
-        autoModeEngine: result.data.autoModeEngine,
         agentMode: result.data.agentMode,
         surface: currentSurface,
         title: undefined,

@@ -456,9 +456,7 @@ const observation = {
       effort: 'high',
       thinking: true,
       agentMode: 'ama',
-      autoModeEngine: 'rules',
       autoModeClassifierModel: 'fast-classifier',
-      autoModeTimeoutMs: 12_000,
     },
   },
   runs: [running, queued],
@@ -622,9 +620,7 @@ test('atomic observation maps run, draft, tool, Todo, and interaction truth', ()
       effort: 'high',
       thinking: true,
       agentMode: 'ama',
-      autoModeEngine: 'rules',
       autoModeClassifierModel: 'fast-classifier',
-      autoModeTimeoutMs: 12_000,
     },
   });
   assert.equal(projection.managedTask?.phase, 'verifying');

@@ -42,7 +42,6 @@ test('resolveSessionCreateInputs prefers configured pending provider over defaul
     pendingProviderId: 'pending-provider',
     pendingReasoningMode: 'quick',
     pendingPermissionMode: 'accept-edits',
-    pendingAutoModeEngine: 'rules',
     pendingAgentMode: 'sa',
     pendingModel: 'pending-fast',
   });
@@ -51,12 +50,10 @@ test('resolveSessionCreateInputs prefers configured pending provider over defaul
   assert.equal(out.model, 'pending-fast');
   assert.equal(out.reasoningMode, 'quick');
   assert.equal(out.permissionMode, 'accept-edits');
-  assert.equal(out.autoModeEngine, 'rules');
   assert.equal(out.agentMode, 'sa');
   assert.deepEqual(out.runtimeOverrides, {
     reasoningMode: 'quick',
     permissionMode: 'accept-edits',
-    autoModeEngine: 'rules',
     agentMode: 'sa',
   });
 });
@@ -80,7 +77,6 @@ test('resolveSessionCreateInputs skips unconfigured candidates and avoids mock f
     pendingProviderId: 'pending-provider',
     pendingReasoningMode: null,
     pendingPermissionMode: null,
-    pendingAutoModeEngine: null,
     pendingAgentMode: null,
     pendingModel: 'kodax-default-model',
   });
@@ -89,7 +85,6 @@ test('resolveSessionCreateInputs skips unconfigured candidates and avoids mock f
   assert.equal(out.model, 'real-default');
   assert.equal(out.reasoningMode, 'auto');
   assert.equal(out.permissionMode, 'accept-edits');
-  assert.equal(out.autoModeEngine, 'llm');
   assert.equal(out.agentMode, 'ama');
   assert.deepEqual(out.runtimeOverrides, {});
 });
@@ -109,20 +104,17 @@ test('resolveSessionCreateInputs does not turn hydrated Space defaults into expl
     spaceRuntimeDefaults: {
       reasoningMode: 'quick',
       permissionMode: 'auto',
-      autoModeEngine: 'rules',
       agentMode: 'sa',
     },
     pendingProviderId: null,
     pendingReasoningMode: 'quick',
     pendingPermissionMode: 'auto',
-    pendingAutoModeEngine: 'rules',
     pendingAgentMode: 'sa',
     pendingModel: null,
   });
 
   assert.equal(out.reasoningMode, 'quick');
   assert.equal(out.permissionMode, 'auto');
-  assert.equal(out.autoModeEngine, 'rules');
   assert.equal(out.agentMode, 'sa');
   assert.deepEqual(out.runtimeOverrides, {});
 });
@@ -142,7 +134,6 @@ test('resolveSessionCreateInputs ignores stale pending model from another provid
     pendingProviderId: null,
     pendingReasoningMode: null,
     pendingPermissionMode: null,
-    pendingAutoModeEngine: null,
     pendingAgentMode: null,
     pendingModel: 'other-model',
   });
@@ -151,7 +142,7 @@ test('resolveSessionCreateInputs ignores stale pending model from another provid
   assert.equal(out.model, 'space-default-model');
 });
 
-test('resolveSessionCreateInputs reflects the KodaX Auto LLM engine when Space has no override', () => {
+test('resolveSessionCreateInputs accepts KodaX full-access as a canonical default', () => {
   const out = resolveSessionCreateInputs({
     projectRoot: '/repo',
     providers: [provider('kodax-default', true, 'kodax-model')],
@@ -159,18 +150,16 @@ test('resolveSessionCreateInputs reflects the KodaX Auto LLM engine when Space h
     kodaxDefaults: {
       provider: 'kodax-default',
       model: 'kodax-model',
-      autoModeEngine: 'rules',
-      autoModeTimeoutMs: 20_000,
+      permissionMode: 'full-access',
       customProvidersCount: 0,
     },
     pendingProviderId: null,
     pendingReasoningMode: null,
     pendingPermissionMode: null,
-    pendingAutoModeEngine: null,
     pendingAgentMode: null,
     pendingModel: null,
   });
 
-  assert.equal(out.autoModeEngine, 'rules');
+  assert.equal(out.permissionMode, 'full-access');
   assert.deepEqual(out.runtimeOverrides, {});
 });

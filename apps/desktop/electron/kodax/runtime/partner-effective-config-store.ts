@@ -14,7 +14,7 @@ import { getSpaceDataDir } from '../data-paths.js';
 
 const MAX_CONFIG_BYTES = 32 * 1024;
 const TRANSIENT_INSTALL_ALIAS_RETRIES = 4;
-const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto']);
+const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto', 'full-access']);
 const autoModeEngineSchema = z.enum(['llm', 'rules']);
 const agentModeSchema = z.preprocess(
   (value) => (value === 'amaw' || value === 'ama-workflow' ? 'ama' : value),
@@ -27,11 +27,13 @@ const partnerEffectiveConfigSchema = z
     model: z.string().min(1).max(256).optional(),
     reasoningMode: reasoningModeSchema,
     permissionMode: permissionModeSchema,
-    autoModeEngine: autoModeEngineSchema,
+    /** Legacy input retained only so existing snapshots can be rewritten without it. */
+    autoModeEngine: autoModeEngineSchema.optional(),
     agentMode: agentModeSchema,
     toolPolicyId: z.string().min(1).max(128),
   })
-  .strict();
+  .strict()
+  .transform(({ autoModeEngine: _legacyAutoModeEngine, ...effective }) => effective);
 
 const partnerEffectiveConfigSnapshotSchema = z
   .object({
@@ -65,7 +67,7 @@ type FileRead =
   | {
       readonly kind: 'valid';
       readonly snapshot: PartnerEffectiveConfigSnapshot;
-      readonly needsAgentModeMigration: boolean;
+      readonly needsSettingsMigration: boolean;
       readonly hash: string;
     };
 
@@ -115,6 +117,17 @@ function hasRetiredAgentMode(raw: unknown): boolean {
   if (!effective || typeof effective !== 'object' || Array.isArray(effective)) return false;
   const agentMode = (effective as Record<string, unknown>).agentMode;
   return agentMode === 'amaw' || agentMode === 'ama-workflow';
+}
+
+function hasRetiredAutoModeSettings(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const effective = (raw as Record<string, unknown>).effective;
+  return Boolean(
+    effective &&
+      typeof effective === 'object' &&
+      !Array.isArray(effective) &&
+      Object.prototype.hasOwnProperty.call(effective, 'autoModeEngine'),
+  );
 }
 
 /**
@@ -226,8 +239,8 @@ export class PartnerEffectiveConfigStore {
       this.#read(this.#lastKnownGoodPath, 'last-known-good'),
     ]);
     const [primary, backup] = await Promise.all([
-      this.#migrateRetiredAgentMode(this.#primaryPath, 'primary', readPrimary),
-      this.#migrateRetiredAgentMode(this.#lastKnownGoodPath, 'last-known-good', readBackup),
+      this.#migrateRetiredSettings(this.#primaryPath, 'primary', readPrimary),
+      this.#migrateRetiredSettings(this.#lastKnownGoodPath, 'last-known-good', readBackup),
     ]);
 
     if (primary.kind === 'valid') {
@@ -308,12 +321,12 @@ export class PartnerEffectiveConfigStore {
     );
   }
 
-  async #migrateRetiredAgentMode(
+  async #migrateRetiredSettings(
     filePath: string,
     label: string,
     state: FileRead,
   ): Promise<FileRead> {
-    if (state.kind !== 'valid' || !state.needsAgentModeMigration) return state;
+    if (state.kind !== 'valid' || !state.needsSettingsMigration) return state;
     try {
       await replaceFileIfUnchanged(
         filePath,
@@ -324,14 +337,14 @@ export class PartnerEffectiveConfigStore {
       );
     } catch (error) {
       const latest = await this.#read(filePath, label);
-      if (latest.kind === 'valid' && !latest.needsAgentModeMigration) return latest;
-      throw new Error(`Partner effective config ${label} agent-mode migration failed.`, {
+      if (latest.kind === 'valid' && !latest.needsSettingsMigration) return latest;
+      throw new Error(`Partner effective config ${label} settings migration failed.`, {
         cause: error,
       });
     }
     const migrated = await this.#read(filePath, label);
-    if (migrated.kind !== 'valid' || migrated.needsAgentModeMigration) {
-      throw new Error(`Partner effective config ${label} agent-mode migration was not durable.`);
+    if (migrated.kind !== 'valid' || migrated.needsSettingsMigration) {
+      throw new Error(`Partner effective config ${label} settings migration was not durable.`);
     }
     return migrated;
   }
@@ -394,7 +407,8 @@ export class PartnerEffectiveConfigStore {
       return {
         kind: 'valid',
         snapshot: freezeSnapshot(parsed.data),
-        needsAgentModeMigration: hasRetiredAgentMode(decoded),
+        needsSettingsMigration:
+          hasRetiredAgentMode(decoded) || hasRetiredAutoModeSettings(decoded),
         hash: sha256(bytes),
       };
     } finally {

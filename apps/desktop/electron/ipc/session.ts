@@ -951,7 +951,6 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         explicit: {
           reasoningMode: input.reasoningMode,
           permissionMode: input.permissionMode,
-          autoModeEngine: input.autoModeEngine,
           agentMode: input.agentMode,
         },
       });
@@ -965,7 +964,6 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
         reasoningMode: runtimeDefaults.reasoningMode,
         permissionMode: runtimeDefaults.permissionMode,
-        autoModeEngine: runtimeDefaults.autoModeEngine,
         agentMode: runtimeDefaults.agentMode,
         // F045: 工作面（Coder / Partner）。缺省 'code'。host 落盘成 SDK session tag。
         surface: input.surface,
@@ -995,7 +993,6 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
         createdAt,
         reasoningMode: runtimeDefaults.reasoningMode,
         permissionMode: runtimeDefaults.permissionMode,
-        autoModeEngine: runtimeDefaults.autoModeEngine,
         agentMode: runtimeDefaults.agentMode,
       };
     } finally {
@@ -1245,7 +1242,6 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
             provider: item.provider,
             reasoningMode: item.reasoningMode,
             permissionMode: item.permissionMode,
-            autoModeEngine: item.autoModeEngine,
             agentMode: item.agentMode,
             surface: item.surface,
             title: item.title,
@@ -1288,7 +1284,6 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
           provider: identity.provider,
           reasoningMode: persistedRuntime?.reasoningMode ?? baseRuntimeDefaults.reasoningMode,
           permissionMode: persistedRuntime?.permissionMode ?? baseRuntimeDefaults.permissionMode,
-          autoModeEngine: persistedRuntime?.autoModeEngine ?? baseRuntimeDefaults.autoModeEngine,
           agentMode: persistedRuntime?.agentMode ?? baseRuntimeDefaults.agentMode,
           // F045: 真值——来自 SDK summary.tag 反推（host.listMerged 已派生），非占位。
           surface: item.surface,
@@ -1354,19 +1349,6 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
     runWithCoderAdmission(options, async () => {
       const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
         kodaxHost.setPermissionMode(input.sessionId, input.mode),
-      );
-      return { ok };
-    }),
-  );
-
-  // session.setAutoModeEngine — FEATURE_029
-  // 切 auto mode 子档 engine ('llm' | 'rules')。即便当前 mode 不是 'auto' 也接受
-  // (用户先选 engine 再切 auto 是合法路径)。Daemon Coder 的下一次具体 tool call 即读取
-  // 新 engine；embedded / Partner / legacy 从下一轮 send 重新 bootstrap guardrail。
-  registerChannel('session.setAutoModeEngine', (input) =>
-    runWithCoderAdmission(options, async () => {
-      const ok = await commitRuntimeMutationForIpc(input.sessionId, () =>
-        kodaxHost.setAutoModeEngine(input.sessionId, input.engine),
       );
       return { ok };
     }),

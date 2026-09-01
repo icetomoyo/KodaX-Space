@@ -8,7 +8,7 @@ import {
 } from '../kodax/sandbox-controller.js';
 
 const capability = {
-  version: 6 as const,
+  version: 9 as const,
   asrtVersion: '0.0.65',
   platform: 'win32' as const,
   backend: 'windows-restricted-user' as const,

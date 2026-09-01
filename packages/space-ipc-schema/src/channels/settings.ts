@@ -9,7 +9,6 @@
 import { z } from 'zod';
 import {
   agentModeSchema,
-  autoModeEngineSchema,
   permissionModeSchema,
   reasoningModeSchema,
 } from './session.js';
@@ -39,7 +38,6 @@ export type CoderRuntimeModeT = z.infer<typeof coderRuntimeModeSchema>;
 const spaceRuntimeDefaultsSchema = z
   .object({
     permissionMode: permissionModeSchema.optional(),
-    autoModeEngine: autoModeEngineSchema.optional(),
     reasoningMode: reasoningModeSchema.optional(),
     agentMode: agentModeSchema.optional(),
   })
@@ -301,20 +299,6 @@ export const settingsKodaxConfigSetCompactionChannel = {
     .object({
       projectRoot: z.string().min(1).max(4096).optional(),
       compaction: kodaxCompactionSettingsSchema,
-    })
-    .strict(),
-  output: kodaxConfigOverviewSchema.extend({
-    runtimeReload: kodaxRuntimeConfigReloadSchema,
-  }),
-} as const;
-
-export const settingsKodaxConfigSetSandboxChannel = {
-  name: 'settings.kodaxConfig.setSandbox',
-  direction: 'invoke',
-  input: z
-    .object({
-      projectRoot: z.string().min(1).max(4096).optional(),
-      sandbox: kodaxSandboxSettingsSchema,
     })
     .strict(),
   output: kodaxConfigOverviewSchema.extend({

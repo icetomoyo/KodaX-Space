@@ -13,7 +13,7 @@ import {
 
 const readyStatus = {
   contractVersion: 1 as const,
-  sandboxVersion: 6 as const,
+  sandboxVersion: 9 as const,
   asrtVersion: '0.0.65',
   platform: 'win32' as const,
   backend: 'windows-restricted-user' as const,

@@ -37,7 +37,7 @@ export const sandboxLastOperationSchema = z
 export const sandboxStatusSchema = z
   .object({
     contractVersion: z.literal(1),
-    sandboxVersion: z.literal(6),
+    sandboxVersion: z.literal(9),
     asrtVersion: z
       .string()
       .regex(/^\d+\.\d+\.\d+$/)

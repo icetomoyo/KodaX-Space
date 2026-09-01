@@ -280,7 +280,6 @@ test('fork: child inherits and persists the complete runtime identity', async ()
     provider: 'mock',
     reasoningMode: 'quick',
     permissionMode: 'plan',
-    autoModeEngine: 'rules',
     model: 'mock-model-v2',
     surface: 'partner',
   });
@@ -294,7 +293,6 @@ test('fork: child inherits and persists the complete runtime identity', async ()
   assert.equal(child.provider, 'mock');
   assert.equal(child.reasoningMode, 'quick');
   assert.equal(child.permissionMode, 'plan');
-  assert.equal(child.autoModeEngine, 'rules');
   assert.equal(child.model, 'mock-model-v2');
   assert.equal(child.thinking, true);
   assert.deepEqual(await runtimeStore.read(result.newSessionId), {
@@ -302,7 +300,6 @@ test('fork: child inherits and persists the complete runtime identity', async ()
     model: 'mock-model-v2',
     thinking: true,
     permissionMode: 'plan',
-    autoModeEngine: 'rules',
     reasoningMode: 'quick',
     agentMode: 'ama',
   });

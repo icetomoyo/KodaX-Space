@@ -16,8 +16,7 @@
 > 当前已发布版本为 KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) / 精确 Registry KodaX `0.7.95`。
 > 本版本把 ask_user 与 guardrail 授权改为对话流内的聚焦提问卡（全屏模态移除，召回停靠条与队首卡 1-9/Enter/Esc 键盘操作），对齐 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`，并恢复 daemon 重连后已准入的 Runs、保证幂等发送只产生一个气泡；同时保留 v0.1.44 的 F145 原生 Session 角标、后台 complete-exit settlement、安静的普通成功退出、previous-boot Windows ACL 恢复指引与 canonical page-head、Task Dock、Repointel、外部任务恢复态对齐，以及 crash-resumable exit、crash-outcome v2、SDK 有效输出 segment 和既有多 Session/Actor/Turn 安全边界。
 >
-> 当前源码候选为 Space `0.1.46-alpha.1`，精确锁定 KodaX `0.7.96-alpha.3` / `sandboxRuntime:6` / `providerCredentialBroker:2` / `effectiveConfig:1`；KodaX alpha.3 保留
-> alpha.2 对 alpha.1 缺失的 Windows 生命周期 PowerShell 可执行文件解析器的修复。
+> 当前源码候选为 Space `0.1.46-alpha.1`，精确锁定 KodaX `0.7.96-alpha.5` / `sandboxRuntime:9` / `runtimeAutoModeGuardrail:5` / `sharedSessionSettings:2` / `providerCredentialBroker:2` / `effectiveConfig:1`。Alpha.5 完成 Windows 沙箱并发准入、自愈与版本安全的 daemon 升级。
 > 打包必须整体解包 `@kodax-ai/kodax/dist/native`；发布检查会验证 universal native
 > 文件集合和 manifest hash，再运行真实 sandbox smoke。正式 v0.1.45 说明仍对应 KodaX 0.7.95。
 
@@ -86,7 +85,7 @@ flowchart TD
 
 | 路径或变量                               | 作用                                                           | 说明                                                                                        |
 | ---------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `~/.kodax/config.json`                   | Provider、permission、compaction、`sandbox.envPass` 等核心配置 | CLI/SDK/Space 共用；环境透传只保存变量名，不保存值；不再把 MCP/A2A/Extension 当作新写入字段 |
+| `~/.kodax/config.json`                   | Provider、permission、compaction 等核心配置                    | CLI/SDK/Space 共用；旧 Auto engine/timing 与 `sandbox.envPass` 输入已失效；不再把 MCP/A2A/Extension 当作新写入字段 |
 | `~/.kodax/integrations/mcp.json`         | 用户 MCP server 声明                                           | 严格 `version: 1` + `servers`；CLI/SDK/Space 共用                                           |
 | `~/.kodax/integrations/extensions.json`  | 受管理 Extension 路径                                          | 严格 `version: 1` + `paths`；Space 加载仍需 `KODAX_SPACE_ENABLE_SDK_EXTENSIONS=1`           |
 | `~/.kodax/integrations/a2a.json`         | Runtime A2A registration                                       | 由 KodaX Runtime 持有                                                                       |
@@ -103,12 +102,9 @@ flowchart TD
 
 若同时使用 `KODAX_PROFILE_DIR`，Space 会在首次加载 SDK 前将 `KODAX_HOME` 对齐到该 profile。相对路径会被忽略；测试模式优先级最高。
 
-Settings → Runtime 的“沙箱环境变量透传”编辑同一份 `config.json#sandbox.envPass`。
-它只接受变量名，变量值在命令实际执行的 host 上按需读取；Space 会把显式列表（包括空列表）
-传给 Coder、Partner、legacy 与独立 Workflow Run，避免回退到进程级环境配置。KodaX 仍会
-阻止 `NODE_OPTIONS`、`BASH_ENV`、`RIPGREP_CONFIG_PATH` 和导入的 Bash 函数。修改 host
-变量的值后，已连接的长驻 daemon 需要安全重启。若 CLI 写入的列表超出 Space 有界编辑器
-的 128 项/单名 256 字符限制，Runtime 仍使用完整列表，Space 禁用编辑以防部分投影被误存。
+KodaX 0.7.96 的命令沙箱默认继承宿主环境，同时继续阻止固定的 KodaX/Electron 执行控制
+变量。旧 `config.json#sandbox.envPass` 输入已经失效；Space 不再编辑、写入或向任何 Run
+投影该字段。读取旧配置时只把它当迁移遗留，不恢复旧的环境 allow-list 语义。
 
 从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。Settings → Runtime 会调用当前 KodaX SDK 的 `planLegacyIntegrationMigration()` 展示迁移计划，并通过 `migrateLegacyIntegrationConfig()` 提供“迁移集成配置”按钮；它只创建缺失文件，不覆盖已有目标，也不删除旧字段，成功后会重载 MCP。命令行也可先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply` 创建独立文件；确认独立文件有效后，才使用 `kodax integrations migrate --apply --cleanup-legacy` 显式清理旧字段。A2A 没有旧 `config.json` 迁移源，始终以 `integrations/a2a.json` 为权威配置。
 
@@ -148,7 +144,7 @@ v0.1.33 的 Coder daemon 路由包括：
 - PowerShell `-Path` 方括号通配符 fail-closed 升级确认，同时保留 `-LiteralPath`/`-PSPath` 的精确方括号文件名语义；
 - KodaX CLI auto-resume 有界扫描并跳过空 ACP 占位会话；Space 继续使用自己的显式 Session 选择器。
 - 交互式 resume 恢复 workspace runtime、messages、UI history、lineage、artifacts、extensions、title、tag 与 session identity；
-- 快速 Auto 设置写入按 Session 串行且 last-action-wins；手动/持久化选择的 `Auto[RULES]` 保持粘性。Auto v4 的 classifier 失败会重试一次，并只把当前调用交给 Accept-edits 兼容回退，engine 仍保持 `llm`；
+- 权限档位统一为 Plan、Edits、Auto[LLM]、Full Access；旧 Auto Rules/engine/timing 设置只用于迁移并归一为 Auto[LLM]。Auto 沙箱优先，只有可证明的启动前宿主边界才进入固定 LLM reviewer；Full Access 直接执行但仍受 Exec Policy 约束；
 - imperative manual compaction 先把精确 flat Session history 对齐进 lineage；durable interrupt-delivery 持久化失败时输入保持 queued，并只发出不含用户正文的有界 warning。
 - `contextDiagnostics` 只投影根上下文分类 Token 数；Renderer 以最终自动压缩阈值为有效分母，并把模型最大上下文作为独立事实。Provider 根计数优先，budget fallback 会减去 reserved response capacity。
 - KodaX 0.7.77 的完成态 hash-only cache diagnostic 是 Session usage 的权威物理调用源，按 `requestId` 去重并覆盖 root/child、retry、fallback、repair、workflow digest 与 compaction summary；`iteration_end.usage` 仅是旧 Runtime/mock 在诊断激活前的回退。

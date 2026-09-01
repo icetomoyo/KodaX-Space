@@ -5,7 +5,6 @@ export type Translate = (key: MessageKey, vars?: Record<string, string | number>
 
 const SLASH_COMMAND_DESCRIPTION_KEYS: Readonly<Record<string, MessageKey>> = {
   mode: 'slash.command.mode.desc',
-  'auto-engine': 'slash.command.autoEngine.desc',
   provider: 'slash.command.provider.desc',
   reasoning: 'slash.command.reasoning.desc',
   model: 'slash.command.model.desc',
@@ -25,7 +24,6 @@ const SLASH_COMMAND_DESCRIPTION_KEYS: Readonly<Record<string, MessageKey>> = {
   status: 'slash.command.status.desc',
   review: 'slash.command.review.desc',
   auto: 'slash.command.auto.desc',
-  'auto-denials': 'slash.command.autoDenials.desc',
   fallback: 'slash.command.fallback.desc',
   'verifier-log': 'slash.command.verifierLog.desc',
   'stall-log': 'slash.command.stallLog.desc',

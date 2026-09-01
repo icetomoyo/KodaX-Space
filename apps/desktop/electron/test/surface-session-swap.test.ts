@@ -21,7 +21,6 @@ function mkSession(
     provider: 'mock',
     reasoningMode: 'auto',
     permissionMode: 'accept-edits',
-    autoModeEngine: 'llm',
     agentMode: 'ama',
     surface,
     createdAt: 1700000000000,

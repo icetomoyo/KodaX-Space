@@ -58,7 +58,6 @@ test('the synchronized provider and selected model are used by the next Session'
     pendingProviderId: state.pendingProviderId,
     pendingReasoningMode: null,
     pendingPermissionMode: null,
-    pendingAutoModeEngine: null,
     pendingAgentMode: null,
     pendingModel: state.pendingModel,
   });

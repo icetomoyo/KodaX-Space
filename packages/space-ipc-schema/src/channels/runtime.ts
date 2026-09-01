@@ -698,12 +698,10 @@ export const spaceRuntimeSessionSettingsSchema = z
         effort: z.string().min(1).max(64).optional(),
         thinking: z.boolean().optional(),
         reasoningMode: z.enum(['off', 'auto', 'quick', 'balanced', 'deep']).optional(),
-        permissionMode: z.enum(['plan', 'accept-edits', 'auto']).optional(),
+        permissionMode: z.enum(['plan', 'accept-edits', 'auto', 'full-access']).optional(),
         executionCwd: z.string().min(1).max(4096).optional(),
         agentMode: z.enum(['ama', 'sa']).optional(),
-        autoModeEngine: z.enum(['llm', 'rules']).optional(),
         autoModeClassifierModel: z.string().min(1).max(128).optional(),
-        autoModeTimeoutMs: z.number().int().positive().max(3_600_000).optional(),
         compactionTriggerPercent: z.number().min(15).max(90).optional(),
         compactionTriggerTokens: z.number().int().positive().max(10_000_000).optional(),
       })

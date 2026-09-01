@@ -1,8 +1,7 @@
 // Builtin slash command handlers — FEATURE_031.
 //
 // 第一批 8 个对齐 KodaX REPL：
-//   /mode <plan|accept-edits|auto>      切 permission mode
-//   /auto-engine <llm|rules>            切 auto sub-engine
+//   /mode <plan|accept-edits|auto|full-access>  切 permission profile
 //   /model <name>                       switch the current provider model
 //   /provider <name>                    切 provider (kodaxHost.setProvider)
 //   /reasoning <SDK effort token>
@@ -15,7 +14,6 @@
 
 import type {
   PermissionMode,
-  AutoModeEngine,
   AgentMode,
   WorkflowRunT,
   MemoryActionProposalT,
@@ -58,17 +56,17 @@ import { getBuiltin } from '../providers/catalog.js';
 import { memoryGovernanceService } from '../memory/memory-service.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
-const PERMISSION_MODES: readonly PermissionMode[] = ['plan', 'accept-edits', 'auto'];
-const AUTO_ENGINES: readonly AutoModeEngine[] = ['llm', 'rules'];
+const PERMISSION_MODES: readonly PermissionMode[] = [
+  'plan',
+  'accept-edits',
+  'auto',
+  'full-access',
+];
 const AGENT_MODES: readonly AgentMode[] = ['ama', 'sa'];
 const REASONING_EXAMPLES = ['off', 'auto', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 function isPermissionMode(s: string): s is PermissionMode {
   return PERMISSION_MODES.includes(s as PermissionMode);
-}
-
-function isAutoEngine(s: string): s is AutoModeEngine {
-  return AUTO_ENGINES.includes(s as AutoModeEngine);
 }
 
 function parseReasoningMode(s: string): ReasoningMode | undefined {
@@ -1614,8 +1612,8 @@ function goalHelp(): string {
 export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: 'mode',
-    description: 'Show or switch permission mode (plan / accept-edits / auto)',
-    argsHint: '[plan|accept-edits|auto]',
+    description: 'Show or switch permission mode',
+    argsHint: '[plan|accept-edits|auto|full-access]',
     source: 'builtin',
     handler: async (ctx) => {
       const target = ctx.args[0] === 'auto-in-project' ? 'auto' : ctx.args[0];
@@ -1624,7 +1622,7 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       if (!target) {
         return {
           ok: true,
-          message: `Current mode: ${session.permissionMode}\nUsage: /mode [plan|accept-edits|auto]`,
+          message: `Current mode: ${session.permissionMode}\nUsage: /mode [${PERMISSION_MODES.join('|')}]`,
           echo: true,
         };
       }
@@ -1638,36 +1636,6 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         ctx.sessionId,
         () => kodaxHost.setPermissionMode(ctx.sessionId, target),
         `mode -> ${target}`,
-      );
-    },
-  },
-
-  {
-    name: 'auto-engine',
-    description: 'Show or switch auto-mode classifier engine (llm / rules)',
-    argsHint: '[llm|rules]',
-    source: 'builtin',
-    handler: async (ctx) => {
-      const session = kodaxHost.get(ctx.sessionId);
-      if (!session) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-      const target = ctx.args[0];
-      if (!target) {
-        return {
-          ok: true,
-          message: `Classifier engine: ${session.autoModeEngine}\nUsage: /auto-engine [llm|rules]`,
-          echo: true,
-        };
-      }
-      if (!isAutoEngine(target)) {
-        return {
-          ok: false,
-          message: `unknown engine '${target}'; valid: ${AUTO_ENGINES.join(', ')}`,
-        };
-      }
-      return commitRuntimeSlashMutation(
-        ctx.sessionId,
-        () => kodaxHost.setAutoModeEngine(ctx.sessionId, target),
-        `auto-engine -> ${target}`,
       );
     },
   },
@@ -2664,7 +2632,6 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         'Session Status:',
         `  Provider:    ${session.provider}${session.model ? ` / ${session.model}` : ''}`,
         `  Permission:  ${session.permissionMode}`,
-        `  Auto engine: ${session.autoModeEngine}`,
         `  Reasoning:   ${session.reasoningMode}`,
         `  Thinking:    ${session.thinking === undefined ? 'default' : session.thinking ? 'on' : 'off'}`,
         `  Agent Mode:  ${session.agentMode.toUpperCase()}`,
@@ -2710,55 +2677,8 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
       return commitRuntimeSlashMutation(
         ctx.sessionId,
         () => kodaxHost.setPermissionMode(ctx.sessionId, 'auto'),
-        `mode -> auto; auto-engine -> ${session.autoModeEngine}`,
+        'mode -> auto (Auto[LLM])',
       );
-    },
-  },
-
-  {
-    name: 'auto-denials',
-    description: 'Show auto-mode classifier denial thresholds and current engine',
-    source: 'builtin',
-    handler: async (ctx) => {
-      const session = kodaxHost.get(ctx.sessionId);
-      if (!session) return { ok: false, message: `session not found: ${ctx.sessionId}` };
-      if (session.permissionMode !== 'auto') {
-        return {
-          ok: true,
-          message: `[auto-denials] not in auto mode. Current mode: ${session.permissionMode}. Use /mode auto first.`,
-          echo: true,
-        };
-      }
-      const usesRuntime = usesRuntimeSession(ctx.sessionId);
-      const runtimeSnapshot = usesRuntime ? runtimeHostAdapter.snapshot() : undefined;
-      const runtimeSettings = usesRuntime
-        ? await runtimeHostAdapter
-            .getSessionSettingsVersioned(ctx.sessionId)
-            .then((snapshot) => snapshot.value)
-            .catch(() => undefined)
-        : undefined;
-      const timeoutMs = runtimeSettings?.autoModeTimeoutMs;
-      const classifierModel =
-        runtimeSettings?.autoModeClassifierModel ??
-        runtimeSettings?.model ??
-        session.model ??
-        '(provider default)';
-      return {
-        ok: true,
-        message: [
-          '[auto-mode classifier stats]',
-          `  engine: ${session.autoModeEngine}`,
-          `  host: ${runtimeSnapshot ? `Runtime ${runtimeSnapshot.identity?.version ?? runtimeSnapshot.state}` : 'embedded'}`,
-          `  classifier model: ${classifierModel}`,
-          `  timeout: ${timeoutMs !== undefined ? `${timeoutMs}ms (configured)` : 'SDK default (45s first / 90s retry)'}`,
-          '  thresholds:',
-          '    consecutive blocks: 3',
-          '    cumulative blocks: 20',
-          '    circuit breaker: 5 errors / 10 min',
-          '  counters: not exposed by the Space host yet',
-        ].join('\n'),
-        echo: true,
-      };
     },
   },
 

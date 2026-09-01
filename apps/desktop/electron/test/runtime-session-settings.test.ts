@@ -10,7 +10,6 @@ const session: SessionMeta = {
   provider: 'anthropic',
   reasoningMode: 'quick',
   permissionMode: 'accept-edits',
-  autoModeEngine: 'llm',
   agentMode: 'sa',
   surface: 'code',
   createdAt: 1,
@@ -44,7 +43,6 @@ test('renderer converges all Space-visible shared daemon settings', () => {
       reasoningMode: 'deep',
       permissionMode: 'plan',
       agentMode: 'ama',
-      autoModeEngine: 'rules',
     }),
   );
 
@@ -55,7 +53,6 @@ test('renderer converges all Space-visible shared daemon settings', () => {
     reasoningMode: 'max',
     permissionMode: 'plan',
     agentMode: 'ama',
-    autoModeEngine: 'rules',
   });
 });
 

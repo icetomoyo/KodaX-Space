@@ -17,7 +17,6 @@ beforeEach(() => {
         provider: 'mock',
         reasoningMode: 'auto',
         permissionMode: 'accept-edits',
-        autoModeEngine: 'llm',
         agentMode: 'ama',
         surface: 'code',
         createdAt: CREATED_AT,

@@ -36,7 +36,7 @@ export interface PermissionRequestInput {
   readonly toolId: string;
   readonly toolName: string;
   readonly input?: Record<string, unknown>;
-  /** FEATURE_029：canonical 3 mode；缺省 'accept-edits'（schema 缺省同步）。*/
+  /** KodaX canonical four profiles；缺省 'accept-edits'（schema 缺省同步）。*/
   readonly mode?: PermissionMode;
   /** Surface-aware policy extension; omitted callers keep Coder semantics. */
   readonly surface?: Surface;
@@ -132,7 +132,7 @@ class PermissionBroker {
     const mode: PermissionMode = req.mode ?? 'accept-edits';
     const toolName = normalizeToolName(req.toolName);
 
-    // FEATURE_029 mode-aware 短路 (canonical 3 mode)：
+    // Permission-profile shortcuts for the legacy embedded path:
     //
     //   plan         → Coder 全 deny，agent 只能 plan 不能执行
     //                  (planModeBlockCheck 也会拦下 mutating tools，本钩子双闸防 TOCTOU)。
@@ -141,6 +141,7 @@ class PermissionBroker {
     //   auto         → 正常路径已由 KodaXOptions.guardrails 完成裁决，不会进入这里。
     //                  兼容路径只拦 dangerous，非 dangerous 直接通过，避免对同一
     //                  Auto 调用再做一次静态审批。
+    //   full-access  → 直接通过本层；不可授权边界仍由 SDK Exec Policy 负责。
     if (req.surface === 'partner' && req.partnerToolAllowed === true && !assessment.dangerous) {
       return { decision: 'allow_once', risk: assessment.risk };
     }
@@ -149,6 +150,9 @@ class PermissionBroker {
         return { decision: 'allow_once', risk: assessment.risk };
       }
       return { decision: 'deny', risk: assessment.risk };
+    }
+    if (mode === 'full-access') {
+      return { decision: 'allow_once', risk: assessment.risk };
     }
     if (mode === 'auto' && !assessment.dangerous) {
       return { decision: 'allow_once', risk: assessment.risk };

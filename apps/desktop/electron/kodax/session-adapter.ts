@@ -16,7 +16,6 @@
 
 import type {
   AgentMode,
-  AutoModeEngine,
   InputArtifact,
   PermissionDecision,
   PermissionMode,
@@ -44,7 +43,6 @@ export type SessionCreateOptions = {
   readonly provider: string;
   readonly reasoningMode: ReasoningMode;
   readonly permissionMode: PermissionMode;
-  readonly autoModeEngine?: AutoModeEngine;
   readonly agentMode?: AgentMode;
   readonly surface?: Surface;
   readonly ephemeral?: boolean;
@@ -124,10 +122,8 @@ export interface ManagedSession {
    */
   provider: string;
   reasoningMode: SessionCreateOptions['reasoningMode'];
-  /** FEATURE_029: canonical 'plan' | 'accept-edits' | 'auto'。*/
+  /** Canonical 'plan' | 'accept-edits' | 'auto' | 'full-access' profile. */
   permissionMode: PermissionMode;
-  /** 仅当 permissionMode === 'auto' 时有意义；缺省 'llm'。*/
-  autoModeEngine: AutoModeEngine;
   /** AMA (默认 / 多 agent 协作) vs SA (单 agent，接口并发 fallback)。运行时可切。*/
   agentMode: AgentMode;
   /**

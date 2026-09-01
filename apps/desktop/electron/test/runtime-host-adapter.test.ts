@@ -134,8 +134,10 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         managedRunDurability: 1,
         runtimeExitSettlement: 2,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 6,
+        runtimeAutoModeGuardrail: 5,
+        sandboxRuntime: 9,
         sessionEventJournal: 1,
+        sharedSessionSettings: 2,
       },
     }),
   );
@@ -153,8 +155,10 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
-          sandboxRuntime: 6,
+          runtimeAutoModeGuardrail: 5,
+          sandboxRuntime: 9,
           sessionEventJournal: 1,
+          sharedSessionSettings: 2,
         },
       }),
     /installed KodaX SDK.*actorSettlementConvergence v2/i,
@@ -173,8 +177,10 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
-          sandboxRuntime: 6,
+          runtimeAutoModeGuardrail: 5,
+          sandboxRuntime: 9,
           sessionEventJournal: 1,
+          sharedSessionSettings: 2,
         },
       }),
     /installed KodaX SDK.*conversationHistory v2/i,
@@ -192,15 +198,17 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
-          sandboxRuntime: 6,
+          runtimeAutoModeGuardrail: 5,
+          sandboxRuntime: 9,
           sessionEventJournal: 1,
+          sharedSessionSettings: 2,
         },
       }),
     /installed KodaX SDK.*runtimeEventCoalescing v1/i,
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*effectiveConfig v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*sandboxRuntime v6.*sessionEventJournal v1/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*effectiveConfig v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*runtimeAutoModeGuardrail v5.*sandboxRuntime v9.*sessionEventJournal v1.*sharedSessionSettings v2/i,
   );
 });
 
@@ -454,7 +462,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       connectionLifecycle: { version: 1 },
       typedRuntimeEvents: { version: 1 },
       daemonSafeRunInput: { version: 1 },
-      sharedSessionSettings: { version: 1 },
+      sharedSessionSettings: { version: 2 },
       durableRecoveryQueries: { version: 1 },
       daemonManagement: {
         version: 1,
@@ -472,11 +480,11 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       runtimeEventCoalescing: { version: 1 },
       sessionEventJournal: { version: 1 },
       sandboxRuntime: {
-        version: 6,
+        version: 9,
         asrtVersion: '0.0.65',
         backend: 'unsupported',
       },
-      runtimeAutoModeGuardrail: { version: 4, owner: 'session-runtime' },
+      runtimeAutoModeGuardrail: { version: 5, owner: 'session-runtime' },
     },
     grantedScopes: [
       'session:observe',
@@ -2081,7 +2089,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.connectionLifecycle, 1);
   assert.equal(options[0]?.requirements?.typedRuntimeEvents, 1);
   assert.equal(options[0]?.requirements?.daemonSafeRunInput, 1);
-  assert.equal(options[0]?.requirements?.sharedSessionSettings, 1);
+  assert.equal(options[0]?.requirements?.sharedSessionSettings, 2);
   assert.equal(options[0]?.requirements?.durableRecoveryQueries, 1);
   assert.equal(options[0]?.requirements?.daemonManagement, 1);
   assert.equal(options[0]?.requirements?.daemonOrphanExit, 1);
@@ -2089,10 +2097,10 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
   assert.equal(options[0]?.requirements?.crashOutcomeModel, 2);
-  assert.equal(options[0]?.requirements?.sandboxRuntime, 6);
+  assert.equal(options[0]?.requirements?.sandboxRuntime, 9);
   assert.equal(options[0]?.requirements?.sessionEventJournal, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
-  assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 4);
+  assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 5);
   assert.equal(adapter.snapshot().state, 'ready');
   assert.equal(adapter.snapshot().identity?.runtimeId, 'rt_test');
   assert.equal(
@@ -8685,7 +8693,7 @@ test('initialization requires crash outcome convergence v2', async () => {
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization requires the sandbox v6 native-token lifecycle', async () => {
+test('initialization requires the sandbox v9 lifecycle', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.capabilities as Record<string, unknown>).sandboxRuntime = {
     version: 5,
@@ -8699,7 +8707,7 @@ test('initialization requires the sandbox v6 native-token lifecycle', async () =
     identityStore: testIdentityStore,
   });
 
-  await assert.rejects(adapter.initialize(), /sandboxRuntime v6/i);
+  await assert.rejects(adapter.initialize(), /sandboxRuntime v9/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });
@@ -8744,7 +8752,7 @@ test('session settings use revisioned CAS and skip unchanged values', async () =
   fake.sessions.add('s_1');
   fake.settings.set('s_1', {
     revision: 2,
-    value: { provider: 'anthropic', autoModeTimeoutMs: 20_000 },
+    value: { provider: 'anthropic' },
   });
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -8764,12 +8772,11 @@ test('session settings use revisioned CAS and skip unchanged values', async () =
   await adapter.updateSessionSettings('s_1', {
     model: 'claude-next',
     agentMode: 'ama',
-    autoModeEngine: 'rules',
   });
   assert.deepEqual(fake.calls.settingsUpdates, [
     {
       sessionId: 's_1',
-      patch: { model: 'claude-next', agentMode: 'ama', autoModeEngine: 'rules' },
+      patch: { model: 'claude-next', agentMode: 'ama' },
       options: { expectedRevision: 2 },
     },
   ]);
@@ -8813,8 +8820,6 @@ test('session settings reuse the observed version instead of rereading mutable S
       provider: 'anthropic',
       shellExecution,
       autoModeClassifierModel: 'anthropic:classifier',
-      autoModeTimeoutMs: 20_000,
-      autoModeSpeculativeWindowMs: 640,
     },
   });
   let settingsReads = 0;
@@ -8859,8 +8864,6 @@ test('a queued settings event advances the no-op boundary before its handler set
   fake.sessions.add('s_queued_settings');
   const autoModeSettings = {
     autoModeClassifierModel: 'anthropic:classifier',
-    autoModeTimeoutMs: 20_000,
-    autoModeSpeculativeWindowMs: 640,
   };
   fake.settings.set('s_queued_settings', {
     revision: 7,
@@ -8934,7 +8937,6 @@ test('a stale snapshot settings task cannot overwrite a newer Runtime revision',
     projectRoot: path.resolve('C:\\project'),
     provider: 'anthropic',
     permissionMode: 'auto',
-    autoModeEngine: 'llm',
   });
 
   const fake = createFakeRuntime('rt_stale_snapshot_settings');
@@ -8988,7 +8990,7 @@ test('a stale snapshot settings task cannot overwrite a newer Runtime revision',
 test('concurrent session settings updates serialize their revisioned CAS writes', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
-  fake.settings.set('s_1', { revision: 2, value: { autoModeTimeoutMs: 20_000 } });
+  fake.settings.set('s_1', { revision: 2, value: {} });
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
     profileRoot: path.resolve('C:\\isolated-profile'),
@@ -8998,7 +9000,7 @@ test('concurrent session settings updates serialize their revisioned CAS writes'
 
   await Promise.all([
     adapter.updateSessionSettings('s_1', { permissionMode: 'auto' }),
-    adapter.updateSessionSettings('s_1', { autoModeEngine: 'llm' }),
+    adapter.updateSessionSettings('s_1', { agentMode: 'sa' }),
   ]);
 
   assert.deepEqual(
@@ -9007,7 +9009,7 @@ test('concurrent session settings updates serialize their revisioned CAS writes'
   );
   assert.deepEqual(fake.settings.get('s_1'), {
     revision: 4,
-    value: { autoModeTimeoutMs: 20_000, permissionMode: 'auto', autoModeEngine: 'llm' },
+    value: { permissionMode: 'auto', agentMode: 'sa' },
   });
 });
 
@@ -9019,10 +9021,7 @@ test('session settings admit a missing Coder session before its first send', asy
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     autoModeDefaultsResolver: async () => ({
-      engine: 'llm',
       classifierModel: 'fast-provider:classifier',
-      timeoutMs: 27_000,
-      speculativeWindowMs: 640,
     }),
   });
   const patch = {
@@ -9033,7 +9032,6 @@ test('session settings admit a missing Coder session before its first send', asy
     permissionMode: 'accept-edits' as const,
     executionCwd: path.resolve('C:\\project'),
     agentMode: 'ama' as const,
-    autoModeEngine: 'llm' as const,
   };
 
   await adapter.updateSessionSettings('s_new', patch, {
@@ -9058,8 +9056,6 @@ test('session settings admit a missing Coder session before its first send', asy
       patch: {
         ...patch,
         autoModeClassifierModel: 'fast-provider:classifier',
-        autoModeTimeoutMs: 27_000,
-        autoModeSpeculativeWindowMs: 640,
       },
       options: { expectedRevision: 0 },
     },
@@ -9074,8 +9070,6 @@ test('Auto LLM defaults fill missing settings without overwriting daemon session
     value: {
       provider: 'anthropic',
       autoModeClassifierModel: 'other-client:classifier',
-      autoModeTimeoutMs: 45_000,
-      autoModeSpeculativeWindowMs: 750,
     },
   });
   const adapter = new RuntimeHostAdapter({
@@ -9084,10 +9078,7 @@ test('Auto LLM defaults fill missing settings without overwriting daemon session
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     autoModeDefaultsResolver: async () => ({
-      engine: 'llm',
       classifierModel: 'space-default:classifier',
-      timeoutMs: 20_000,
-      speculativeWindowMs: 640,
     }),
   });
 
@@ -9101,8 +9092,6 @@ test('Auto LLM defaults fill missing settings without overwriting daemon session
     },
   ]);
   assert.equal(fake.settings.get('s_1')?.value.autoModeClassifierModel, 'other-client:classifier');
-  assert.equal(fake.settings.get('s_1')?.value.autoModeTimeoutMs, 45_000);
-  assert.equal(fake.settings.get('s_1')?.value.autoModeSpeculativeWindowMs, 750);
 });
 
 test('Auto LLM default reconciliation retries CAS and preserves a concurrent client update', async () => {
@@ -9118,8 +9107,6 @@ test('Auto LLM default reconciliation retries CAS and preserves a concurrent cli
         revision: 1,
         value: {
           autoModeClassifierModel: 'other-client:classifier',
-          autoModeTimeoutMs: 45_000,
-          autoModeSpeculativeWindowMs: 750,
         },
       });
       const error = new Error(
@@ -9136,10 +9123,7 @@ test('Auto LLM default reconciliation retries CAS and preserves a concurrent cli
     runtimeFactory: async () => fake.runtime,
     identityStore: testIdentityStore,
     autoModeDefaultsResolver: async () => ({
-      engine: 'llm',
       classifierModel: 'space-default:classifier',
-      timeoutMs: 20_000,
-      speculativeWindowMs: 640,
     }),
   });
 
@@ -9149,8 +9133,6 @@ test('Auto LLM default reconciliation retries CAS and preserves a concurrent cli
     revision: 2,
     value: {
       autoModeClassifierModel: 'other-client:classifier',
-      autoModeTimeoutMs: 45_000,
-      autoModeSpeculativeWindowMs: 750,
       permissionMode: 'auto',
     },
   });
@@ -13715,7 +13697,6 @@ test('observation with an omitted model keeps a concrete provider default for Au
     projectRoot: path.resolve('C:\\project'),
     provider: 'zai-coding',
     permissionMode: 'auto',
-    autoModeEngine: 'llm',
   });
 
   const fake = createFakeRuntime();
@@ -13726,7 +13707,6 @@ test('observation with an omitted model keeps a concrete provider default for Au
       provider: 'zai-coding',
       effort: 'high',
       permissionMode: 'auto',
-      autoModeEngine: 'llm',
     },
   });
   const adapter = new RuntimeHostAdapter({
@@ -13768,7 +13748,6 @@ test('observation with an omitted model preserves an explicit create-time model'
     provider: 'zai-coding',
     model: 'glm-5.3',
     permissionMode: 'auto',
-    autoModeEngine: 'llm',
   });
 
   const fake = createFakeRuntime();
@@ -13779,7 +13758,6 @@ test('observation with an omitted model preserves an explicit create-time model'
       provider: 'zai-coding',
       effort: 'high',
       permissionMode: 'auto',
-      autoModeEngine: 'llm',
     },
   });
   const adapter = new RuntimeHostAdapter({

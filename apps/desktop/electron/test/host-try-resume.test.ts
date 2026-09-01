@@ -133,7 +133,6 @@ test('concurrent tryResume calls share one Session construction', async () => {
       provider: opts.provider,
       reasoningMode: opts.reasoningMode,
       permissionMode: opts.permissionMode,
-      autoModeEngine: opts.autoModeEngine ?? 'llm',
       agentMode: opts.agentMode ?? 'ama',
       surface: opts.surface ?? 'code',
       ephemeral: opts.ephemeral,
@@ -446,7 +445,6 @@ test('tryResume restores runtime modes from the session sidecar before KodaX def
   mockState.seed(id, 'C:/proj/example', 'runtime sidecar');
   await runtimeStore.set(id, {
     permissionMode: 'auto',
-    autoModeEngine: 'rules',
     reasoningMode: 'quick',
     agentMode: 'sa',
   });
@@ -456,7 +454,6 @@ test('tryResume restores runtime modes from the session sidecar before KodaX def
   const resumed = kodaxHost.get(id);
   assert.ok(resumed);
   assert.equal(resumed.permissionMode, 'auto');
-  assert.equal(resumed.autoModeEngine, 'rules');
   assert.equal(resumed.reasoningMode, 'quick');
   assert.equal(resumed.agentMode, 'sa');
 });

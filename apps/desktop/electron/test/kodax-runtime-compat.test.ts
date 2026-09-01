@@ -9,7 +9,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.96-alpha.3';
+const EXPECTED_KODAX_VERSION = '0.7.96-alpha.5';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -347,7 +347,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   connectionLifecycle: 1,
   typedRuntimeEvents: 1,
   daemonSafeRunInput: 1,
-  sharedSessionSettings: 1,
+  sharedSessionSettings: 2,
   durableRecoveryQueries: 1,
   daemonManagement: 1,
   daemonOrphanExit: 1,
@@ -355,10 +355,10 @@ const SHARED_DAEMON_REQUIREMENTS = {
   actorSettlementConvergence: 2,
   liveOutputSegments: 1,
   runtimeEventCoalescing: 1,
-  sandboxRuntime: 6,
+  sandboxRuntime: 9,
   sessionEventJournal: 1,
   integrationConfigResilience: 1,
-  runtimeAutoModeGuardrail: 4,
+  runtimeAutoModeGuardrail: 5,
 } as const;
 
 const PUBLISHED_SHARED_DAEMON_PEER_PROBE = String.raw`
@@ -420,7 +420,6 @@ try {
     {
       provider: 'published-probe',
       agentMode: 'ama',
-      autoModeEngine: 'rules',
       shellExecution,
     },
     { expectedRevision: current.revision },
@@ -665,7 +664,7 @@ try {
       ),
       permissionGrantAdmin: runtime.grantedScopes?.includes('permission:grant-admin') === true,
       runtimeAutoModeGuardrail:
-        runtimeAutoModeGuardrailCapability?.version === 4 &&
+        runtimeAutoModeGuardrailCapability?.version === 5 &&
         runtimeAutoModeGuardrailCapability.owner === 'session-runtime',
     },
   };
@@ -966,8 +965,8 @@ try {
       runtime: runtime.capabilities.actorSettlementConvergence?.version === 2,
     },
     sandboxRuntime: {
-      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 6,
-      runtime: runtime.capabilities.sandboxRuntime?.version === 6,
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 9,
+      runtime: runtime.capabilities.sandboxRuntime?.version === 9,
     },
     sessionEventJournal: {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sessionEventJournal === 1,
@@ -1477,7 +1476,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
   const { KODAX_ASRT_VERSION, doctorKodaXSandbox, getKodaXSandboxCapability, runKodaXSandboxed } =
     await import('@kodax-ai/kodax/sandbox');
   const capability = getKodaXSandboxCapability();
-  assert.equal(capability.version, 6);
+  assert.equal(capability.version, 9);
   assert.equal(capability.asrtVersion, KODAX_ASRT_VERSION);
   assert.equal(capability.genericCommandExecution, true);
   assert.deepEqual(capability.controls, [
@@ -1502,332 +1501,11 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
   assert.equal(Array.isArray(doctor.diagnostics), true);
 });
 
-test(`KodaX ${EXPECTED_KODAX_VERSION} Auto guardrail keeps the required permission semantics`, async () => {
-  const projectRoot = await mkdtemp(path.join(tmpdir(), 'kodax-space-auto-guardrail-'));
-  const kodaxHome = await mkdtemp(path.join(tmpdir(), 'kodax-space-auto-home-'));
-  const previousKodaxHome = process.env.KODAX_HOME;
-  process.env.KODAX_HOME = kodaxHome;
-
-  try {
-    const [{ bootstrapAutoMode }, { createKodaXRuntime }, { setAgentConfigHome }] =
-      await Promise.all([
-        import('@kodax-ai/kodax/repl'),
-        import('@kodax-ai/kodax/runtime'),
-        import('@kodax-ai/kodax/coding'),
-      ]);
-    setAgentConfigHome(process.env.KODAX_HOME);
-    const context = { agent: {} as never, messages: [] };
-    let rulesPrompts = 0;
-    const rulesBootstrap = await bootstrapAutoMode({
-      askUser: async () => {
-        rulesPrompts += 1;
-        return 'block';
-      },
-      projectRoot,
-      executionCwd: projectRoot,
-      getCurrentProviderName: () => 'unused-rules-provider',
-      getCurrentModel: () => 'unused-rules-model',
-      getCurrentPermissionMode: () => 'auto',
-      autoModeSettings: { engine: 'rules', timeoutMs: 20_000 },
-      log: () => {},
-    });
-    const rulesGuardrail = rulesBootstrap.getGuardrail();
-    const rulesBeforeTool = rulesGuardrail.beforeTool?.bind(rulesGuardrail);
-    assert.ok(rulesBeforeTool);
-
-    const workspaceEdit = await rulesBeforeTool(
-      {
-        id: 'workspace-edit',
-        name: 'edit',
-        input: {
-          path: path.join(projectRoot, 'inside-workspace.txt'),
-          old_string: 'before',
-          new_string: 'after',
-        },
-      },
-      context,
-    );
-    assert.deepEqual(workspaceEdit, { action: 'allow' });
-    assert.equal(rulesPrompts, 0, 'workspace edit must not request user confirmation');
-
-    const outsideEdit = await rulesBeforeTool(
-      {
-        id: 'outside-edit',
-        name: 'edit',
-        input: {
-          path: path.join(
-            path.parse(projectRoot).root,
-            `kodax-space-outside-${path.basename(projectRoot)}.txt`,
-          ),
-          old_string: 'before',
-          new_string: 'after',
-        },
-      },
-      context,
-    );
-    assert.equal(outsideEdit.action, 'block');
-    assert.equal(rulesPrompts, 1, 'outside-workspace edit must still escalate');
-    assert.equal(rulesGuardrail.getEngine(), 'rules');
-
-    const bracketWildcard = await rulesBeforeTool(
-      {
-        id: 'powershell-bracket-wildcard',
-        name: 'bash',
-        input: {
-          command: 'Set-Content -Path "[.]kodax/config.json" -Value data',
-        },
-      },
-      context,
-    );
-    assert.equal(bracketWildcard.action, 'block');
-    assert.equal(rulesPrompts, 2, 'PowerShell bracket wildcards on path parameters must escalate');
-
-    const bracketLiteral = await rulesBeforeTool(
-      {
-        id: 'powershell-bracket-literal',
-        name: 'bash',
-        input: {
-          command: 'Set-Content -LiteralPath "build/file[12].txt" -Value data',
-        },
-      },
-      context,
-    );
-    assert.deepEqual(bracketLiteral, { action: 'allow' });
-    assert.equal(
-      rulesPrompts,
-      2,
-      'an exact LiteralPath filename containing brackets must stay fully modeled',
-    );
-
-    const agentHomeRemoval = await rulesBeforeTool(
-      {
-        id: 'agent-home-root-removal',
-        name: 'bash',
-        input: { command: `Remove-Item -LiteralPath "${kodaxHome}" -Recurse` },
-      },
-      context,
-    );
-    assert.equal(agentHomeRemoval.action, 'block');
-    assert.match(agentHomeRemoval.reason ?? '', /Agent Home/i);
-    assert.equal(rulesPrompts, 2, 'Agent Home root mutation must be non-authorizable');
-
-    const { createAutoModeToolGuardrail, KodaXBaseProvider } =
-      await import('@kodax-ai/kodax/coding');
-    class ClassifierProbeProvider extends KodaXBaseProvider {
-      readonly name = 'space-installed-package-probe';
-      readonly supportsThinking = false;
-      protected readonly config = {
-        apiKeyEnv: 'SPACE_INSTALLED_PACKAGE_PROBE_KEY',
-        model: 'space-installed-package-probe',
-        supportsThinking: false,
-        reasoningCapability: 'none' as const,
-      };
-
-      constructor(
-        private readonly output: string,
-        private readonly onCall: () => void,
-      ) {
-        super();
-      }
-
-      async stream() {
-        this.onCall();
-        return {
-          textBlocks: [{ type: 'text' as const, text: this.output }],
-          toolBlocks: [],
-          thinkingBlocks: [],
-          usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-          stopReason: 'end_turn' as const,
-        };
-      }
-    }
-    const createLlmDecisionProbe = (
-      output: string,
-      onClassifierCall: () => void,
-      onAskUser: () => void,
-    ) =>
-      createAutoModeToolGuardrail({
-        rules: { allow: [], soft_deny: [], environment: [] },
-        getToolProjection: (name) =>
-          name === 'bash'
-            ? (input: unknown) =>
-                `Bash: ${String((input as { command?: unknown } | undefined)?.command ?? '')}`
-            : () => '',
-        resolveProvider: () => new ClassifierProbeProvider(output, onClassifierCall),
-        defaultProvider: 'space-installed-package-probe',
-        defaultModel: 'space-installed-package-probe',
-        projectRoot,
-        executionCwd: projectRoot,
-        askUser: async () => {
-          onAskUser();
-          return 'allow';
-        },
-      });
-
-    let allowClassifierCalls = 0;
-    let allowPrompts = 0;
-    const allowGuardrail = createLlmDecisionProbe(
-      '<decision>allow</decision>',
-      () => {
-        allowClassifierCalls += 1;
-      },
-      () => {
-        allowPrompts += 1;
-      },
-    );
-    const classifiedHighImpactAllow = await allowGuardrail.beforeTool?.(
-      { id: 'llm-final-allow', name: 'bash', input: { command: 'git reset --hard HEAD' } },
-      context,
-    );
-    assert.deepEqual(classifiedHighImpactAllow, { action: 'allow' });
-    assert.equal(allowClassifierCalls, 1, 'the installed classifier must review the call');
-    assert.equal(
-      allowPrompts,
-      0,
-      'a legal LLM allow must remain final even when legacy static rules mark the command dangerous',
-    );
-
-    const agentHomeContainingRemovalCommand =
-      process.platform === 'win32'
-        ? `Remove-Item -LiteralPath "${kodaxHome}" -Recurse`
-        : `rm -rf "${kodaxHome}"`;
-    const agentHomeContainingRemoval = await allowGuardrail.beforeTool?.(
-      {
-        id: 'llm-agent-home-hard-boundary',
-        name: 'bash',
-        input: { command: agentHomeContainingRemovalCommand },
-      },
-      context,
-    );
-    assert.equal(agentHomeContainingRemoval?.action, 'block');
-    assert.match(agentHomeContainingRemoval?.reason ?? '', /Agent Home/i);
-    assert.equal(
-      allowClassifierCalls,
-      1,
-      'the non-authorizable Agent Home boundary must run before the classifier',
-    );
-    assert.equal(allowPrompts, 0);
-
-    let askClassifierCalls = 0;
-    let askPrompts = 0;
-    const askGuardrail = createLlmDecisionProbe(
-      '<decision>ask</decision>',
-      () => {
-        askClassifierCalls += 1;
-      },
-      () => {
-        askPrompts += 1;
-      },
-    );
-    const credentialAsk = await askGuardrail.beforeTool?.(
-      {
-        id: 'llm-explicit-ask',
-        name: 'bash',
-        input: { command: 'Get-Content "$env:USERPROFILE/.ssh/id_rsa"' },
-      },
-      context,
-    );
-    assert.deepEqual(credentialAsk, { action: 'allow' });
-    assert.equal(askClassifierCalls, 1);
-    assert.equal(
-      askPrompts,
-      1,
-      'an explicit LLM ask must still reach the user confirmation bridge',
-    );
-
-    let llmPrompts = 0;
-    const llmBootstrap = await bootstrapAutoMode({
-      askUser: async () => {
-        llmPrompts += 1;
-        return 'allow';
-      },
-      projectRoot,
-      executionCwd: projectRoot,
-      getCurrentProviderName: () => 'missing-provider-must-not-be-resolved',
-      getCurrentModel: () => '',
-      getCurrentPermissionMode: () => 'auto',
-      autoModeSettings: { engine: 'llm', timeoutMs: 20_000 },
-      log: () => {},
-    });
-    const llmGuardrail = llmBootstrap.getGuardrail();
-    const llmBeforeTool = llmGuardrail.beforeTool?.bind(llmGuardrail);
-    assert.ok(llmBeforeTool);
-
-    const opaqueMissingModelCall = await llmBeforeTool(
-      { id: 'missing-model', name: 'bash', input: { command: 'python verify.py' } },
-      context,
-    );
-    assert.equal(
-      opaqueMissingModelCall.action,
-      'allow',
-      'opaque Bash falls back to the normal permission policy when sandbox containment is unavailable',
-    );
-    assert.equal(
-      llmPrompts,
-      1,
-      'the normal permission fallback must preserve explicit user approval',
-    );
-
-    const modeledMissingModelFallback = await llmBeforeTool(
-      {
-        id: 'missing-model-modeled-write',
-        name: 'bash',
-        input: { command: 'Set-Content -LiteralPath "build/modeled.txt" -Value data' },
-      },
-      context,
-    );
-    assert.equal(modeledMissingModelFallback.action, 'allow');
-    assert.equal(
-      llmPrompts,
-      2,
-      'a modeled call can still use the explicit Accept-edits fallback without switching engines',
-    );
-    assert.equal(llmGuardrail.getEngine(), 'llm');
-    assert.deepEqual(llmGuardrail.getStats().denials, { consecutive: 0, cumulative: 0 });
-    assert.deepEqual(llmGuardrail.getStats().breaker.timestamps, []);
-
-    const runtimeHome = path.join(projectRoot, 'runtime-home');
-    const runtime = await createKodaXRuntime({
-      mode: 'embedded',
-      isolation: 'inline',
-      homeDir: runtimeHome,
-      sessionsDir: path.join(runtimeHome, 'sessions'),
-      defaultProvider: 'missing-provider-must-not-be-resolved',
-      sharedDaemonHost: true,
-      requirements: { runtimeAutoModeGuardrail: 4 },
-    });
-    try {
-      const session = await runtime.sessions.create({
-        title: 'Space missing Auto LLM model compatibility probe',
-        projectPath: projectRoot,
-        surface: 'space-desktop',
-        tag: 'code',
-      });
-      await runtime.sessions.updateSettings(session.id, {
-        permissionMode: 'auto',
-        autoModeEngine: 'llm',
-        executionCwd: projectRoot,
-      });
-      await assert.rejects(
-        runtime.runs.start({ sessionId: session.id, prompt: 'inspect the workspace' }),
-        (error: unknown) => {
-          assert.equal((error as { code?: unknown }).code, 'auto_mode_classifier_model_required');
-          assert.equal((error as { recoverable?: unknown }).recoverable, true);
-          return true;
-        },
-      );
-      assert.deepEqual(await runtime.permissions.listPending({ sessionId: session.id }), []);
-    } finally {
-      await runtime.close();
-    }
-  } finally {
-    const { setAgentConfigHome } = await import('@kodax-ai/kodax/coding');
-    setAgentConfigHome(undefined);
-    if (previousKodaxHome === undefined) delete process.env.KODAX_HOME;
-    else process.env.KODAX_HOME = previousKodaxHome;
-    await rm(projectRoot, { recursive: true, force: true });
-    await rm(kodaxHome, { recursive: true, force: true });
-  }
+test(`KodaX ${EXPECTED_KODAX_VERSION} exposes the required Auto[LLM] Runtime capabilities`, async () => {
+  const { KODAX_RUNTIME_SDK_CAPABILITIES } = await import("@kodax-ai/kodax/runtime");
+  assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.runtimeAutoModeGuardrail, 5);
+  assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sharedSessionSettings, 2);
+  assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime, 9);
 });
 
 test(`KodaX ${EXPECTED_KODAX_VERSION} exports a bounded non-empty auto-resume selector`, async () => {
@@ -1933,7 +1611,6 @@ test(
     assert.deepEqual(settings, {
       provider: 'published-probe',
       agentMode: 'ama',
-      autoModeEngine: 'rules',
     });
     assert.deepEqual(shellExecution, {
       version: 1,

@@ -1173,8 +1173,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   /** Opt-in lifecycle policy for Space-managed daemons. */
   readonly daemonOrphanExitMs?: number;
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
-    /** Host text transactions and native Windows token/job enforcement use the v6 contract. */
-    readonly sandboxRuntime?: 6;
+    /** Sandbox-first Auto and Windows concurrent sandbox repair use the v9 contract. */
+    readonly sandboxRuntime?: 9;
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;
     /** Managed Run lifecycle events have canonical persistence boundaries. */
@@ -1440,9 +1440,21 @@ function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): voi
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
-  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 6) {
+  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 9) {
     throw new Error(
-      'KodaX Runtime does not support the required sandboxRuntime v6 capability. ' +
+      'KodaX Runtime does not support the required sandboxRuntime v9 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
+  if (runtimeCapabilityVersion(runtime, 'runtimeAutoModeGuardrail') < 5) {
+    throw new Error(
+      'KodaX Runtime does not support the required runtimeAutoModeGuardrail v5 capability. ' +
+        'Install a compatible KodaX package and restart the Coder daemon.',
+    );
+  }
+  if (runtimeCapabilityVersion(runtime, 'sharedSessionSettings') < 2) {
+    throw new Error(
+      'KodaX Runtime does not support the required sharedSessionSettings v2 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -1590,8 +1602,10 @@ async function createPublishedRuntime(
         readonly managedRunDurability?: number;
         readonly runtimeExitSettlement?: number;
         readonly runtimeEventCoalescing?: number;
+        readonly runtimeAutoModeGuardrail?: number;
         readonly sandboxRuntime?: number;
         readonly sessionEventJournal?: number;
+        readonly sharedSessionSettings?: number;
         readonly liveOutputSegments?: number;
       };
     },
@@ -1611,8 +1625,10 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     readonly managedRunDurability?: number;
     readonly runtimeExitSettlement?: number;
     readonly runtimeEventCoalescing?: number;
+    readonly runtimeAutoModeGuardrail?: number;
     readonly sandboxRuntime?: number;
     readonly sessionEventJournal?: number;
+    readonly sharedSessionSettings?: number;
   };
 }): void {
   const capabilities = sdk.KODAX_RUNTIME_SDK_CAPABILITIES;
@@ -1627,8 +1643,12 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeExitSettlement === 2 ? [] : ['runtimeExitSettlement v2']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
-    ...((capabilities?.sandboxRuntime ?? 0) >= 6 ? [] : ['sandboxRuntime v6']),
+    ...((capabilities?.runtimeAutoModeGuardrail ?? 0) >= 5
+      ? []
+      : ['runtimeAutoModeGuardrail v5']),
+    ...((capabilities?.sandboxRuntime ?? 0) >= 9 ? [] : ['sandboxRuntime v9']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
+    ...((capabilities?.sharedSessionSettings ?? 0) >= 2 ? [] : ['sharedSessionSettings v2']),
   ];
   if (missing.length > 0) {
     throw new Error(
@@ -2263,18 +2283,18 @@ export class RuntimeHostAdapter {
         connectionLifecycle: 1,
         typedRuntimeEvents: 1,
         daemonSafeRunInput: 1,
-        sharedSessionSettings: 1,
+        sharedSessionSettings: 2,
         durableRecoveryQueries: 1,
         daemonManagement: 1,
         daemonOrphanExit: 1,
         managedRunDurability: 1,
         actorSettlementConvergence: 2,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 6,
+        sandboxRuntime: 9,
         sessionEventJournal: 1,
         liveOutputSegments: 1,
         integrationConfigResilience: 1,
-        runtimeAutoModeGuardrail: 4,
+        runtimeAutoModeGuardrail: 5,
       },
     };
   }
@@ -2812,14 +2832,14 @@ export class RuntimeHostAdapter {
       {
         id: 'runtime.autoMode.guardrail',
         version: version('runtimeAutoModeGuardrail'),
-        available: version('runtimeAutoModeGuardrail') >= 4,
+        available: version('runtimeAutoModeGuardrail') >= 5,
       },
       {
         id: 'runtime.tools.sandboxObservation',
         version: 1,
         available:
-          version('sandboxRuntime') >= 3 &&
-          version('runtimeAutoModeGuardrail') >= 4 &&
+          version('sandboxRuntime') >= 9 &&
+          version('runtimeAutoModeGuardrail') >= 5 &&
           available('typedRuntimeEvents'),
       },
       {
@@ -3818,11 +3838,8 @@ export class RuntimeHostAdapter {
     patch: RuntimeSessionSettingsPatch,
   ): Promise<RuntimeSessionSettingsPatch> {
     if (
-      current.autoModeTimeoutMs !== undefined &&
-      (current.autoModeClassifierModel !== undefined ||
-        patch.autoModeClassifierModel !== undefined) &&
-      (current.autoModeSpeculativeWindowMs !== undefined ||
-        patch.autoModeSpeculativeWindowMs !== undefined)
+      current.autoModeClassifierModel !== undefined ||
+      patch.autoModeClassifierModel !== undefined
     ) {
       return patch;
     }
@@ -3831,12 +3848,10 @@ export class RuntimeHostAdapter {
       defaults = await this.autoModeDefaultsResolver();
     } catch (error) {
       console.warn(
-        '[runtime] Auto LLM defaults load failed; falling back to engine=llm with SDK defaults:',
+        '[runtime] Auto LLM classifier defaults load failed; using SDK defaults:',
         sanitizeDiagnosticError(error),
       );
-      defaults = {
-        engine: 'llm',
-      };
+      defaults = {};
     }
     return {
       ...patch,
@@ -3844,16 +3859,6 @@ export class RuntimeHostAdapter {
       patch.autoModeClassifierModel === undefined &&
       defaults.classifierModel !== undefined
         ? { autoModeClassifierModel: defaults.classifierModel }
-        : {}),
-      ...(current.autoModeTimeoutMs === undefined &&
-      patch.autoModeTimeoutMs === undefined &&
-      defaults.timeoutMs !== undefined
-        ? { autoModeTimeoutMs: defaults.timeoutMs }
-        : {}),
-      ...(current.autoModeSpeculativeWindowMs === undefined &&
-      patch.autoModeSpeculativeWindowMs === undefined &&
-      defaults.speculativeWindowMs !== undefined
-        ? { autoModeSpeculativeWindowMs: defaults.speculativeWindowMs }
         : {}),
     };
   }
@@ -4862,15 +4867,13 @@ export class RuntimeHostAdapter {
     if (
       settings.permissionMode === 'plan' ||
       settings.permissionMode === 'accept-edits' ||
-      settings.permissionMode === 'auto'
+      settings.permissionMode === 'auto' ||
+      settings.permissionMode === 'full-access'
     ) {
       session.permissionMode = settings.permissionMode;
     }
     if (settings.agentMode === 'ama' || settings.agentMode === 'sa') {
       session.agentMode = settings.agentMode;
-    }
-    if (settings.autoModeEngine === 'llm' || settings.autoModeEngine === 'rules') {
-      session.autoModeEngine = settings.autoModeEngine;
     }
     if (!isCurrentRevision()) return;
     await kodaxHost.persistRuntime(sessionId);

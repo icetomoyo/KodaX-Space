@@ -35,7 +35,6 @@ export interface CreateSessionInput {
   readonly pendingProviderId: string | null;
   readonly pendingReasoningMode: SessionMeta['reasoningMode'] | null;
   readonly pendingPermissionMode?: SessionMeta['permissionMode'] | null;
-  readonly pendingAutoModeEngine?: SessionMeta['autoModeEngine'] | null;
   readonly pendingAgentMode?: SessionMeta['agentMode'] | null;
   /** User's pending (next-session) model — persisted; validated against the resolved provider. */
   readonly pendingModel?: string | null;
@@ -45,12 +44,10 @@ export interface CreateSessionResolved {
   readonly provider: string;
   readonly reasoningMode: SessionMeta['reasoningMode'];
   readonly permissionMode: NonNullable<SessionMeta['permissionMode']>;
-  readonly autoModeEngine: NonNullable<SessionMeta['autoModeEngine']>;
   readonly agentMode: NonNullable<SessionMeta['agentMode']>;
   readonly runtimeOverrides: {
     readonly reasoningMode?: SessionMeta['reasoningMode'];
     readonly permissionMode?: NonNullable<SessionMeta['permissionMode']>;
-    readonly autoModeEngine?: NonNullable<SessionMeta['autoModeEngine']>;
     readonly agentMode?: NonNullable<SessionMeta['agentMode']>;
   };
   /**
@@ -82,7 +79,6 @@ export function resolveSessionCreateInputs(input: CreateSessionInput): CreateSes
     pendingProviderId,
     pendingReasoningMode,
     pendingPermissionMode,
-    pendingAutoModeEngine,
     pendingAgentMode,
   } = input;
 
@@ -117,11 +113,6 @@ export function resolveSessionCreateInputs(input: CreateSessionInput): CreateSes
     spaceRuntimeDefaults?.permissionMode ??
     kodaxDefaults?.permissionMode ??
     'accept-edits';
-  const autoModeEngine =
-    pendingAutoModeEngine ??
-    spaceRuntimeDefaults?.autoModeEngine ??
-    kodaxDefaults?.autoModeEngine ??
-    'llm';
   // Default 'ama' matches the SDK default; SA remains an explicit fallback.
   const agentMode = pendingAgentMode ?? spaceRuntimeDefaults?.agentMode ?? 'ama';
   const explicitReasoningMode = pendingRuntimeOverride(
@@ -132,10 +123,6 @@ export function resolveSessionCreateInputs(input: CreateSessionInput): CreateSes
     pendingPermissionMode,
     spaceRuntimeDefaults?.permissionMode,
   );
-  const explicitAutoModeEngine = pendingRuntimeOverride(
-    pendingAutoModeEngine,
-    spaceRuntimeDefaults?.autoModeEngine,
-  );
   const explicitAgentMode = pendingRuntimeOverride(
     pendingAgentMode,
     spaceRuntimeDefaults?.agentMode,
@@ -143,7 +130,6 @@ export function resolveSessionCreateInputs(input: CreateSessionInput): CreateSes
   const runtimeOverrides = {
     ...(explicitReasoningMode !== undefined ? { reasoningMode: explicitReasoningMode } : {}),
     ...(explicitPermissionMode !== undefined ? { permissionMode: explicitPermissionMode } : {}),
-    ...(explicitAutoModeEngine !== undefined ? { autoModeEngine: explicitAutoModeEngine } : {}),
     ...(explicitAgentMode !== undefined ? { agentMode: explicitAgentMode } : {}),
   };
 
@@ -164,7 +150,6 @@ export function resolveSessionCreateInputs(input: CreateSessionInput): CreateSes
     provider,
     reasoningMode,
     permissionMode,
-    autoModeEngine,
     agentMode,
     runtimeOverrides,
     model,

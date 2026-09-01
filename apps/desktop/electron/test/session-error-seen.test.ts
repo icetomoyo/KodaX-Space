@@ -15,7 +15,6 @@ const session: SessionMeta = {
   provider: 'mock',
   reasoningMode: 'auto',
   permissionMode: 'accept-edits',
-  autoModeEngine: 'llm',
   agentMode: 'ama',
   surface: 'code',
   createdAt: 1700000000000,

@@ -10,11 +10,7 @@
 //     renderer 用 Space 自己的 default 走
 
 import { z } from 'zod';
-import { reasoningModeSchema } from './session.js';
-// 严格匹配 main loader (normalizePermissionMode) 实际产出值——KodaX 的 'default' /
-// 'bypass-permissions' map 到 undefined，所以 schema 里没有它们；'auto' 是 Space 自己的模式
-// 不对应 KodaX config 任何值，因此这里也没有（renderer 用 Space session create 时另行选）
-const kodaxPermissionModeSchema = z.enum(['plan', 'accept-edits']);
+import { permissionModeSchema, reasoningModeSchema } from './session.js';
 
 const kodaxUserDefaultsSchema = z.object({
   /** ~/.kodax/config.json 的 `provider` 字段。Space catalog 里如果有 1:1 同 id 的会被
@@ -26,14 +22,10 @@ const kodaxUserDefaultsSchema = z.object({
   thinking: z.boolean().optional(),
   /** reasoning ceiling / mode (preferred name 是 reasoningCeiling，main 已做兼容映射) */
   reasoningMode: reasoningModeSchema.optional(),
-  /** 仅 'plan' / 'accept-edits'；KodaX 'default' / 'bypass-permissions' 走 undefined */
-  permissionMode: kodaxPermissionModeSchema.optional(),
-  /** KodaX `autoMode.engine`（环境变量覆盖已由 main 端解析）。 */
-  autoModeEngine: z.enum(['llm', 'rules']).optional(),
+  /** KodaX canonical permission profile；legacy aliases 已在 main load boundary 归一化。 */
+  permissionMode: permissionModeSchema.optional(),
   /** Auto LLM classifier model spec；不包含 credential。 */
   autoModeClassifierModel: z.string().min(1).max(128).optional(),
-  /** Auto LLM side-query 的显式超时；未设置时由 KodaX 0.7.80 使用 45s / 90s 两次尝试默认值。 */
-  autoModeTimeoutMs: z.number().int().positive().max(3_600_000).optional(),
   /** customProviders 个数 — 详细配置不暴露 renderer (apiKeyEnv 等敏感 hint 保守隐藏)。
    *  registerKodaxCustomProviders 已在 main boot 把这些注册到 SDK runtime；
    *  renderer 只用此 count 做 UI hint "你有 N 个 KodaX 自定义 provider 已可用，用 /provider <name> 切"。*/

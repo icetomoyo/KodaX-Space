@@ -143,7 +143,7 @@ test('runtime mutations serialize and a failed write rolls back only its own cha
   );
   await firstWriteEntered;
   const second = kodaxHost.commitRuntimeMutation(sessionId, () =>
-    kodaxHost.setAutoModeEngine(sessionId, 'rules'),
+    kodaxHost.setReasoningMode(sessionId, 'deep'),
   );
 
   releaseFirstWrite?.();
@@ -151,7 +151,7 @@ test('runtime mutations serialize and a failed write rolls back only its own cha
   assert.equal(await first, 'persist-failed');
   assert.equal(await second, 'ok');
   assert.equal(kodaxHost.get(sessionId)?.permissionMode, 'accept-edits');
-  assert.equal(kodaxHost.get(sessionId)?.autoModeEngine, 'rules');
+  assert.equal(kodaxHost.get(sessionId)?.reasoningMode, 'deep');
   assert.equal(writes, 2);
 });
 

@@ -49,7 +49,6 @@ test('session.list output distinguishes persisted runtime identity from legacy f
     provider: 'openai',
     reasoningMode: 'auto',
     permissionMode: 'accept-edits',
-    autoModeEngine: 'llm',
     agentMode: 'ama',
     surface: 'partner',
     createdAt: 1,
@@ -645,7 +644,6 @@ test('session.create output includes resolved runtime settings', () => {
     createdAt: 0,
     reasoningMode: 'quick',
     permissionMode: 'auto',
-    autoModeEngine: 'rules',
     agentMode: 'sa',
   };
   assert.equal(sessionCreateChannel.output.safeParse(output).success, true);
@@ -1318,10 +1316,10 @@ test('session.event tool_result rejects content over 512 KB', () => {
   assert.equal(sessionEventChannel.payload.safeParse(evt).success, false);
 });
 
-// ---- FEATURE_029: canonical 3 mode + auto engine ----
+// ---- KodaX 0.7.96 canonical permission profiles ----
 
-test('permissionMode enum accepts canonical 3: plan / accept-edits / auto', () => {
-  for (const mode of ['plan', 'accept-edits', 'auto'] as const) {
+test('permissionMode enum accepts the four canonical profiles', () => {
+  for (const mode of ['plan', 'accept-edits', 'auto', 'full-access'] as const) {
     const result = sessionCreateChannel.input.safeParse({
       projectRoot: '/tmp/proj',
       provider: 'mock',
@@ -1340,36 +1338,6 @@ test('permissionMode enum rejects legacy values: ask-permissions / bypass-permis
     });
     assert.equal(result.success, false, `should reject legacy ${mode}`);
   }
-});
-
-test('session.event auto_engine_change variant accepted with reason enum', () => {
-  for (const reason of ['manual', 'denial_threshold', 'circuit_breaker'] as const) {
-    const evt = {
-      kind: 'auto_engine_change' as const,
-      sessionId: 's_1',
-      engine: 'rules' as const,
-      reason,
-    };
-    assert.equal(sessionEventChannel.payload.safeParse(evt).success, true, `reason=${reason}`);
-  }
-});
-
-test('session.event auto_engine_change accepts engine without reason (optional)', () => {
-  const evt = {
-    kind: 'auto_engine_change' as const,
-    sessionId: 's_1',
-    engine: 'llm' as const,
-  };
-  assert.equal(sessionEventChannel.payload.safeParse(evt).success, true);
-});
-
-test('session.event auto_engine_change rejects invalid engine value', () => {
-  const evt = {
-    kind: 'auto_engine_change' as const,
-    sessionId: 's_1',
-    engine: 'something-else',
-  };
-  assert.equal(sessionEventChannel.payload.safeParse(evt).success, false);
 });
 
 test('session.event workflow_notice accepts live dedup key and sentAt', () => {

@@ -2,7 +2,6 @@
 //
 // 覆盖：
 //   /mode + 错误参数 + 未知 session
-//   /auto-engine + 错误参数
 //   /provider + 未知 providerId
 //   /reasoning + 错误参数
 //   /clear + 未知 session
@@ -181,8 +180,6 @@ test('listSlashCommands returns all builtin commands in alpha order', () => {
   const required = new Set([
     'agent-mode',
     'auto',
-    'auto-denials',
-    'auto-engine',
     'clear',
     'compact',
     'copy',
@@ -461,47 +458,15 @@ test('Partner config commands stay on the embedded process when Runtime is selec
   assert.equal(process.env.KODAX_STALL_LOG, undefined);
 });
 
-test('Partner auto-denials reports the embedded host without reading daemon settings', async (t) => {
-  const adapter = runtimeHostAdapter as unknown as {
-    isRuntimeSelected(): boolean;
-    getSessionSettingsVersioned(sessionId: string): Promise<unknown>;
-  };
-  const originals = {
-    isRuntimeSelected: adapter.isRuntimeSelected,
-    getSessionSettingsVersioned: adapter.getSessionSettingsVersioned,
-  };
-  let runtimeSettingsRead = false;
-  adapter.isRuntimeSelected = () => true;
-  adapter.getSessionSettingsVersioned = async () => {
-    runtimeSettingsRead = true;
-    throw new Error('Partner command must not read Runtime Session settings');
-  };
-  t.after(() => Object.assign(adapter, originals));
-  const { sessionId } = kodaxHost.createSession({
-    projectRoot: '/r',
-    provider: 'mock',
-    model: 'partner-model',
-    surface: 'partner',
-  });
-  assert.equal(kodaxHost.setPermissionMode(sessionId, 'auto'), true);
-
-  const result = await runCmd('auto-denials', sessionId);
-
-  assert.equal(result.ok, true);
-  assert.match(result.message ?? '', /host: embedded/i);
-  assert.match(result.message ?? '', /classifier model: partner-model/i);
-  assert.equal(runtimeSettingsRead, false);
-});
-
-test('/mode plan switches permission mode', async () => {
+test('/mode full-access switches to the canonical direct-host profile', async () => {
   const { sessionId } = kodaxHost.createSession({
     projectRoot: 'C:\\tmp\\proj',
     provider: 'mock',
   });
-  const result = await runCmd('mode', sessionId, ['plan']);
+  const result = await runCmd('mode', sessionId, ['full-access']);
   assert.equal(result.ok, true);
-  assert.equal(kodaxHost.get(sessionId)?.permissionMode, 'plan');
-  assert.equal((await runtimeStore.read(sessionId))?.permissionMode, 'plan');
+  assert.equal(kodaxHost.get(sessionId)?.permissionMode, 'full-access');
+  assert.equal((await runtimeStore.read(sessionId))?.permissionMode, 'full-access');
 });
 
 test('/mode rolls back the in-memory change when runtime metadata cannot be persisted', async () => {
@@ -519,27 +484,6 @@ test('/mode rolls back the in-memory change when runtime metadata cannot be pers
   assert.match(result.message ?? '', /could not be persisted; change was rolled back/);
   assert.equal(kodaxHost.get(sessionId)?.permissionMode, 'accept-edits');
   assert.deepEqual(await readFile(runtimePath), malformed);
-});
-
-test('/auto-engine emits no stale change event when persistence fails and rolls back', async () => {
-  const { sessionId } = kodaxHost.createSession({
-    projectRoot: '/r',
-    provider: 'mock',
-  });
-  await writeFile(path.join(runtimeDir, `${sessionId}.json`), '{malformed');
-
-  const result = await runCmd('auto-engine', sessionId, ['rules']);
-
-  assert.equal(result.ok, false);
-  assert.equal(kodaxHost.get(sessionId)?.autoModeEngine, 'llm');
-  assert.equal(
-    captured.some(
-      (entry) =>
-        entry.channel === 'session.event' &&
-        (entry.payload as { kind?: string }).kind === 'auto_engine_change',
-    ),
-    false,
-  );
 });
 
 test('/mode with no args returns usage', async () => {
@@ -562,40 +506,13 @@ test('/mode with unknown enum value returns valid-list message', async () => {
   assert.ok(result.message?.includes('plan'));
   assert.ok(result.message?.includes('accept-edits'));
   assert.ok(result.message?.includes('auto'));
+  assert.ok(result.message?.includes('full-access'));
 });
 
 test('/mode on unknown session returns false', async () => {
   const result = await runCmd('mode', 's_nope', ['plan']);
   assert.equal(result.ok, false);
   assert.ok(result.message?.includes('session not found'));
-});
-
-test('/auto-engine rules switches engine + emits auto_engine_change', async () => {
-  const { sessionId } = kodaxHost.createSession({
-    projectRoot: 'C:\\tmp\\proj',
-    provider: 'mock',
-  });
-  captured = [];
-  const result = await runCmd('auto-engine', sessionId, ['rules']);
-  assert.equal(result.ok, true);
-  assert.equal(kodaxHost.get(sessionId)?.autoModeEngine, 'rules');
-  const ev = captured.find(
-    (c) =>
-      c.channel === 'session.event' &&
-      (c.payload as { kind: string }).kind === 'auto_engine_change',
-  );
-  assert.ok(ev, 'auto-engine cmd should emit auto_engine_change');
-});
-
-test('/auto-engine with unknown value returns valid-list', async () => {
-  const { sessionId } = kodaxHost.createSession({
-    projectRoot: 'C:\\tmp\\proj',
-    provider: 'mock',
-  });
-  const result = await runCmd('auto-engine', sessionId, ['neural']);
-  assert.equal(result.ok, false);
-  assert.ok(result.message?.includes('llm'));
-  assert.ok(result.message?.includes('rules'));
 });
 
 test('/reasoning quick switches reasoning mode', async () => {
@@ -699,7 +616,7 @@ test('/help returns echo=true with command list', async () => {
   assert.equal(result.ok, true);
   assert.equal(result.echo, true);
   assert.ok(result.message?.includes('/mode'));
-  assert.ok(result.message?.includes('/auto-engine'));
+  assert.ok(result.message?.includes('/auto'));
 });
 
 test('/help supports command topics and aliases', async () => {

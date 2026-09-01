@@ -39,7 +39,6 @@ import {
   sessionSetReasoningModeChannel,
   sessionSetProviderChannel,
   sessionSetPermissionModeChannel,
-  sessionSetAutoModeEngineChannel,
   sessionSetAgentModeChannel,
   sessionForkChannel,
   sessionRewindChannel,
@@ -187,7 +186,6 @@ import {
   settingsKodaxConfigGetChannel,
   settingsKodaxConfigPlanIntegrationMigrationChannel,
   settingsKodaxConfigSetCompactionChannel,
-  settingsKodaxConfigSetSandboxChannel,
   settingsSetCoderRuntimeModeChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetLanguageModeChannel,
@@ -313,7 +311,6 @@ export const invokeChannels = {
   [sessionSetReasoningModeChannel.name]: sessionSetReasoningModeChannel,
   [sessionSetProviderChannel.name]: sessionSetProviderChannel,
   [sessionSetPermissionModeChannel.name]: sessionSetPermissionModeChannel,
-  [sessionSetAutoModeEngineChannel.name]: sessionSetAutoModeEngineChannel,
   [sessionSetAgentModeChannel.name]: sessionSetAgentModeChannel,
   [sessionForkChannel.name]: sessionForkChannel,
   [sessionRewindChannel.name]: sessionRewindChannel,
@@ -434,7 +431,6 @@ export const invokeChannels = {
   [settingsSetRuntimeDefaultsChannel.name]: settingsSetRuntimeDefaultsChannel,
   [settingsKodaxConfigGetChannel.name]: settingsKodaxConfigGetChannel,
   [settingsKodaxConfigSetCompactionChannel.name]: settingsKodaxConfigSetCompactionChannel,
-  [settingsKodaxConfigSetSandboxChannel.name]: settingsKodaxConfigSetSandboxChannel,
   [settingsKodaxConfigPlanIntegrationMigrationChannel.name]:
     settingsKodaxConfigPlanIntegrationMigrationChannel,
   [settingsKodaxConfigApplyIntegrationMigrationChannel.name]:

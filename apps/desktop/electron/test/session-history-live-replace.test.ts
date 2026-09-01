@@ -19,7 +19,6 @@ const sidebarSession: SessionMeta = {
   provider: 'mock',
   reasoningMode: 'auto',
   permissionMode: 'accept-edits',
-  autoModeEngine: 'llm',
   agentMode: 'ama',
   surface: 'code',
   createdAt: 100,

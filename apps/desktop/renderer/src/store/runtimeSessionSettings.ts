@@ -35,7 +35,6 @@ export function mergeRuntimeSettingsIntoSessions(
           : {}),
       ...(settings.permissionMode ? { permissionMode: settings.permissionMode } : {}),
       ...(settings.agentMode ? { agentMode: settings.agentMode } : {}),
-      ...(settings.autoModeEngine ? { autoModeEngine: settings.autoModeEngine } : {}),
     };
     if (settings.model) {
       next.model = settings.model;

@@ -27,7 +27,6 @@ import { workflowPolicyStore, buildWorkflowHostPolicy } from './workflow-policy.
 import { externalAgentGateway } from './external-agent-gateway.js';
 import { repoIntelContextFields } from './repo-intel-gate.js';
 import { replaceFileWithoutFollowingAliases } from './atomic-file.js';
-import { loadKodaxRunConfig } from './user-config.js';
 import {
   runDetachedWorkflowWithProviderCredentialLease,
   runWithExactProviderCredential,
@@ -1821,10 +1820,6 @@ export class WorkflowController {
     // key is absent, and the value is threaded to each child via ChildExecutorOptions
     // .parentOptions. repoIntelContextFields() is fail-closed (see repo-intel-gate.ts).
     const repoIntelCtx = await repoIntelContextFields();
-    // Workflow Panel / slash-command launches are independent SDK Runs. Pass an
-    // explicit allow-list (including empty) so they match chat, Partner, legacy,
-    // and daemon sessions without falling back to process-global env state.
-    const runConfig = await loadKodaxRunConfig();
     const externalAgentBinding = await externalAgentGateway.getBinding({
       actorId: 'space:workflow',
       projectId: s.projectRoot,
@@ -1856,7 +1851,6 @@ export class WorkflowController {
       // in buildWorkflowHostPolicy — mirrors the AMA run_workflow path in real-session.ts.
       workflowHostPolicy: buildWorkflowHostPolicy(policy),
       workflow: { maxConcurrency: policy.maxConcurrency },
-      sandbox: runConfig.sandbox,
     };
   }
 

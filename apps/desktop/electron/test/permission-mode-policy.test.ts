@@ -1,4 +1,4 @@
-// PermissionBroker mode-aware policy tests — FEATURE_029 canonical 3 mode
+// PermissionBroker mode-aware policy tests — KodaX canonical four profiles
 //
 // 对齐 KodaX REPL canonical (ADR-005)：
 //   'plan'         → Coder 全 deny（broker 层不区分 tool；plan-mode 拦截在 KodaX 入口
@@ -9,10 +9,11 @@
 //                    dangerous (rm -rf 等) 即便是 edit 工具也 ask
 //   'auto'         → FEATURE_030 AutoModeToolGuardrail 正常路径不进入 broker；
 //                    兼容路径只对 dangerous 调用保留本地确认，避免双 broker。
+//   'full-access'  → broker 不弹窗；SDK Exec Policy 仍拥有不可授权边界。
 //
 // 已删 mode：
 //   - 'ask-permissions'    (KodaX 没有)
-//   - 'bypass-permissions' (KodaX 没有；要"全放行"通过 auto + auto-rules.jsonc allow-all 实现)
+//   - 'bypass-permissions' (已迁移为 canonical 'full-access')
 
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';

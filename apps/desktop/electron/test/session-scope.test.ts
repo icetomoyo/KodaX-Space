@@ -11,7 +11,6 @@ function meta(sessionId: string, projectRoot: string, surface: SessionMeta['surf
     provider: 'mock',
     reasoningMode: 'auto',
     permissionMode: 'accept-edits',
-    autoModeEngine: 'llm',
     agentMode: 'ama',
     createdAt: 1,
     lastActivityAt: 1,

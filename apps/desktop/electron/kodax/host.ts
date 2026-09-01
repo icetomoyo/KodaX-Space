@@ -183,7 +183,6 @@ export type ListMergedItem =
       readonly provider: string;
       readonly reasoningMode: ManagedSession['reasoningMode'];
       readonly permissionMode: ManagedSession['permissionMode'];
-      readonly autoModeEngine: ManagedSession['autoModeEngine'];
       readonly agentMode: ManagedSession['agentMode'];
       /** F045: 工作面归属（来自 runtime ManagedSession.surface）。*/
       readonly surface: ManagedSession['surface'];
@@ -240,7 +239,6 @@ class KodaXHost {
     provider: string;
     reasoningMode?: import('@kodax-space/space-ipc-schema').ReasoningMode;
     permissionMode?: import('@kodax-space/space-ipc-schema').PermissionMode;
-    autoModeEngine?: import('@kodax-space/space-ipc-schema').AutoModeEngine;
     /** 缺省 'ama'。SA 是接口并发受限的 fallback；与 KodaX SDK 默认一致。*/
     agentMode?: import('@kodax-space/space-ipc-schema').AgentMode;
     /** F045: 工作面（'code' = Coder / 'partner' = Partner）。缺省 'code'。持久化为 SDK session tag。*/
@@ -287,7 +285,6 @@ class KodaXHost {
       reasoningMode: opts.reasoningMode ?? 'auto',
       // FEATURE_029: canonical 缺省 'accept-edits' — 与 sessionMetaSchema.default 同步
       permissionMode: opts.permissionMode ?? 'accept-edits',
-      autoModeEngine: opts.autoModeEngine ?? 'llm',
       agentMode: opts.agentMode ?? 'ama',
       surface,
       ephemeral: opts.ephemeral ?? false,
@@ -339,7 +336,6 @@ class KodaXHost {
       thinking: session.thinking,
       reasoningMode: session.reasoningMode,
       permissionMode: session.permissionMode,
-      autoModeEngine: session.autoModeEngine,
       agentMode: session.agentMode,
     });
   }
@@ -378,7 +374,6 @@ class KodaXHost {
       thinking: session.thinking,
       reasoningMode: session.reasoningMode,
       permissionMode: session.permissionMode,
-      autoModeEngine: session.autoModeEngine,
       agentMode: session.agentMode,
     };
     const restore = (): void => {
@@ -387,7 +382,6 @@ class KodaXHost {
       session.thinking = before.thinking;
       session.reasoningMode = before.reasoningMode;
       session.permissionMode = before.permissionMode;
-      session.autoModeEngine = before.autoModeEngine;
       session.agentMode = before.agentMode;
     };
     try {
@@ -398,7 +392,6 @@ class KodaXHost {
         restore();
         return 'session-not-found';
       }
-      const autoModeEngineChanged = before.autoModeEngine !== session.autoModeEngine;
       if (session.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
         const wireEffort = await resolveSdkSpaceWireEffort({
           provider: session.provider,
@@ -420,7 +413,6 @@ class KodaXHost {
             permissionMode: session.permissionMode,
             executionCwd: session.projectRoot,
             agentMode: session.agentMode,
-            autoModeEngine: session.autoModeEngine,
           },
           {
             sessionId,
@@ -431,14 +423,6 @@ class KodaXHost {
         );
       }
       if (await this.persistRuntime(sessionId)) {
-        if (autoModeEngineChanged) {
-          pushToRenderer('session.event', {
-            kind: 'auto_engine_change',
-            sessionId,
-            engine: session.autoModeEngine,
-            reason: 'manual',
-          });
-        }
         return 'ok';
       }
       if (session.surface === 'code' && runtimeHostAdapter.hasReadyRuntime()) {
@@ -467,9 +451,6 @@ class KodaXHost {
             ? { permissionMode: before.permissionMode }
             : {}),
           ...(before.agentMode !== session.agentMode ? { agentMode: before.agentMode } : {}),
-          ...(before.autoModeEngine !== session.autoModeEngine
-            ? { autoModeEngine: before.autoModeEngine }
-            : {}),
         };
         await runtimeHostAdapter
           .updateSessionSettings(sessionId, rollbackPatch)
@@ -611,7 +592,6 @@ class KodaXHost {
       ...(model !== undefined ? { model } : {}),
       reasoningMode: runtimeDefaults.reasoningMode,
       permissionMode: runtimeDefaults.permissionMode,
-      autoModeEngine: runtimeDefaults.autoModeEngine,
       agentMode: runtimeDefaults.agentMode,
       // F045: 从持久化的 SDK session tag 反推 surface——否则重启后 resume 的 Partner
       // session 会被默认成 Coder，in-flight 项又因 dedup 优先覆盖 persisted 项，整段
@@ -715,7 +695,6 @@ class KodaXHost {
       provider: s.provider,
       reasoningMode: s.reasoningMode,
       permissionMode: s.permissionMode,
-      autoModeEngine: s.autoModeEngine,
       agentMode: s.agentMode,
       surface: s.surface,
       model: s.model,
@@ -954,30 +933,6 @@ class KodaXHost {
   }
 
   /**
-   * FEATURE_029: 切 auto-mode 子档 engine ('llm' | 'rules')。
-   * 立即赋值到 session.autoModeEngine（即便当前不是 auto mode 也接受——
-   * 用户先选 engine 再切 auto mode 是合法 UX）。
-   *
-   * F030 wire 后：guardrail 通过 onEngineChange callback 反向通知 host 该字段，
-   * 此 setter 主要服务 user-initiated 切换 + emit 一条 auto_engine_change event 给 renderer。
-   */
-  setAutoModeEngine(sessionId: string, engine: ManagedSession['autoModeEngine']): boolean {
-    const s = this.sessions.get(sessionId);
-    if (!s) return false;
-    if (s.autoModeEngine === engine) return true; // 幂等：相同值不 emit event
-    s.autoModeEngine = engine;
-    if (!this.runtimeMutationsInProgress.has(sessionId)) {
-      pushToRenderer('session.event', {
-        kind: 'auto_engine_change',
-        sessionId,
-        engine,
-        reason: 'manual',
-      });
-    }
-    return true;
-  }
-
-  /**
    * 切 agent 形态 (AMA ↔ SA)。
    * 立即赋值到 session.agentMode，下条 prompt 走新形态 (real-session 闭包 live-read)。
    * 不重启 in-flight session — 当前 turn 仍以旧形态完成。幂等：相同值直接返回。
@@ -1078,7 +1033,6 @@ class KodaXHost {
         ...(src.model !== undefined ? { model: src.model } : {}),
         reasoningMode: src.reasoningMode,
         permissionMode: src.permissionMode,
-        autoModeEngine: src.autoModeEngine,
         // review MEDIUM-4: 之前漏传 agentMode → fork child 总被重置成默认 'ama'（即便 source 是
         // 'sa'）。补上与其他运行时设置一致地继承 source。
         agentMode: src.agentMode,

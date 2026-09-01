@@ -249,6 +249,19 @@ test('auto mode: dangerous bash still prompts (rm -rf etc.)', async () => {
   await pending;
 });
 
+test('full-access bypasses prompts even for dangerous calls', async () => {
+  captured.length = 0;
+  const result = await permissionBroker.request({
+    sessionId: 's-full-access',
+    toolId: 't1',
+    toolName: 'bash',
+    input: { command: 'rm -rf /tmp/whatever' },
+    mode: 'full-access',
+  });
+  assert.equal(result.decision, 'allow_once');
+  assert.equal(captured.some((entry) => entry.channel === 'permission.request'), false);
+});
+
 test('C2-sec: broker.peek returns trustedPattern from pending entry', async () => {
   const pending = permissionBroker.request({
     sessionId: 's1',

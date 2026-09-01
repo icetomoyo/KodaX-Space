@@ -28,39 +28,26 @@ export const reasoningModeSchema = z
   .regex(/^[a-z][a-z0-9_-]*$/);
 export type ReasoningMode = z.infer<typeof reasoningModeSchema>;
 
-// ---- Permission mode (FEATURE_029 / alpha.1) — 对齐 KodaX REPL canonical ----
+// ---- Permission mode — 对齐 KodaX REPL canonical profiles ----
 // 起因 + 决策记录见 docs/ADR/ADR-005-permission-mode-canonical.md
 //
-// **canonical 3 mode**（与 KodaX REPL FEATURE_092 对齐）：
+// **canonical 4 profiles**（与 KodaX 0.7.96 FEATURE_297 对齐）：
 //   - 'plan'         只规划，所有 mutating 工具 hard-block (planModeBlockCheck 拦下)
-//   - 'accept-edits' edit/write 自动批；bash / network / MCP 走 confirm
-//   - 'auto'         所有 tools 由 AutoModeToolGuardrail 守门（FEATURE_030 注入）
-//
-// auto mode 配 sub-engine: 'llm' | 'rules' (autoModeEngineSchema, 见下)
-// fallback：denial threshold (3/20) 或 circuit breaker (5/10m) 触发后 llm 自动降到 rules，
-// 通过 SessionEvent 'auto_engine_change' 通知 renderer 更新 UI。
+//   - 'accept-edits' sandbox-first；仅在已证明的 host boundary 请求用户确认
+//   - 'auto'         sandbox-first；仅在 host boundary 由 Auto[LLM] review
+//   - 'full-access'  直接 host 执行，但仍受 Exec Policy 约束
 //
 // **alpha.0/.1 旧 enum 已 deprecated**：
 //   - 'plan-mode'          → 'plan'
 //   - 'ask-permissions'    → 'accept-edits' (KodaX 没有"问每次"独立 mode)
-//   - 'bypass-permissions' → 'auto' + engine 'rules' (auto-rules.jsonc allow-all 实现 bypass)
+//   - 'bypass-permissions' → 'full-access'
 //   - 'accept-edits'       → 'accept-edits' (不变)
 //
 // 注意：当前 desktop sessions 仅 in-memory (host Map)，**无持久化文件**，故未实现
 // migrateLegacyPermissionMode 迁移函数——zod 在 IPC 边界直接拒绝旧 enum 值。
 // 未来若 F033 引入 ~/.kodax/sessions/ 持久化加载，再补迁移函数 + 单测。
-export const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto']);
+export const permissionModeSchema = z.enum(['plan', 'accept-edits', 'auto', 'full-access']);
 export type PermissionMode = z.infer<typeof permissionModeSchema>;
-
-// ---- Auto-mode engine 子档 (FEATURE_029) ----
-//
-// 仅 permissionMode === 'auto' 时有意义。
-//   - 'llm'   sideQuery 调 classifier 让 LLM 判断 risk
-//   - 'rules' 走 ~/.kodax/auto-rules.jsonc + 内置 signals (file/bash/path) + AGENTS.md context
-//
-// 启动默认 'llm'；触发 denial threshold / circuit breaker → 自动 'rules'。
-export const autoModeEngineSchema = z.enum(['llm', 'rules']);
-export type AutoModeEngine = z.infer<typeof autoModeEngineSchema>;
 
 // KodaX agent 形态（0.7.72 起 AMAW 已并入 AMA）:
 //   - 'ama' = Adaptive Multi-Agent（仅显式 Workflow 强信号、显式命令和 SDK Workflow 入口）
@@ -135,19 +122,10 @@ const sessionMetaSchema = z.object({
   /** F033 fork 时 source 的 turn idx (>= 0)。*/
   forkPointTurnIdx: z.number().int().nonnegative().optional(),
   /**
-   * FEATURE_029：canonical 3 mode。缺省 'accept-edits'——足够日常 edit/write
-   * 自动批 + bash/network 仍走 confirm，对新用户最不容易出事。
-   * 用户想跑全自动 → 显式切 'auto' (会触发 AutoModeToolGuardrail bootstrap)。
+   * 缺省 'accept-edits'：日常文本编辑直接应用；shell 优先走 sandbox，只有已证明
+   * 的 host boundary 才请求确认。用户可显式选择 Auto[LLM] 或 Full Access。
    */
   permissionMode: permissionModeSchema.default('accept-edits'),
-  /**
-   * 仅当 permissionMode === 'auto' 时实际驱动 guardrail；其他 mode 下仍持有该字段
-   * （用户先选 engine 再切到 auto 是合法路径）。
-   * **非 optional**：runtime ManagedSession.autoModeEngine 始终有值，default 'llm'
-   * 与 IPC layer 一致——避免 main 端 "always present" 与 renderer 端 "may absent"
-   * 双语义分歧（reviewer 反馈 MEDIUM）。
-   */
-  autoModeEngine: autoModeEngineSchema.default('llm'),
   /**
    * Agent 编排形态。默认 'ama'（多智能体协作，与 KodaX SDK 默认一致）。
    * 'sa' 是 fallback 选择（接口并发受限、需要节省 token 时显式降级）。
@@ -200,8 +178,6 @@ export const sessionCreateChannel = {
     model: z.string().min(1).max(128).optional(),
     reasoningMode: reasoningModeSchema.optional(),
     permissionMode: permissionModeSchema.optional(),
-    /** 仅 mode='auto' 生效。缺省 'llm'。*/
-    autoModeEngine: autoModeEngineSchema.optional(),
     /** 缺省 'ama'。SA 是接口并发受限的 fallback。*/
     agentMode: agentModeSchema.optional(),
     /** F045: 工作面。缺省 'code'。决定 session 的 tag（写盘）/ 工具集 / 列表归属。*/
@@ -218,7 +194,6 @@ export const sessionCreateChannel = {
     createdAt: z.number().int().nonnegative(),
     reasoningMode: reasoningModeSchema,
     permissionMode: permissionModeSchema,
-    autoModeEngine: autoModeEngineSchema,
     agentMode: agentModeSchema,
   }),
 } as const;
@@ -451,30 +426,13 @@ export const sessionDeleteChannel = {
 
 // ---- Invoke: session.setPermissionMode ---- (FEATURE_029)
 //
-// Claude Desktop Mode 切换 (Ctrl+M)。立即生效——下一次 tool call 走新 mode。
-// 切到 'auto' 时如果 autoModeEngine 未先设置过，main 端用缺省 'llm' bootstrap guardrail。
+// Mode 切换 (Ctrl+M)。立即持久化；下一次 run 使用新 profile。
 export const sessionSetPermissionModeChannel = {
   name: 'session.setPermissionMode',
   direction: 'invoke',
   input: z.object({
     sessionId: z.string().min(1),
     mode: permissionModeSchema,
-  }),
-  output: z.object({
-    ok: z.boolean(),
-  }),
-} as const;
-
-// ---- Invoke: session.setAutoModeEngine ---- (FEATURE_029)
-//
-// 用户手动在 Auto 子菜单切 llm ↔ rules。立即生效；若当前 mode 不是 'auto' 也接受
-// （记录起来，下次切到 auto 时生效），main 端不强制 mode === 'auto'。
-export const sessionSetAutoModeEngineChannel = {
-  name: 'session.setAutoModeEngine',
-  direction: 'invoke',
-  input: z.object({
-    sessionId: z.string().min(1),
-    engine: autoModeEngineSchema,
   }),
   output: z.object({
     ok: z.boolean(),
@@ -1486,27 +1444,6 @@ export const sessionEventChannel = {
       kind: z.literal('managed_task_status'),
       sessionId: z.string().min(1),
       status: managedTaskStatusSchema,
-    }),
-    // ---- FEATURE_029 Auto-mode engine change ----
-    //
-    // 推送时机：
-    //   - user 手动 setAutoModeEngine（reason='manual'）
-    //   - guardrail 触发 denial threshold（reason='denial_threshold'）
-    //   - guardrail 触发 circuit breaker（reason='circuit_breaker'）
-    //   - v0.1.4: bootstrapAutoMode 失败 fallback 到 accept-edits（reason='bootstrap_failed'）
-    //     这条之前是 emit 一条 session_error 当通知，但 session_error 是"session 结束"
-    //     语义，ActivitySpinner 误判 streaming=false 让 spinner 消失（用户报告"改 mode
-    //     后 spinner 动画消失了"同一类 bug）。换走 auto_engine_change 复用现有
-    //     NotificationsSurface 弹持久内联通知。
-    z.object({
-      kind: z.literal('auto_engine_change'),
-      sessionId: z.string().min(1),
-      engine: autoModeEngineSchema,
-      reason: z
-        .enum(['manual', 'denial_threshold', 'circuit_breaker', 'bootstrap_failed'])
-        .optional(),
-      /** bootstrap_failed 时携带的失败原因文案（其他 reason 缺省）。展示在 NotificationsSurface。 */
-      details: z.string().max(512).optional(),
     }),
     // ---- FEATURE_008 legacy work_budget / harness_profile ----
     //

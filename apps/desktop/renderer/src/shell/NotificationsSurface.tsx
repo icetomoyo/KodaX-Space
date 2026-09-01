@@ -6,7 +6,6 @@
 //     这种系统级状态用户必须确认 — 不能用一闪而过的 toast 处理。
 //
 // 来源 (当前 v0.1.x 触发器):
-//   - auto_engine_change with reason ∈ {'denial_threshold', 'circuit_breaker'} (manual 不弹)
 //   - 后续: context 80% warning / 反复 retry / network down 等
 //
 // session 过滤: notice.sessionId 与 currentSessionId 不匹配且非全局 (undefined sessionId) 时不显示。

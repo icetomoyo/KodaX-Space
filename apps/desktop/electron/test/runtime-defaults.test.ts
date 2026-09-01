@@ -12,7 +12,6 @@ test('resolveRuntimeDefaults prioritizes explicit over session, Space, KodaX, an
     {
       loadSessionRuntime: async () => ({
         permissionMode: 'plan',
-        autoModeEngine: 'rules',
         reasoningMode: 'quick',
         agentMode: 'sa',
       }),
@@ -25,7 +24,6 @@ test('resolveRuntimeDefaults prioritizes explicit over session, Space, KodaX, an
         coderRuntimeMode: 'daemon',
         runtimeDefaults: {
           permissionMode: 'accept-edits',
-          autoModeEngine: 'llm',
           reasoningMode: 'deep',
           agentMode: 'ama',
         },
@@ -39,12 +37,10 @@ test('resolveRuntimeDefaults prioritizes explicit over session, Space, KodaX, an
   );
 
   assert.equal(out.permissionMode, 'auto');
-  assert.equal(out.autoModeEngine, 'rules');
   assert.equal(out.reasoningMode, 'quick');
   assert.equal(out.agentMode, 'sa');
   assert.deepEqual(out.sources, {
     permissionMode: 'explicit',
-    autoModeEngine: 'session',
     reasoningMode: 'session',
     agentMode: 'session',
   });
@@ -62,7 +58,6 @@ test('resolveRuntimeDefaults uses Space before KodaX and KodaX before builtins',
         windowCloseBehavior: 'ask',
         coderRuntimeMode: 'daemon',
         runtimeDefaults: {
-          autoModeEngine: 'rules',
           agentMode: 'sa',
         },
       }),
@@ -75,12 +70,10 @@ test('resolveRuntimeDefaults uses Space before KodaX and KodaX before builtins',
   );
 
   assert.equal(out.permissionMode, 'plan');
-  assert.equal(out.autoModeEngine, 'rules');
   assert.equal(out.reasoningMode, 'deep');
   assert.equal(out.agentMode, 'sa');
   assert.deepEqual(out.sources, {
     permissionMode: 'kodax',
-    autoModeEngine: 'space',
     reasoningMode: 'kodax',
     agentMode: 'space',
   });
@@ -103,18 +96,16 @@ test('resolveRuntimeDefaults falls back to builtins when loaders fail', async ()
   );
 
   assert.equal(out.permissionMode, 'accept-edits');
-  assert.equal(out.autoModeEngine, 'llm');
   assert.equal(out.reasoningMode, 'auto');
   assert.equal(out.agentMode, 'ama');
   assert.deepEqual(out.sources, {
     permissionMode: 'builtin',
-    autoModeEngine: 'builtin',
     reasoningMode: 'builtin',
     agentMode: 'builtin',
   });
 });
 
-test('resolveRuntimeDefaults uses the KodaX autoMode engine before the builtin', async () => {
+test('resolveRuntimeDefaults preserves the canonical KodaX full-access profile', async () => {
   const out = await resolveRuntimeDefaults(
     {},
     {
@@ -128,12 +119,11 @@ test('resolveRuntimeDefaults uses the KodaX autoMode engine before the builtin',
         runtimeDefaults: {},
       }),
       loadKodaxDefaults: async () => ({
-        autoModeEngine: 'rules',
+        permissionMode: 'full-access',
         customProvidersCount: 0,
       }),
     },
   );
-
-  assert.equal(out.autoModeEngine, 'rules');
-  assert.equal(out.sources.autoModeEngine, 'kodax');
+  assert.equal(out.permissionMode, 'full-access');
+  assert.equal(out.sources.permissionMode, 'kodax');
 });

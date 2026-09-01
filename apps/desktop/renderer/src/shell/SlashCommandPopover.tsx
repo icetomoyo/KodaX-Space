@@ -458,13 +458,10 @@ function buildSlashArgSuggestions(
       suggestions = commandHelpSuggestions(query, commands, t);
       break;
     case 'mode':
-      suggestions = staticOptions(['plan', 'accept-edits', 'auto']);
+      suggestions = staticOptions(['plan', 'accept-edits', 'auto', 'full-access']);
       break;
     case 'auto':
       suggestions = staticOptions(['auto']);
-      break;
-    case 'auto-engine':
-      suggestions = staticOptions(['llm', 'rules']);
       break;
     case 'agent-mode':
       suggestions = staticOptions(['ama', 'sa', 'toggle']);

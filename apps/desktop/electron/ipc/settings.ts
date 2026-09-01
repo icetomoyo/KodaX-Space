@@ -12,7 +12,6 @@ import { resolveEffectiveLocale, type SpaceSettingsT } from '@kodax-space/space-
 import {
   loadKodaxConfigOverview,
   updateKodaxCompactionConfig,
-  updateKodaxSandboxConfig,
 } from '../kodax/user-config.js';
 import {
   applyKodaxIntegrationMigration,
@@ -167,17 +166,6 @@ export function registerSettingsChannels(options: SettingsChannelsOptions = {}):
       const runtimeReload = await reloadRuntimeConfigAfterWrite(
         'settings.kodaxConfig.setCompaction',
       );
-      return { ...result, runtimeReload };
-    }),
-  );
-
-  registerChannel('settings.kodaxConfig.setSandbox', ({ projectRoot, sandbox }) =>
-    runWithCoderAdmission(options, async () => {
-      const safeProjectRoot = projectRoot ? validateProjectRoot(projectRoot) : undefined;
-      const result = await updateKodaxSandboxConfig(sandbox, safeProjectRoot).catch(
-        rethrowActionableConfigConflict,
-      );
-      const runtimeReload = await reloadRuntimeConfigAfterWrite('settings.kodaxConfig.setSandbox');
       return { ...result, runtimeReload };
     }),
   );

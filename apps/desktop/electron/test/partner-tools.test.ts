@@ -146,7 +146,7 @@ const cap = (c: string) => () => c;
 const planAllowed = (b: boolean) => () => b;
 
 test('Partner: read tool allowed regardless of permissionMode (incl. plan)', () => {
-  for (const mode of ['accept-edits', 'auto', 'plan'] as const) {
+  for (const mode of ['accept-edits', 'auto', 'full-access', 'plan'] as const) {
     assert.equal(
       computeToolBlockReason({
         surface: 'partner',

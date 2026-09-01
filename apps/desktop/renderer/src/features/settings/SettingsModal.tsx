@@ -41,8 +41,6 @@ import {
 import {
   KODAX_COMPACTION_TRIGGER_PERCENT_MAX,
   KODAX_COMPACTION_TRIGGER_PERCENT_MIN,
-  KODAX_SANDBOX_ENV_NAME_MAX,
-  KODAX_SANDBOX_ENV_PASS_MAX,
   type DispatchableAgentListingT,
   type KodaxConfigOverviewT,
   type KodaxIntegrationMigrationPlanT,
@@ -942,9 +940,6 @@ function RuntimePanel(): JSX.Element {
   const [triggerPercent, setTriggerPercent] = useState('');
   const [triggerTokens, setTriggerTokens] = useState('');
   const [contextWindow, setContextWindow] = useState('');
-  const [envPassText, setEnvPassText] = useState('');
-  const [sandboxSaving, setSandboxSaving] = useState(false);
-  const [sandboxSaved, setSandboxSaved] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
@@ -952,10 +947,6 @@ function RuntimePanel(): JSX.Element {
     setTriggerPercent(next.compaction.triggerPercent?.toString() ?? '');
     setTriggerTokens(next.compaction.triggerTokens?.toString() ?? '');
     setContextWindow(next.compaction.contextWindow?.toString() ?? '');
-  }
-
-  function syncSandboxForm(next: KodaxConfigOverviewT): void {
-    setEnvPassText(next.sandbox.envPass.join('\n'));
   }
 
   async function refresh(): Promise<void> {
@@ -975,7 +966,6 @@ function RuntimePanel(): JSX.Element {
       }
       setOverview(overviewResult.data);
       syncCompactionForm(overviewResult.data);
-      syncSandboxForm(overviewResult.data);
       if (migrationResult.ok) {
         setMigrationPlan(migrationResult.data);
       } else {
@@ -1056,41 +1046,6 @@ function RuntimePanel(): JSX.Element {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function saveSandbox(): Promise<void> {
-    if (!window.kodaxSpace || overview?.sandbox.editable !== true) return;
-    setSandboxSaving(true);
-    setErr(null);
-    setSandboxSaved(false);
-    try {
-      const envPass = parseSandboxEnvironmentNames(envPassText, t);
-      const result = await window.kodaxSpace.invoke('settings.kodaxConfig.setSandbox', {
-        ...(currentProjectPath ? { projectRoot: currentProjectPath } : {}),
-        sandbox: { envPass },
-      });
-      if (!result.ok) {
-        setErr(`${result.error.code}: ${result.error.message}`);
-        return;
-      }
-      setOverview(result.data);
-      syncSandboxForm(result.data);
-      window.dispatchEvent(new Event('kodax:sandbox-config-changed'));
-      setSandboxSaved(true);
-      const runtimeReloadFailed = result.data.runtimeReload.status === 'failed';
-      pushToast(
-        runtimeReloadFailed
-          ? t('settings.runtimeConfig.reloadFailed')
-          : t('settings.sandbox.envPass.saved'),
-        runtimeReloadFailed ? 'warning' : 'success',
-        runtimeReloadFailed ? 3200 : 1800,
-      );
-      if (runtimeReloadFailed) setErr(t('settings.runtimeConfig.reloadFailed'));
-    } catch (error) {
-      setErr(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSandboxSaving(false);
     }
   }
 
@@ -1215,8 +1170,6 @@ function RuntimePanel(): JSX.Element {
     : t('settings.runtime.none');
   const migrationNeeded =
     migrationPlan?.mcp.action === 'create' || migrationPlan?.extensions.action === 'create';
-  const sandboxEditable = overview?.sandbox.editable === true;
-
   return (
     <div className="mx-auto max-w-4xl space-y-4 p-5">
       {err && (
@@ -1228,66 +1181,6 @@ function RuntimePanel(): JSX.Element {
       <CoderRuntimeModeSection />
 
       <SandboxReadinessSection />
-
-      <SettingsSection
-        title={t('settings.sandbox.envPass.title')}
-        description={t('settings.sandbox.envPass.description')}
-        icon={KeyRound}
-      >
-        <label className="block">
-          <span className="text-[11px] font-medium uppercase tracking-wide text-fg-muted">
-            {t('settings.sandbox.envPass.label')}
-          </span>
-          <textarea
-            data-testid="sandbox-env-pass"
-            rows={5}
-            value={envPassText}
-            disabled={!sandboxEditable}
-            onChange={(event) => {
-              setEnvPassText(event.target.value);
-              setSandboxSaved(false);
-            }}
-            placeholder={t('settings.sandbox.envPass.placeholder')}
-            spellCheck={false}
-            className="mt-2 w-full resize-y rounded-lg border border-border-default bg-surface px-3 py-2 font-mono text-xs leading-5 text-fg-primary outline-none focus:border-info"
-          />
-          <span className="mt-1 block text-[11px] leading-5 text-fg-muted">
-            {t('settings.sandbox.envPass.hint', { max: KODAX_SANDBOX_ENV_PASS_MAX })}
-          </span>
-        </label>
-        <div className="mt-3 rounded-lg border border-warn/35 bg-warn/8 px-3 py-2 text-[11px] leading-5 text-fg-secondary">
-          {t('settings.sandbox.envPass.security')}
-        </div>
-        {overview && !overview.sandbox.editable && (
-          <div className="mt-3 rounded-lg border border-danger/35 bg-danger/8 px-3 py-2 text-[11px] leading-5 text-fg-secondary">
-            {t('settings.sandbox.envPass.readOnlyOverflow', {
-              count: overview.sandbox.totalEnvPass,
-              max: KODAX_SANDBOX_ENV_PASS_MAX,
-              nameMax: KODAX_SANDBOX_ENV_NAME_MAX,
-            })}
-          </div>
-        )}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            data-testid="sandbox-env-pass-save"
-            onClick={() => void saveSandbox()}
-            disabled={sandboxSaving || !sandboxEditable}
-            className="inline-flex min-h-8 items-center justify-center gap-2 rounded-lg border border-ok/50 bg-ok/15 px-3 text-xs font-medium text-ok hover:bg-ok/25 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {sandboxSaving && (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" strokeWidth={1.8} aria-hidden />
-            )}
-            {sandboxSaving ? t('common.saving') : t('settings.sandbox.envPass.save')}
-          </button>
-          {sandboxSaved && (
-            <span className="inline-flex items-center gap-1.5 text-xs text-ok">
-              <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={1.8} aria-hidden />
-              {t('common.saved')}
-            </span>
-          )}
-        </div>
-      </SettingsSection>
 
       <SettingsSection
         title={t('settings.integrationHealth.title')}
@@ -2455,30 +2348,6 @@ function externalDispatchabilityLabel(
     case 'unavailable':
       return t('settings.externalAgents.dispatchability.unavailable');
   }
-}
-
-function parseSandboxEnvironmentNames(value: string, t: Translate): string[] {
-  const names = value
-    .split(/[\s,]+/u)
-    .map((name) => name.trim())
-    .filter(Boolean);
-  const unique: string[] = [];
-  const seen = new Set<string>();
-  for (const name of names) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      throw new Error(t('settings.sandbox.envPass.invalidName', { name }));
-    }
-    if (name.length > KODAX_SANDBOX_ENV_NAME_MAX) {
-      throw new Error(t('settings.sandbox.envPass.invalidName', { name }));
-    }
-    if (seen.has(name)) continue;
-    seen.add(name);
-    unique.push(name);
-  }
-  if (unique.length > KODAX_SANDBOX_ENV_PASS_MAX) {
-    throw new Error(t('settings.sandbox.envPass.tooMany', { max: KODAX_SANDBOX_ENV_PASS_MAX }));
-  }
-  return unique;
 }
 
 function parseOptionalInt(

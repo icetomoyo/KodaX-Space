@@ -1,6 +1,5 @@
 import type {
   AgentMode,
-  AutoModeEngine,
   PermissionMode,
   ReasoningMode,
   SpaceRuntimeDefaultsT,
@@ -13,19 +12,16 @@ export type RuntimeDefaultSource = 'explicit' | 'session' | 'space' | 'kodax' | 
 
 export interface RuntimeDefaultOverrides {
   readonly permissionMode?: PermissionMode;
-  readonly autoModeEngine?: AutoModeEngine;
   readonly reasoningMode?: ReasoningMode;
   readonly agentMode?: AgentMode;
 }
 
 export interface ResolvedRuntimeDefaults {
   readonly permissionMode: PermissionMode;
-  readonly autoModeEngine: AutoModeEngine;
   readonly reasoningMode: ReasoningMode;
   readonly agentMode: AgentMode;
   readonly sources: {
     readonly permissionMode: RuntimeDefaultSource;
-    readonly autoModeEngine: RuntimeDefaultSource;
     readonly reasoningMode: RuntimeDefaultSource;
     readonly agentMode: RuntimeDefaultSource;
   };
@@ -39,7 +35,6 @@ interface RuntimeDefaultsDeps {
 
 const BUILTIN = {
   permissionMode: 'accept-edits' as PermissionMode,
-  autoModeEngine: 'llm' as AutoModeEngine,
   reasoningMode: 'auto' as ReasoningMode,
   agentMode: 'ama' as AgentMode,
 };
@@ -121,16 +116,6 @@ export async function resolveRuntimeDefaults(
     BUILTIN.permissionMode,
   );
 
-  const autoModeEngine = pick<AutoModeEngine>(
-    [
-      [input.explicit?.autoModeEngine, 'explicit'],
-      [sessionRuntime?.autoModeEngine, 'session'],
-      [spaceDefaults.autoModeEngine, 'space'],
-      [kodaxDefaults.autoModeEngine, 'kodax'],
-    ],
-    BUILTIN.autoModeEngine,
-  );
-
   const reasoningMode = pick<ReasoningMode>(
     [
       [input.explicit?.reasoningMode, 'explicit'],
@@ -152,12 +137,10 @@ export async function resolveRuntimeDefaults(
 
   return {
     permissionMode: permissionMode.value,
-    autoModeEngine: autoModeEngine.value,
     reasoningMode: reasoningMode.value,
     agentMode: agentMode.value,
     sources: {
       permissionMode: permissionMode.source,
-      autoModeEngine: autoModeEngine.source,
       reasoningMode: reasoningMode.source,
       agentMode: agentMode.source,
     },

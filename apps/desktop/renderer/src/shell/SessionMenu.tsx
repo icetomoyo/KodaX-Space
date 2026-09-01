@@ -193,7 +193,6 @@ export function SessionMenu({ sessionId, onClose }: SessionMenuProps): JSX.Eleme
       provider: session.provider,
       reasoningMode: session.reasoningMode,
       permissionMode: session.permissionMode,
-      autoModeEngine: session.autoModeEngine,
       agentMode: session.agentMode, // fork 继承 source 的形态
       surface: session.surface, // F045: fork 继承 source 的工作面（与 main host.fork 一致）
       title: childTitle,

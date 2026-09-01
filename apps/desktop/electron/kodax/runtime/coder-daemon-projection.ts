@@ -968,7 +968,7 @@ function queuedInputsProjection(
 }
 
 const REASONING_MODES = new Set(['off', 'auto', 'quick', 'balanced', 'deep']);
-const PERMISSION_MODES = new Set(['plan', 'accept-edits', 'auto']);
+const PERMISSION_MODES = new Set(['plan', 'accept-edits', 'auto', 'full-access']);
 
 function settingsProjection(
   revision: number,
@@ -987,7 +987,13 @@ function settingsProjection(
           }
         : {}),
       ...(typeof value.permissionMode === 'string' && PERMISSION_MODES.has(value.permissionMode)
-        ? { permissionMode: value.permissionMode as 'plan' | 'accept-edits' | 'auto' }
+        ? {
+            permissionMode: value.permissionMode as
+              | 'plan'
+              | 'accept-edits'
+              | 'auto'
+              | 'full-access',
+          }
         : {}),
       ...(text(value.executionCwd, 4_096)
         ? { executionCwd: text(value.executionCwd, 4_096)! }
@@ -995,17 +1001,8 @@ function settingsProjection(
       ...(value.agentMode === 'ama' || value.agentMode === 'sa'
         ? { agentMode: value.agentMode }
         : {}),
-      ...(value.autoModeEngine === 'llm' || value.autoModeEngine === 'rules'
-        ? { autoModeEngine: value.autoModeEngine }
-        : {}),
       ...(text(value.autoModeClassifierModel, 128)
         ? { autoModeClassifierModel: text(value.autoModeClassifierModel, 128)! }
-        : {}),
-      ...(typeof value.autoModeTimeoutMs === 'number' &&
-      Number.isInteger(value.autoModeTimeoutMs) &&
-      value.autoModeTimeoutMs > 0 &&
-      value.autoModeTimeoutMs <= 3_600_000
-        ? { autoModeTimeoutMs: value.autoModeTimeoutMs }
         : {}),
     },
   };

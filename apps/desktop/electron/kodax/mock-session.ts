@@ -130,7 +130,6 @@ export class MockKodaXSession implements ManagedSession {
   /** FEATURE_029: permissionMode 同上策略，session.setPermissionMode IPC 改字段；下次 tool call 生效。*/
   permissionMode: ManagedSession['permissionMode'];
   /** FEATURE_029: auto-mode 子档；mock 不实际跑 guardrail 但需要持有字段供 host setter。*/
-  autoModeEngine: ManagedSession['autoModeEngine'];
   /** AMA/SA — mock 不真切，但需要持有字段供 host setter。*/
   agentMode: ManagedSession['agentMode'];
   /** F045: 工作面归属；mock 不落盘 tag，但需持有字段使 interface 符合 + host meta 透传。*/
@@ -159,7 +158,6 @@ export class MockKodaXSession implements ManagedSession {
     this.model = opts.model;
     this.reasoningMode = opts.reasoningMode;
     this.permissionMode = opts.permissionMode;
-    this.autoModeEngine = opts.autoModeEngine ?? 'llm';
     this.agentMode = opts.agentMode ?? 'ama';
     this.surface = opts.surface ?? 'code';
     this.ephemeral = opts.ephemeral ?? false;

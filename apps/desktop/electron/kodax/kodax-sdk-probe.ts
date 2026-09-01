@@ -5,10 +5,10 @@
 // 把它们删/改了，TypeScript 不会报（ambient 覆盖了真实推导）。startup probe 拦住这种漂移。
 //
 // 已覆盖的 surface:
-//   @kodax-ai/kodax/coding       runKodaX / runManagedTask / createAutoModeToolGuardrail / loadAutoRules /
+//   @kodax-ai/kodax/coding       runKodaX / runManagedTask / createAutoModeToolGuardrail /
 //                                formatAgentsForPrompt / getKodaxGlobalDir /
 //                                getRegisteredToolDefinition / getBuiltinRegisteredToolDefinition /
-//                                resolveProvider / parseSandboxEnvironmentPass
+//                                resolveProvider
 //   @kodax-ai/kodax/skills       SkillRegistry (skill/registry.ts 自己也 probe，这里重复防御)
 //   @kodax-ai/kodax/llm          getProvider().verifyCredential() (FEATURE_216 — 测连接)
 //   @kodax-ai/kodax/a2a          authenticated A2A config/server/task-migration public surface
@@ -28,7 +28,7 @@ export type SandboxSdkCapability =
   | { readonly status: 'unprobed' }
   | {
       readonly status: 'available';
-      readonly version: 6;
+      readonly version: 9;
       readonly asrtVersion: string;
       readonly backend:
         | 'windows-restricted-user'
@@ -139,7 +139,7 @@ export function inspectSandboxModule(
   for (const control of ['filesystem', 'network', 'environment', 'timeout', 'output']) {
     if (!controls.includes(control)) failures.push(`sandbox controls missing ${control}`);
   }
-  if (capability.version !== 6) failures.push('sandbox capability version expected 6');
+  if (capability.version !== 9) failures.push('sandbox capability version expected 9');
   if (capability.asrtVersion !== asrtVersion) {
     failures.push('sandbox capability ASRT version does not match KODAX_ASRT_VERSION');
   }
@@ -180,7 +180,7 @@ export function inspectSandboxModule(
 
   return {
     status: 'available',
-    version: 6,
+    version: 9,
     asrtVersion: asrtVersion as string,
     backend: backend as Extract<SandboxSdkCapability, { status: 'available' }>['backend'],
     unavailableBehavior: 'structured-no-execution',
@@ -218,7 +218,7 @@ export function projectSandboxDoctorResult(
 
 export function updateSandboxSdkDoctorResult(
   reportedCapability: {
-    readonly version: 6;
+    readonly version: 9;
     readonly asrtVersion: string;
     readonly backend:
       | 'windows-restricted-user'
@@ -300,8 +300,6 @@ export async function probeKodaxSdk(): Promise<void> {
     ['getKodaxGlobalDir', 'function', codingModule.getKodaxGlobalDir],
     ['getRegisteredToolDefinition', 'function', codingModule.getRegisteredToolDefinition],
     ['isToolNetworkRead', 'function', codingModule.isToolNetworkRead],
-    ['loadAutoRules', 'function', codingModule.loadAutoRules],
-    ['parseSandboxEnvironmentPass', 'function', codingModule.parseSandboxEnvironmentPass],
     ['resolveProvider', 'function', codingModule.resolveProvider],
   ];
   for (const [name, kind, value] of codingChecks) {

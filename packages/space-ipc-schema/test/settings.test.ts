@@ -10,7 +10,6 @@ import {
   settingsKodaxConfigGetChannel,
   settingsKodaxConfigPlanIntegrationMigrationChannel,
   settingsKodaxConfigSetCompactionChannel,
-  settingsKodaxConfigSetSandboxChannel,
   settingsSetDefaultWorkspaceChannel,
   settingsSetCoderRuntimeModeChannel,
   settingsSetLanguageModeChannel,
@@ -30,7 +29,6 @@ test('settings channels are registered', () => {
     'settings.setRuntimeDefaults',
     'settings.kodaxConfig.get',
     'settings.kodaxConfig.setCompaction',
-    'settings.kodaxConfig.setSandbox',
     'settings.kodaxConfig.planIntegrationMigration',
     'settings.kodaxConfig.applyIntegrationMigration',
   ]) {
@@ -119,30 +117,6 @@ test('KodaX config overview channels accept compaction and storage summaries', (
   );
   assert.equal(settingsKodaxConfigSetCompactionChannel.output.safeParse(output).success, false);
   assert.equal(
-    settingsKodaxConfigSetSandboxChannel.output.safeParse({
-      ...output,
-      runtimeReload: { status: 'applied' },
-    }).success,
-    true,
-  );
-  assert.equal(
-    settingsKodaxConfigSetSandboxChannel.input.safeParse({
-      sandbox: { envPass: [' GH_TOKEN ', 'GITHUB_TOKEN'] },
-    }).success,
-    true,
-  );
-  for (const envPass of [
-    ['INVALID-NAME'],
-    ['1TOKEN'],
-    [42],
-    Array.from({ length: 129 }, (_, index) => `SPACE_ENV_${index}`),
-  ]) {
-    assert.equal(
-      settingsKodaxConfigSetSandboxChannel.input.safeParse({ sandbox: { envPass } }).success,
-      false,
-    );
-  }
-  assert.equal(
     settingsKodaxConfigGetChannel.output.safeParse({
       ...output,
       sandbox: {
@@ -207,7 +181,6 @@ test('settings output includes language preference and effective locale', () => 
     preferredSystemLanguages: ['zh-CN', 'en-US'],
     runtimeDefaults: {
       permissionMode: 'auto',
-      autoModeEngine: 'rules',
       reasoningMode: 'deep',
       agentMode: 'sa',
     },
@@ -247,7 +220,6 @@ test('settings.setRuntimeDefaults accepts runtime defaults and rejects unknown k
     settingsSetRuntimeDefaultsChannel.input.safeParse({
       runtimeDefaults: {
         permissionMode: 'plan',
-        autoModeEngine: 'rules',
         reasoningMode: 'quick',
         agentMode: 'ama',
       },
