@@ -189,7 +189,7 @@ asarUnpack:
   - '**/node_modules/bindings/**'
   - '**/node_modules/file-uri-to-path/**'
 
-afterPack: scripts/after-pack-win-rcedit.cjs
+afterPack: scripts/after-pack.cjs
 
 mac:
   category: public.app-category.developer-tools

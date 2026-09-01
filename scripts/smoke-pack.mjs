@@ -1111,7 +1111,7 @@ function shellExecutionContract() {
       ...(process.platform === 'win32' ? { windowsPath: 'registry' } : {}),
     },
     cache: { ttlMs: 30_000, refreshToken: 'space-pack-shell-probe' },
-    probeTimeoutMs: 10_000,
+    probeTimeoutMs: 60_000,
   };
 }
 async function configureProbeProvider(runtime, providerBaseUrl) {
@@ -1278,7 +1278,7 @@ try {
   await Promise.all(${JSON.stringify(publicFacadeUrls)}.map((moduleUrl) => import(moduleUrl)));
   const sandboxCapability = getKodaXSandboxCapability();
   if (
-    sandboxCapability.version !== 6 ||
+    sandboxCapability.version !== 9 ||
     sandboxCapability.asrtVersion !== KODAX_ASRT_VERSION ||
     sandboxCapability.unavailableBehavior !== 'structured-no-execution' ||
     sandboxCapability.ordinaryCallsTriggerSetup !== false ||
