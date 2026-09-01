@@ -1,6 +1,6 @@
 {
   "name": "kodax-space",
-  "version": "0.1.46-alpha.1",
+  "version": "0.1.46-alpha.2",
   "description": "KodaX Space — Provider-neutral, local-first AI agent desktop client (KodaX 生态桌面客户端)",
   "private": true,
   "type": "module",

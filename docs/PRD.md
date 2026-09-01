@@ -2,7 +2,7 @@
 
 > **2026-08-24 当前正式发布基线**：KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) 对齐 npm 正式发布的精确 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Session 历史在 Runtime-ready 重验时保留已加载 canonical 前缀；排队输入、live 回复、分页加载和当前 Runtime 身份保持同一因果投影。退出恢复自动重试临时 `unconfirmed-owner`，不要求人工删除标记，也不阻塞无关工作。v0.1.45 还把 ask_user 与 guardrail 授权从全屏模态改为对话流内的聚焦提问卡（召回停靠条与队首卡 1-9/Enter/Esc 键盘操作），恢复 daemon 重连后已准入的 Runs，并保证幂等发送只产生一个气泡。
 >
-> **2026-09-01 当前源码候选**：Space package 为 `0.1.46-alpha.1`，精确依赖锁定已发布的 KodaX `0.7.96-alpha.5`，
+> **2026-09-01 当前源码候选**：Space package 为 `0.1.46-alpha.2`，精确依赖锁定已发布的 KodaX `0.7.96-alpha.5`，
 > SDK 包启动检查要求 `sandboxRuntime:9`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2` 与 `effectiveConfig:1`；`providerCredentialBroker:2` 由 daemon 准入 requirements 与连接后
 > Runtime capability 两层门禁验证。跨平台 native bundle 必须整体解包并通过 manifest hash smoke；
 > 权限档位统一为 Plan、Edits、Auto[LLM]、Full Access，旧 Auto Rules/engine/timing/envPass 配置不再生效。Alpha.5 完成 Windows sandbox 并发准入、自愈与版本安全 daemon 升级；Space
