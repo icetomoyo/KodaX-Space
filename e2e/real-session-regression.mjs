@@ -45,6 +45,7 @@ const SCENARIOS = (argValue('--scenarios', 'r1,r2,r3,r4,r5') ?? '')
   .filter(Boolean);
 const PROJECT_HINT = argValue('--project', 'KodaX-Space');
 const PROVIDER_HINT = argValue('--provider', '');
+const MODEL_HINT = argValue('--model', '');
 // A local proxy exported in the launching shell (e.g. HTTP(S)_PROXY=127.0.0.1:7897)
 // is inherited by the app and can refuse/fail provider transports. Strip it so the
 // probe exercises the provider path the way a normal desktop launch does.
@@ -226,15 +227,36 @@ async function pickProviderByName(page) {
   }
   await providerEntry.click();
   await sleep(500);
-  const modelEntry = page.locator('button > span.font-mono').first();
-  if (await modelEntry.isVisible().catch(() => false)) {
-    await modelEntry.click();
+  if (MODEL_HINT) {
+    // Open the model selector and pick the entry matching the hint (e.g.
+    // glm-5.3-flash); without a hint the provider default stays selected.
+    const modelEntry = page.locator('button > span.font-mono').first();
+    if (await modelEntry.isVisible().catch(() => false)) {
+      await modelEntry.click();
+      await sleep(500);
+      const modelChoice = page
+        .locator('button')
+        .filter({ hasText: new RegExp(MODEL_HINT, 'i') })
+        .first();
+      if (await modelChoice.count()) {
+        await modelChoice.click();
+        await sleep(400);
+      }
+    }
+  } else {
+    const modelEntry = page.locator('button > span.font-mono').first();
+    if (await modelEntry.isVisible().catch(() => false)) {
+      await modelEntry.click();
+    }
   }
   await sleep(300);
   // Close any lingering picker overlay so the composer is interactive again.
   await page.keyboard.press('Escape').catch(() => {});
   await sleep(400);
-  return `picked ${PROVIDER_HINT}`;
+  return `picked ${PROVIDER_HINT}${MODEL_HINT ? ` / ${MODEL_HINT}` : ''} (composer readback: ${(await page
+    .locator('[data-testid="composer-footer-toolbar"]')
+    .textContent()
+    .catch(() => ''))?.slice(0, 120)})`;
 }
 
 /**
@@ -701,6 +723,25 @@ async function main() {
   try {
     const projectRoot = await scopeProject(page);
     if (!projectRoot) throw new Error('currentProjectPath not persisted after project scoping');
+    if (process.argv.includes('--list-providers')) {
+      const shotDir = path.join('artifacts', 'e2e-perf');
+      const toolbar = page.locator('[data-testid="composer-footer-toolbar"]');
+      process.stdout.write(`[real-e2e] toolbar text: ${(await toolbar.textContent().catch(() => ''))?.slice(0, 200)}\n`);
+      await page.screenshot({ path: path.join(shotDir, 'picker-before.png') });
+      const providerButton = page
+        .locator('[data-testid="composer-footer-toolbar"] button')
+        .filter({ hasText: /·|provider/i })
+        .first();
+      process.stdout.write(`[real-e2e] provider button count: ${await providerButton.count()}\n`);
+      await providerButton.click();
+      await sleep(800);
+      await page.screenshot({ path: path.join(shotDir, 'picker-open.png') });
+      const entries = await page.locator('button').allTextContents();
+      process.stdout.write(`[real-e2e] picker entries:\n${entries.filter(Boolean).map((t) => `  - ${t}`).join('\n')}\n`);
+      await page.keyboard.press('Escape').catch(() => {});
+      await app.close();
+      return;
+    }
     if (PROVIDER_HINT) {
       report.providerPick = await pickProviderByName(page);
       process.stdout.write(`[real-e2e] provider: ${report.providerPick}
