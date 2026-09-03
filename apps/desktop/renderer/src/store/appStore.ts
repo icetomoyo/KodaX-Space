@@ -93,6 +93,13 @@ export interface SessionCompactionOutcome {
   readonly reason?: string;
 }
 
+/** Exact Runtime Run whose canonical history read started after its terminal evidence. */
+export interface SettledRuntimeHistoryRun {
+  readonly runtimeId: string;
+  readonly runId: string;
+  readonly generation: number;
+}
+
 export interface SessionTokenInfo {
   readonly tokens: number;
   readonly source: 'iteration_end' | 'compact_stats' | 'estimate';
@@ -977,6 +984,8 @@ interface AppState {
       readonly sourceRevision?: string;
       /** This resolved replacement is the authoritative newest canonical window. */
       readonly authoritativeNewest?: boolean;
+      /** Runs proven durable by this exact post-terminal history read. */
+      readonly settledRuntimeRuns?: readonly SettledRuntimeHistoryRun[];
       /** Daemon conversation projection status. Only an 'ambiguous' page carries proven clone
        * candidates that share logicalId and must be deduped; a resolved page never dedupes. */
       readonly conversationStatus?: 'resolved' | 'partial' | 'ambiguous';
@@ -1565,6 +1574,7 @@ interface TranscriptTurnSnapshot {
   readonly terminal: boolean;
   readonly terminalTurnId?: string;
   readonly terminalRunId?: string;
+  readonly terminalRuntimeId?: string;
   readonly closed: boolean;
   readonly thinking: string;
   readonly text: string;
@@ -1641,12 +1651,7 @@ function transcriptTurnSnapshots(
 }
 
 type CanonicalTranscriptRecordKind =
-  | 'user'
-  | 'assistant'
-  | 'tool'
-  | 'sidecar'
-  | 'lineage'
-  | 'workflow';
+  'user' | 'assistant' | 'tool' | 'sidecar' | 'lineage' | 'workflow';
 
 interface CanonicalTranscriptRecord {
   readonly kind: CanonicalTranscriptRecordKind;
@@ -1958,6 +1963,7 @@ function transcriptSegmentSemantic(
   | 'terminal'
   | 'terminalTurnId'
   | 'terminalRunId'
+  | 'terminalRuntimeId'
   | 'thinking'
   | 'text'
   | 'tools'
@@ -1967,6 +1973,7 @@ function transcriptSegmentSemantic(
   let terminal = false;
   let terminalTurnId: string | undefined;
   let terminalRunId: string | undefined;
+  let terminalRuntimeId: string | undefined;
   let thinking = '';
   let text = '';
   const tools: Array<{
@@ -1994,6 +2001,11 @@ function transcriptSegmentSemantic(
       const runScopedTerminalRunId =
         'runtimeEvent' in event ? event.runtimeEvent?.runId : undefined;
       if (runScopedTerminalRunId !== undefined) terminalRunId = runScopedTerminalRunId;
+      const runScopedTerminalRuntimeId =
+        'runtimeEvent' in event ? event.runtimeEvent?.runtimeId : undefined;
+      if (runScopedTerminalRuntimeId !== undefined) {
+        terminalRuntimeId = runScopedTerminalRuntimeId;
+      }
       if (event.kind === 'session_error') {
         const error = `error:${event.error}`;
         notices.push(error);
@@ -2059,6 +2071,7 @@ function transcriptSegmentSemantic(
     terminal,
     ...(terminalTurnId !== undefined ? { terminalTurnId } : {}),
     ...(terminalRunId !== undefined ? { terminalRunId } : {}),
+    ...(terminalRuntimeId !== undefined ? { terminalRuntimeId } : {}),
     thinking,
     text,
     tools,
@@ -2095,6 +2108,56 @@ function userEntryIdentityRelation(
   const leftIds = new Set([left.entryId, ...(left.auditEntryIds ?? [])]);
   const rightIds = [right.entryId, ...(right.auditEntryIds ?? [])];
   return rightIds.some((entryId) => leftIds.has(entryId)) ? 'match' : 'conflict';
+}
+
+type TurnProjectionAuthority = 'canonical' | 'live' | 'coexist_fail_open';
+
+interface CertifiedCanonicalTranscriptAuthority {
+  readonly sourceRevision: string;
+  readonly canonicalMessageIds: ReadonlySet<string>;
+  readonly settledRuntimeRuns: readonly SettledRuntimeHistoryRun[];
+}
+
+/** Identity and persistence facts decide authority; transcript content and event order never do. */
+function decideTurnProjectionAuthority(
+  durable: TranscriptTurnSnapshot,
+  live: TranscriptTurnSnapshot,
+  authority: CertifiedCanonicalTranscriptAuthority | undefined,
+): TurnProjectionAuthority {
+  if (authority === undefined || !durable.restoredFromHistory || live.restoredFromHistory) {
+    return live.closed ? 'coexist_fail_open' : 'live';
+  }
+  if (
+    !authority.canonicalMessageIds.has(durable.messageId) ||
+    durable.canonicalIndex === undefined
+  ) {
+    return 'coexist_fail_open';
+  }
+  const entryIdentity = userEntryIdentityRelation(durable, live);
+  const exactOwner =
+    entryIdentity === 'match' ||
+    (entryIdentity !== 'conflict' &&
+      !durable.leadingPartialHistory &&
+      !durable.omittedHistoryUserOrdinal &&
+      strongTurnIdentityMatches(durable, live));
+  if (!exactOwner || !live.terminal || live.runtimeRunId === undefined) {
+    return 'coexist_fail_open';
+  }
+  if (
+    live.terminalRunId !== live.runtimeRunId ||
+    live.terminalRuntimeId === undefined ||
+    (durable.runtimeRunId !== undefined && durable.runtimeRunId !== live.runtimeRunId) ||
+    (live.terminalTurnId !== undefined &&
+      live.turnId !== undefined &&
+      live.terminalTurnId !== live.turnId)
+  ) {
+    return 'coexist_fail_open';
+  }
+  return authority.settledRuntimeRuns.some(
+    (run) => run.runtimeId === live.terminalRuntimeId && run.runId === live.runtimeRunId,
+  )
+    ? 'canonical'
+    : 'coexist_fail_open';
 }
 
 type LeadingHistoryOwnerResolution =
@@ -2412,15 +2475,15 @@ function isTranscriptTerminal(
 }
 
 /**
- * Merge unsegmented history/live projections after identity has proved they are one canonical turn.
- * Segmented projections are admitted by the ordered causal matcher before reaching this legacy
- * compatibility path. Keep durable visible order, add only missing live-visible information, and
- * retain live-only runtime state such as artifacts, diagnostics and todo snapshots.
+ * Merge history/live projections after identity and authority have been decided independently.
+ * Compatibility callers retain proven live suffixes. A certified canonical caller keeps durable
+ * transcript order while retaining Runtime-only diagnostics, state and richer keyed notices.
  */
-function mergeLegacyUnsegmentedTurnProjections(
+function mergeIdentityProvenTurnProjections(
   durableEvents: readonly SessionEvent[],
   liveEvents: readonly SessionEvent[],
   exactEntryIdentity = false,
+  authority: 'compatible' | 'canonical' = 'compatible',
 ): SessionEvent[] {
   const effectiveLiveEvents = filterEffectiveOutputSegmentEvents(liveEvents);
   const liveTerminals = effectiveLiveEvents.filter(isTranscriptTerminal);
@@ -2439,14 +2502,20 @@ function mergeLegacyUnsegmentedTurnProjections(
   const textSuffixProjector = exactEntryIdentity
     ? cumulativeProjectionTextSuffix
     : projectionTextSuffix;
-  const textSuffix = textSuffixProjector(
-    projectedEventText(durableEvents, 'text_delta'),
-    projectedEventText(effectiveLiveEvents, 'text_delta'),
-  );
-  const thinkingSuffix = textSuffixProjector(
-    projectedEventText(durableEvents, 'thinking_delta'),
-    projectedEventText(effectiveLiveEvents, 'thinking_delta'),
-  );
+  const textSuffix =
+    authority === 'canonical'
+      ? ''
+      : textSuffixProjector(
+          projectedEventText(durableEvents, 'text_delta'),
+          projectedEventText(effectiveLiveEvents, 'text_delta'),
+        );
+  const thinkingSuffix =
+    authority === 'canonical'
+      ? ''
+      : textSuffixProjector(
+          projectedEventText(durableEvents, 'thinking_delta'),
+          projectedEventText(effectiveLiveEvents, 'thinking_delta'),
+        );
   const liveTextChunks = projectionSuffixChunks(effectiveLiveEvents, 'text_delta', textSuffix);
   const liveThinkingChunks = projectionSuffixChunks(
     effectiveLiveEvents,
@@ -2464,18 +2533,28 @@ function mergeLegacyUnsegmentedTurnProjections(
   );
   const durableToolResultIndex = new Map<string, number>();
   const durableNoticeCounts = new Map<string, number>();
+  const durableNoticeIndexes = new Map<string, number[]>();
   for (let index = 0; index < mergedBody.length; index++) {
     const event = mergedBody[index]!;
     if (event.kind === 'tool_result') durableToolResultIndex.set(event.toolId, index);
     const noticeKey = projectionNoticeKey(event);
     if (noticeKey !== undefined) {
       durableNoticeCounts.set(noticeKey, (durableNoticeCounts.get(noticeKey) ?? 0) + 1);
+      const indexes = durableNoticeIndexes.get(noticeKey) ?? [];
+      indexes.push(index);
+      durableNoticeIndexes.set(noticeKey, indexes);
     }
   }
 
   const liveExtras: SessionEvent[] = [];
   for (const [eventIndex, event] of effectiveLiveEvents.entries()) {
     if (isTranscriptTerminal(event) || isPromptSegmentBoundary(event)) {
+      continue;
+    }
+    if (
+      authority === 'canonical' &&
+      (event.kind === 'session_start' || event.kind === 'output_segment_started')
+    ) {
       continue;
     }
     if (event.kind === 'text_delta') {
@@ -2489,7 +2568,7 @@ function mergeLegacyUnsegmentedTurnProjections(
       continue;
     }
     if (event.kind === 'tool_start') {
-      if (!durableToolStarts.has(event.toolId)) {
+      if (authority !== 'canonical' && !durableToolStarts.has(event.toolId)) {
         durableToolStarts.add(event.toolId);
         liveExtras.push(event);
       }
@@ -2498,8 +2577,8 @@ function mergeLegacyUnsegmentedTurnProjections(
     if (event.kind === 'tool_result') {
       const durableIndex = durableToolResultIndex.get(event.toolId);
       if (durableIndex === undefined) {
-        liveExtras.push(event);
-      } else {
+        if (authority !== 'canonical') liveExtras.push(event);
+      } else if (authority !== 'canonical') {
         const durableResult = mergedBody[durableIndex];
         if (
           durableResult?.kind === 'tool_result' &&
@@ -2516,8 +2595,14 @@ function mergeLegacyUnsegmentedTurnProjections(
     if (noticeKey !== undefined) {
       const remaining = durableNoticeCounts.get(noticeKey) ?? 0;
       if (remaining === 0) liveExtras.push(event);
-      else if (remaining === 1) durableNoticeCounts.delete(noticeKey);
-      else durableNoticeCounts.set(noticeKey, remaining - 1);
+      else {
+        if (authority === 'canonical') {
+          const durableIndex = durableNoticeIndexes.get(noticeKey)?.shift();
+          if (durableIndex !== undefined) mergedBody[durableIndex] = event;
+        }
+        if (remaining === 1) durableNoticeCounts.delete(noticeKey);
+        else durableNoticeCounts.set(noticeKey, remaining - 1);
+      }
       continue;
     }
     // Lifecycle, tool progress, artifact/todo/context diagnostics and other runtime-only events
@@ -3553,6 +3638,7 @@ function stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
 interface DuplicateTranscriptTurnPair {
   readonly durable: TranscriptTurnSnapshot;
   readonly duplicate: TranscriptTurnSnapshot;
+  readonly projectionAuthority?: 'canonical';
   readonly ownerResolution?: LeadingHistoryOwnerResolution;
   readonly openLiveAdoption?: OpenLiveAdoption;
   readonly closedCausalAdoption?: ClosedCausalAdoption;
@@ -3563,6 +3649,14 @@ function mergeDuplicateTurnProjection(
   durableSegment: readonly SessionEvent[],
   duplicateSegment: readonly SessionEvent[],
 ): SessionEvent[] {
+  if (pair.projectionAuthority === 'canonical') {
+    return mergeIdentityProvenTurnProjections(
+      durableSegment,
+      duplicateSegment,
+      userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
+      'canonical',
+    );
+  }
   const strategy = selectTranscriptProjectionMergeStrategy({
     hasClosedCausalAdoption: pair.closedCausalAdoption !== undefined,
     openLiveAdoptionKind: pair.openLiveAdoption?.kind,
@@ -3594,7 +3688,7 @@ function mergeDuplicateTurnProjection(
     );
   }
   if (strategy === 'promote-live-owner') return [...duplicateSegment];
-  return mergeLegacyUnsegmentedTurnProjections(
+  return mergeIdentityProvenTurnProjections(
     durableSegment,
     duplicateSegment,
     userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
@@ -3610,6 +3704,7 @@ function mergeDuplicateTurnProjection(
 function foldStrongIdentityDuplicateTurns(
   userMessages: readonly UserMessage[],
   events: readonly SessionEvent[],
+  authority?: CertifiedCanonicalTranscriptAuthority,
 ): ReconciledTranscriptBuffers {
   const stabilized = stabilizeAmbiguousLeadingHistoryOrder(userMessages, events);
   let nextUsers = [...stabilized.userMessages];
@@ -3652,6 +3747,8 @@ function foldStrongIdentityDuplicateTurns(
           durable.runtimeRunId === undefined ||
           duplicate.runtimeRunId === undefined ||
           durable.runtimeRunId === duplicate.runtimeRunId;
+        const projectionAuthority = decideTurnProjectionAuthority(durable, duplicate, authority);
+        const certifiedCanonical = projectionAuthority === 'canonical';
         // The newest canonical page can persist the user boundary before any assistant row.
         // Its empty durable segment and the exact open live owner are two projections of one turn,
         // not a complete history copy plus a duplicate. Move the live segment under the canonical
@@ -3701,6 +3798,7 @@ function foldStrongIdentityDuplicateTurns(
               !strongTurnIdentityMatches(durable, duplicate) &&
               ownerResolution === undefined) ||
           (!duplicate.restoredFromHistory &&
+            !certifiedCanonical &&
             openLiveAdoption === undefined &&
             ownerResolution?.kind !== 'promote_open_live_owner' &&
             !liveTurnCanFold(duplicate, entryIdentity === 'match'))
@@ -3709,13 +3807,19 @@ function foldStrongIdentityDuplicateTurns(
         }
         const durableCausalSegment = nextEvents.slice(durable.eventStart, durable.eventEnd);
         const closedCausalMatch =
-          closedLiveEvents === undefined
+          certifiedCanonical || closedLiveEvents === undefined
             ? undefined
             : durableCausalSegment.length === 0 &&
                 durableMessage?.historyNoAssistantSegment === true
               ? { durableExtras: [] }
               : orderedCausalProjectionMatch(durableCausalSegment, closedLiveEvents);
-        if (closedLiveEvents !== undefined && closedCausalMatch === undefined) continue;
+        if (
+          !certifiedCanonical &&
+          closedLiveEvents !== undefined &&
+          closedCausalMatch === undefined
+        ) {
+          continue;
+        }
         const closedCausalAdoption =
           closedLiveEvents !== undefined && closedCausalMatch !== undefined
             ? { liveEvents: closedLiveEvents, match: closedCausalMatch }
@@ -3723,6 +3827,7 @@ function foldStrongIdentityDuplicateTurns(
         pair = {
           durable,
           duplicate,
+          ...(certifiedCanonical ? { projectionAuthority: 'canonical' as const } : {}),
           ...(ownerResolution !== undefined ? { ownerResolution } : {}),
           ...(openLiveAdoption !== undefined ? { openLiveAdoption } : {}),
           ...(closedCausalAdoption !== undefined ? { closedCausalAdoption } : {}),
@@ -3755,7 +3860,8 @@ function foldStrongIdentityDuplicateTurns(
       !pair.duplicate.restoredFromHistory &&
       duplicateMessage !== undefined &&
       pair.durable.canonicalIndex !== undefined &&
-      durableProjectionCoversMergedContent(pair.durable, mergedProjection)
+      (pair.projectionAuthority === 'canonical' ||
+        durableProjectionCoversMergedContent(pair.durable, mergedProjection))
     ) {
       canonicalizedLiveOwners.push({
         messageId: duplicateMessage.id,
@@ -7217,7 +7323,28 @@ export const useAppStore = create<AppState>((set) => ({
         historyAndLiveEvents,
         includeLiveProjection ? state.liveProjectionBySession[sessionId] : undefined,
       );
-      const folded = foldStrongIdentityDuplicateTurns(ownerOpenedMsgs, historyAndLiveEvents);
+      const settledRuntimeRuns = options?.settledRuntimeRuns ?? [];
+      const certifiedCanonicalAuthority =
+        replaceLoadedWindow &&
+        options?.authoritativeNewest === true &&
+        options.conversationStatus === 'resolved' &&
+        options.sourceRevision !== undefined &&
+        settledRuntimeRuns.length > 0
+          ? {
+              sourceRevision: options.sourceRevision,
+              canonicalMessageIds: new Set(
+                histMsgs
+                  .filter((message) => message.canonicalIndex !== undefined)
+                  .map((message) => message.id),
+              ),
+              settledRuntimeRuns,
+            }
+          : undefined;
+      const folded = foldStrongIdentityDuplicateTurns(
+        ownerOpenedMsgs,
+        historyAndLiveEvents,
+        certifiedCanonicalAuthority,
+      );
       rememberCanonicalizedHistoryLiveOwners(sessionId, folded.canonicalizedLiveOwners ?? []);
       const combinedEvents = dedupePersistedCompactionBoundaries(folded.events);
       const combinedMsgs = hideOpenStrongIdentityDuplicateProjection(

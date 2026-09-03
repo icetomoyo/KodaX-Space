@@ -9,7 +9,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.96-alpha.5';
+const EXPECTED_KODAX_VERSION = '0.7.96-alpha.7';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -355,7 +355,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   actorSettlementConvergence: 2,
   liveOutputSegments: 1,
   runtimeEventCoalescing: 1,
-  sandboxRuntime: 9,
+  sandboxRuntime: 11,
   sessionEventJournal: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 5,
@@ -965,8 +965,8 @@ try {
       runtime: runtime.capabilities.actorSettlementConvergence?.version === 2,
     },
     sandboxRuntime: {
-      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 9,
-      runtime: runtime.capabilities.sandboxRuntime?.version === 9,
+      sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime === 11,
+      runtime: runtime.capabilities.sandboxRuntime?.version === 11,
     },
     sessionEventJournal: {
       sdk: KODAX_RUNTIME_SDK_CAPABILITIES.sessionEventJournal === 1,
@@ -1476,7 +1476,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
   const { KODAX_ASRT_VERSION, doctorKodaXSandbox, getKodaXSandboxCapability, runKodaXSandboxed } =
     await import('@kodax-ai/kodax/sandbox');
   const capability = getKodaXSandboxCapability();
-  assert.equal(capability.version, 9);
+  assert.equal(capability.version, 11);
   assert.equal(capability.asrtVersion, KODAX_ASRT_VERSION);
   assert.equal(capability.genericCommandExecution, true);
   assert.deepEqual(capability.controls, [
@@ -1505,7 +1505,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes the required Auto[LLM] Runtime cap
   const { KODAX_RUNTIME_SDK_CAPABILITIES } = await import("@kodax-ai/kodax/runtime");
   assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.runtimeAutoModeGuardrail, 5);
   assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sharedSessionSettings, 2);
-  assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime, 9);
+  assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime, 11);
 });
 
 test(`KodaX ${EXPECTED_KODAX_VERSION} exports a bounded non-empty auto-resume selector`, async () => {

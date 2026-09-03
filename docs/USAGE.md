@@ -16,7 +16,7 @@
 > 当前已发布版本为 KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) / 精确 Registry KodaX `0.7.95`。
 > 本版本把 ask_user 与 guardrail 授权改为对话流内的聚焦提问卡（全屏模态移除，召回停靠条与队首卡 1-9/Enter/Esc 键盘操作），对齐 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`，并恢复 daemon 重连后已准入的 Runs、保证幂等发送只产生一个气泡；同时保留 v0.1.44 的 F145 原生 Session 角标、后台 complete-exit settlement、安静的普通成功退出、previous-boot Windows ACL 恢复指引与 canonical page-head、Task Dock、Repointel、外部任务恢复态对齐，以及 crash-resumable exit、crash-outcome v2、SDK 有效输出 segment 和既有多 Session/Actor/Turn 安全边界。
 >
-> 当前源码候选为 Space `0.1.46-alpha.2`，精确锁定 KodaX `0.7.96-alpha.5` / `sandboxRuntime:9` / `runtimeAutoModeGuardrail:5` / `sharedSessionSettings:2` / `providerCredentialBroker:2` / `effectiveConfig:1`。Alpha.5 完成 Windows 沙箱并发准入、自愈与版本安全的 daemon 升级。
+> 当前源码候选为 Space `0.1.46-alpha.3`，精确锁定 KodaX `0.7.96-alpha.7` / `sandboxRuntime:11` / `runtimeAutoModeGuardrail:5` / `sharedSessionSettings:2` / `providerCredentialBroker:2` / `effectiveConfig:1`。Alpha.6/alpha.7 把 Windows native protocol/setup 提升到 generation 10，显式 doctor/setup 会证明一次真实 target start/exit，宽 profile ACL 仅由 setup 收敛，逐命令使用私有 Temp，网络 broker 扩到 64 端口，并继续安全替换空闲旧 daemon。
 > 打包必须整体解包 `@kodax-ai/kodax/dist/native`；发布检查会验证 universal native
 > 文件集合和 manifest hash，再运行真实 sandbox smoke。正式 v0.1.45 说明仍对应 KodaX 0.7.95。
 
@@ -105,6 +105,12 @@ flowchart TD
 KodaX 0.7.96 的命令沙箱默认继承宿主环境，同时继续阻止固定的 KodaX/Electron 执行控制
 变量。旧 `config.json#sandbox.envPass` 输入已经失效；Space 不再编辑、写入或向任何 Run
 投影该字段。读取旧配置时只把它当迁移遗留，不恢复旧的环境 allow-list 语义。
+
+沙箱诊断必须从 Settings → Runtime 的宿主控制面直接执行，或在宿主终端运行
+`kodax sandbox doctor`；不要让模型通过 Bash 工具嵌套执行 doctor。Windows 受限账号按设计
+不能读取宿主持有的 ASRT 状态，嵌套 doctor 因此不能代表机器级 readiness，也不应通过放宽
+控制状态权限来“修复”。Space 启动、后台检查和普通工具调用不会自动请求 UAC；只有用户
+显式确认 Setup 时才调用 SDK activation，完成后再以真实 target-start probe 验证结果。
 
 从旧版升级时，`config.json#mcpServers` 与 `config.json#extensions` 仍可只读回退，但不应继续作为新配置位置。Settings → Runtime 会调用当前 KodaX SDK 的 `planLegacyIntegrationMigration()` 展示迁移计划，并通过 `migrateLegacyIntegrationConfig()` 提供“迁移集成配置”按钮；它只创建缺失文件，不覆盖已有目标，也不删除旧字段，成功后会重载 MCP。命令行也可先运行 `kodax integrations migrate` 查看计划，再运行 `kodax integrations migrate --apply` 创建独立文件；确认独立文件有效后，才使用 `kodax integrations migrate --apply --cleanup-legacy` 显式清理旧字段。A2A 没有旧 `config.json` 迁移源，始终以 `integrations/a2a.json` 为权威配置。
 

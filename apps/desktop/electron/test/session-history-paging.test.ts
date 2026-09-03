@@ -240,6 +240,162 @@ test('terminal evidence before first history is satisfied by that first post-ter
   );
 });
 
+test('post-terminal paging certifies canonical order for parallel tool projections', async () => {
+  const sessionId = 'history-paging-certified-parallel-tools';
+  const runtimeId = 'runtime-history-paging-parallel';
+  const runId = 'run-history-paging-parallel';
+  const turnId = 'turn-history-paging-parallel';
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(sessionId, 'run both checks', 1_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(sessionId, messageId, runId);
+  const runtimeEvent = (seq: number) => ({ runtimeId, runId, journalEpoch: 'epoch-1', seq });
+  for (const event of [
+    {
+      kind: 'session_start' as const,
+      provider: 'mock',
+      turnId,
+      runtimeEvent: runtimeEvent(1),
+    },
+    {
+      kind: 'output_segment_started' as const,
+      responseId: 'response-parallel',
+      providerRequestId: 'provider-parallel',
+      mode: 'append' as const,
+      turnId,
+      runtimeEvent: runtimeEvent(2),
+    },
+    {
+      kind: 'tool_start' as const,
+      toolId: 'tool-b',
+      toolName: 'tool-b',
+      turnId,
+      runtimeEvent: runtimeEvent(3),
+    },
+    {
+      kind: 'tool_start' as const,
+      toolId: 'tool-a',
+      toolName: 'tool-a',
+      turnId,
+      runtimeEvent: runtimeEvent(4),
+    },
+    {
+      kind: 'tool_result' as const,
+      toolId: 'tool-a',
+      toolName: 'tool-a',
+      content: 'result-a',
+      turnId,
+      runtimeEvent: runtimeEvent(5),
+    },
+    {
+      kind: 'tool_result' as const,
+      toolId: 'tool-b',
+      toolName: 'tool-b',
+      content: 'result-b',
+      turnId,
+      runtimeEvent: runtimeEvent(6),
+    },
+    {
+      kind: 'session_complete' as const,
+      turnId,
+      runtimeEvent: runtimeEvent(7),
+    },
+  ]) {
+    store.appendEvent({ ...event, sessionId });
+  }
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(async () => ({
+          ok: true as const,
+          data: {
+            items: [
+              {
+                kind: 'user' as const,
+                content: 'run both checks',
+                sentAt: 1_000,
+                entryId: 'entry-parallel-user',
+                canonicalIndex: 0,
+                turnId,
+                turnUserOrdinal: 0,
+              },
+              {
+                kind: 'tool_call' as const,
+                toolId: 'tool-a',
+                toolName: 'tool-a',
+                result: 'result-a',
+                entryId: 'entry-parallel-a',
+                canonicalIndex: 1,
+                turnId,
+              },
+              {
+                kind: 'tool_call' as const,
+                toolId: 'tool-b',
+                toolName: 'tool-b',
+                result: 'result-b',
+                entryId: 'entry-parallel-b',
+                canonicalIndex: 2,
+                turnId,
+              },
+            ],
+            conversation: { status: 'resolved' as const },
+            page: {
+              outcome: 'ready' as const,
+              revision: 'revision-parallel',
+              sourceRevision: 'source-parallel',
+              hasMore: false,
+              windowMode: 'replace' as const,
+              hasNewer: false,
+            },
+          },
+        })),
+      },
+    },
+  });
+
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId,
+    runId,
+    phase: 'completed',
+    cursorSeq: 7,
+  });
+  await restoreNewestSessionHistory(sessionId, 'code');
+
+  const visible = composeMessages({
+    userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+    events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+  });
+  assert.deepEqual(
+    visible.flatMap((message) => (message.kind === 'user' ? [message.content] : [])),
+    ['run both checks'],
+  );
+  assert.deepEqual(
+    visible.flatMap((message) => (message.kind === 'tool_call' ? [message.toolName] : [])),
+    ['tool-a', 'tool-b'],
+  );
+});
+
 test('the exact terminal history scope keeps an omitted owner without canonical proof', async () => {
   const sessionId = 'history-paging-terminal-prunes-never-folded';
   useAppStore.setState({

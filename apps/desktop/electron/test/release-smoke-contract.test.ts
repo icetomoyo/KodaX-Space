@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 import { build } from 'esbuild';
 
-test('packaged dependency smoke requires conversationHistory v2 and sandboxRuntime v9', async () => {
+test('packaged dependency smoke requires conversationHistory v2 and sandboxRuntime v11', async () => {
   const source = await readFile(
     new URL('../../../../scripts/smoke-pack.mjs', import.meta.url),
     'utf8',
@@ -15,12 +15,12 @@ test('packaged dependency smoke requires conversationHistory v2 and sandboxRunti
 
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.conversationHistory\s*!==\s*2/);
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.runtimeExitSettlement\s*!==\s*2/);
-  assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.sandboxRuntime\s*!==\s*9/);
+  assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.sandboxRuntime\s*!==\s*11/);
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.runtimeAutoModeGuardrail\s*!==\s*5/);
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.sharedSessionSettings\s*!==\s*2/);
-  assert.match(source, /daemonSandboxRuntime\.version\s*!==\s*9/);
-  assert.match(source, /result\.daemonSandboxRuntime\s*!==\s*9/);
-  assert.match(source, /result\.sandboxVersion\s*!==\s*9/);
+  assert.match(source, /daemonSandboxRuntime\.version\s*!==\s*11/);
+  assert.match(source, /result\.daemonSandboxRuntime\s*!==\s*11/);
+  assert.match(source, /result\.sandboxVersion\s*!==\s*11/);
   assert.match(source, /kodax-windows-sandbox\.exe/);
   assert.match(source, /kodax-windows-text-transaction\.node/);
   assert.match(source, /kodax-text-transaction\.node/);

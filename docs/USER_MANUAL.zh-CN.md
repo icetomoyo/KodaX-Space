@@ -6,7 +6,7 @@
 
 > 当前发布精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。
 >
-> 当前源码候选为 Space `0.1.46-alpha.2`，精确锁定 KodaX `0.7.96-alpha.5`，并要求 `sandboxRuntime:9`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
+> 当前源码候选为 Space `0.1.46-alpha.3`，精确锁定 KodaX `0.7.96-alpha.7`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
 > Windows 既有安装首次迁移可能需要用户在 Settings → Runtime 明确执行一次 Sandbox Setup；
 > 普通启动、Refresh 和工具调用不会隐式提升权限。正式发布版的 0.7.95 说明保留为历史事实。
 >
@@ -262,9 +262,11 @@ flowchart LR
 
 多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。当前发布版要求 `conversationHistory:2`、`runtimeExitSettlement:2`、`sandboxRuntime:5`、`crashOutcomeModel:2`、`daemonOrphanExit:1`、`managedRunDurability:1`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1`、`integrationConfigResilience:1`、`runtimeAutoModeGuardrail:4`、`skillLearningLoop:1`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 与 `transcriptSearch:1`；Runtime 不可用或能力不足时 Coder fail closed，不会在背后重放到 inline owner。`conversationHistory:2` 下 Space 只消费 SDK 返回的 canonical conversation 顺序与稳定身份，不按时间戳重排、不按正文猜测去重；`sandboxRuntime:5` 的过期 coordinator ticket 与已记录释放事实收敛由 SDK 独占，普通权限执行仍须取得同一个 filesystem-effect fence；`crashOutcomeModel:2` 要求 canonical Session 提交先于 managed terminal。Space 不删除锁、不按错误文本选择 native shell，也不把 Stop unknown 强制改成 idle。Partner 不受 daemon 可用性影响。
 
-Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少必需契约的长驻 daemon 会被拒绝并提示安全重启。当前源码要求 `sandboxRuntime:9`、`runtimeAutoModeGuardrail:5` 与 `sharedSessionSettings:2`。Alpha.5 的 Windows native host 支持无机器级命令锁的并发准入、逐命令 Job/pipe/终态证据和 content-addressed native artifact 自愈；空闲旧 daemon 可安全替换，繁忙旧 daemon 保持运行并返回可恢复升级提示，未知或更新版本不会被改动。`sessionEventJournal:1` 仍按 `(sessionId, journalEpoch, seq)` 隔离 observation；compaction v3 与 revision-bound page/chunk/search 继续保护 root/child 历史边界。
+Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少必需契约的长驻 daemon 会被拒绝并提示安全重启。当前源码要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5` 与 `sharedSessionSettings:2`。Alpha.6/alpha.7 的 Windows native host 使用 protocol/setup generation 10：宽 profile ACL 只在显式 setup 中收敛，逐命令 Temp 相互隔离，64 端口范围支持最多 32 个精确网络 authority，explicit doctor/setup 必须证明一次无副作用的 target start/exit。空闲旧 daemon 可安全替换，繁忙、未知或更新版本保持不动。`sessionEventJournal:1` 仍按 `(sessionId, journalEpoch, seq)` 隔离 observation；compaction v3 与 revision-bound page/chunk/search 继续保护 root/child 历史边界。
 
 权限档位统一为 Plan、Edits、Auto[LLM]、Full Access。旧 `auto-in-project`、Auto Rules、engine、timeout 和 speculative window 只作为迁移输入，归一为 Auto[LLM] 后不再持久化或暴露。Auto 先尝试 sandbox；只有可证明命令尚未启动的宿主边界才进入 Exec Policy 与固定 LLM reviewer，已启动或结果不确定的命令绝不重放。Full Access 跳过 sandbox 与 Auto review，直接在宿主执行，但管理员和用户 Exec Policy 仍然生效。沙箱默认继承宿主环境，固定执行控制变量继续禁止；旧 `sandbox.envPass` 已失效，Space 不再编辑或投影它。
+
+沙箱 readiness 请在 Settings → Runtime 中刷新，或在宿主终端直接运行 `kodax sandbox doctor`。不要要求 Agent 通过 Bash 工具运行该命令：Windows 受限账号按设计不能读取宿主持有的 ASRT 控制状态，嵌套 doctor 会产生误导结果。Space 不会在普通启动、后台检查或工具执行期间自动提升权限；只有用户明确点击并确认 Sandbox Setup 时才调用 activation，随后由真实 target-start probe 验证完成状态。
 
 如果 daemon 启动时发现 inline owner，Space 不删除 `~/.kodax` 试图恢复；它把可读的 owner 状态交给 KodaX 的原子 daemon-enable reconciliation。只有 SDK 证明 owner 已废弃时才允许恢复，活动、不可读或不可验证 owner 继续 fail closed。Space 关闭时保留 inline owner handle，短暂 close 失败会重试；重试耗尽会报告清理错误，而不是把 ownership fence 静默遗留。
 
@@ -272,7 +274,7 @@ Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 n
 
 ### Runtime 失败详情
 
-当前源码候选继续接入 KodaX 0.7.96-alpha.5 的凭据安全
+当前源码候选继续接入 KodaX 0.7.96-alpha.7 的凭据安全
 `RuntimeFailureDetail`。真实 Run 失败时，错误条优先显示 SDK 固定且有界的
 `safeMessage`；展开“Runtime 失败详情”可以查看稳定 KodaX 错误码、失败阶段、
 Run/Request ID、HTTP 状态、上游短错误码、建议等待时间和上下文容量数据（仅在

@@ -1,6 +1,10 @@
 import { useSyncExternalStore } from 'react';
 import type { SessionEvent, SessionHistoryItem } from '@kodax-space/space-ipc-schema';
-import { registerSessionViewLifecycleReset, useAppStore } from '../store/appStore.js';
+import {
+  registerSessionViewLifecycleReset,
+  useAppStore,
+  type SettledRuntimeHistoryRun,
+} from '../store/appStore.js';
 import { invokeWithTimeout } from '../lib/ipcInvokeWithTimeout.js';
 import {
   runtimeConnectionHasFreshLiveAuthority,
@@ -65,6 +69,10 @@ interface TerminalHistoryRequestScope {
   readonly runtimeId: string;
   readonly runs: readonly { readonly runId: string; readonly generation: number }[];
 }
+interface TerminalHistoryRequestCompletion {
+  readonly needsRetry: boolean;
+  readonly settledRuntimeRuns: readonly SettledRuntimeHistoryRun[];
+}
 const terminalHistoryEvidenceBySession = new Map<string, TerminalHistoryWorkflowGroup>();
 const MAX_TERMINAL_HISTORY_RUN_IDS = 16;
 const MAX_RUNTIME_RETRY_ATTEMPTS = 30;
@@ -128,16 +136,28 @@ function captureTerminalHistoryRequestScope(
 function completeTerminalHistoryRequestScope(
   sessionId: string,
   scope: TerminalHistoryRequestScope | undefined,
-): boolean {
-  if (scope === undefined) return false;
+): TerminalHistoryRequestCompletion {
+  if (scope === undefined) return { needsRetry: false, settledRuntimeRuns: [] };
   const group = terminalHistoryEvidenceBySession.get(sessionId);
-  if (group === undefined || group.runtimeId !== scope.runtimeId) return true;
+  if (group === undefined || group.runtimeId !== scope.runtimeId) {
+    return { needsRetry: true, settledRuntimeRuns: [] };
+  }
   const generations = new Map(scope.runs.map((run) => [run.runId, run.generation]));
   const runs = group.runs.map((run) =>
     generations.get(run.runId) === run.generation ? { ...run, status: 'completed' as const } : run,
   );
   terminalHistoryEvidenceBySession.set(sessionId, { ...group, runs });
-  return runs.some((run) => run.status !== 'completed');
+  const needsRetry = runs.some((run) => run.status !== 'completed');
+  return {
+    needsRetry,
+    settledRuntimeRuns: needsRetry
+      ? []
+      : runs.map((run) => ({
+          runtimeId: group.runtimeId,
+          runId: run.runId,
+          generation: run.generation,
+        })),
+  };
 }
 
 function nextHistoryRequestId(): string {
@@ -497,7 +517,12 @@ interface HistoryResultData {
     | { readonly outcome: 'runtime_unavailable' };
 }
 
-function applyHistoryResult(sessionId: string, data: unknown, continuation: boolean): void {
+function applyHistoryResult(
+  sessionId: string,
+  data: unknown,
+  continuation: boolean,
+  settledRuntimeRuns: readonly SettledRuntimeHistoryRun[] = [],
+): void {
   // Kept as a narrow runtime helper below; this signature prevents exporting generated IPC types
   // through a renderer-only module.
   const result = data as {
@@ -534,6 +559,7 @@ function applyHistoryResult(sessionId: string, data: unknown, continuation: bool
     ...(result.conversation?.status !== undefined
       ? { conversationStatus: result.conversation.status }
       : {}),
+    ...(settledRuntimeRuns.length > 0 ? { settledRuntimeRuns } : {}),
   });
 }
 
@@ -871,11 +897,11 @@ async function requestHistory(
       deferredReadyRevalidations.add(sessionId);
       return;
     }
-    const terminalHistoryNeedsRetry = completeTerminalHistoryRequestScope(
+    const terminalHistoryCompletion = completeTerminalHistoryRequestScope(
       sessionId,
       terminalHistoryRequestScope,
     );
-    if (terminalHistoryNeedsRetry) {
+    if (terminalHistoryCompletion.needsRetry) {
       publish(sessionId, {
         ...(retainReadyProjection && previous.phase === 'ready'
           ? previous
@@ -889,7 +915,12 @@ async function requestHistory(
     // boundary. A KodaX cursor may still validly serve that immutable old snapshot, so epoch
     // mismatch must restart at newest instead of accidentally certifying an old continuation as
     // the current generation.
-    applyHistoryResult(sessionId, result, continueFromCurrentBoundary);
+    applyHistoryResult(
+      sessionId,
+      result,
+      continueFromCurrentBoundary,
+      terminalHistoryCompletion.settledRuntimeRuns,
+    );
     deferredReadyRevalidations.delete(sessionId);
     loadedEpochs.set(sessionId, requestedEpoch);
     clearRetry(sessionId);

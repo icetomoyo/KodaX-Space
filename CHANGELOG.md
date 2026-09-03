@@ -14,6 +14,34 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.46-alpha.3] - 2026-09-03
+
+### Changed
+
+- **KodaX 0.7.96-alpha.7 and sandbox Runtime v11** - Root and Desktop now pin
+  the exact published alpha.7 Registry package. SDK startup, daemon admission,
+  connected Runtime checks, IPC projection, compatibility tests, and release
+  smoke require `sandboxRuntime:11`. Space keeps the alpha.4 permission contract:
+  Plan, Edits, Auto[LLM], and Full Access remain unchanged.
+- **Windows sandbox readiness follows the alpha.6/alpha.7 control plane** - Space
+  documents and validates protected-cache/setup generation 10, verify-only
+  ordinary admission, setup-owned ACL convergence, a 64-port native proxy range
+  for up to 32 exact network authorities, per-command private temporary leaves,
+  stronger broker/portable-Bash cleanup, and exact terminal evidence. Explicit
+  doctor and Setup/onboarding prove a no-side-effect target start/exit before
+  reporting ready; Settings runs these operations at the host boundary and does
+  not tunnel doctor through model Bash or add an automatic elevation path.
+
+### Fixed
+
+- **Canonical history no longer duplicates settled parallel-tool turns
+  (Issue 202)** - The history paging boundary preserves the exact settled
+  Runtime witness. A resolved authoritative newest read can therefore keep
+  canonical transcript and tool presentation order even when live Runtime
+  chronology differs, while retaining the exact terminal event and Runtime-only
+  diagnostics. Stale, partial, ambiguous, foreign-Run, and identity-conflict
+  cases continue to fail open.
+
 ## [0.1.46-alpha.2] - 2026-09-01
 
 ### Changed

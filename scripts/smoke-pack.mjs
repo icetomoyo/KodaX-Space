@@ -1229,7 +1229,7 @@ function daemonRequirements() {
     managedRunDurability: 1,
     runtimeEventCoalescing: 1,
     sharedSessionSettings: 2,
-    sandboxRuntime: 9,
+    sandboxRuntime: 11,
     sessionEventJournal: 1,
     ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
     integrationConfigResilience: 1,
@@ -1283,7 +1283,7 @@ try {
   await Promise.all(${JSON.stringify(publicFacadeUrls)}.map((moduleUrl) => import(moduleUrl)));
   const sandboxCapability = getKodaXSandboxCapability();
   if (
-    sandboxCapability.version !== 9 ||
+    sandboxCapability.version !== 11 ||
     sandboxCapability.asrtVersion !== KODAX_ASRT_VERSION ||
     sandboxCapability.unavailableBehavior !== 'structured-no-execution' ||
     sandboxCapability.ordinaryCallsTriggerSetup !== false ||
@@ -1417,8 +1417,8 @@ try {
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.crashOutcomeModel !== 2) {
     throw new Error('packaged SDK does not advertise crashOutcomeModel v2 before auto-start');
   }
-  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 9) {
-    throw new Error('packaged SDK does not advertise sandboxRuntime v9 before auto-start');
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 11) {
+    throw new Error('packaged SDK does not advertise sandboxRuntime v11 before auto-start');
   }
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.runtimeAutoModeGuardrail !== 5) {
     throw new Error(
@@ -1473,10 +1473,10 @@ try {
   if (
     typeof daemonSandboxRuntime !== 'object' ||
     daemonSandboxRuntime === null ||
-    daemonSandboxRuntime.version !== 9
+    daemonSandboxRuntime.version !== 11
   ) {
     throw new Error(
-      'packaged daemon did not negotiate sandboxRuntime v9: ' +
+      'packaged daemon did not negotiate sandboxRuntime v11: ' +
         JSON.stringify(daemonSandboxRuntime),
     );
   }
@@ -1605,13 +1605,13 @@ try {
     !result.sessionRoundTrip ||
     result.constructedHandlerIsMainThread !== 'false' ||
     result.daemonOrphanExit !== 1 ||
-    result.daemonSandboxRuntime !== 9 ||
+    result.daemonSandboxRuntime !== 11 ||
     result.sessionEventJournal !== 1 ||
     !result.sessionCursorValid ||
     result.integrationHealth !== 'healthy' ||
     result.runtimeExitSettlement !== 'clean' ||
     result.restartedRuntimeExitSettlement !== 'clean' ||
-    result.sandboxVersion !== 9 ||
+    result.sandboxVersion !== 11 ||
     result.sandboxUnavailableBehavior !== 'structured-no-execution' ||
     result.sandboxPermissionFallback !== 'normal-permission-policy' ||
     (result.sandboxDoctorReady && !result.sandboxCommandExecuted) ||

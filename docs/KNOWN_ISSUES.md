@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-08-29
+Last Updated: 2026-09-01
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) artifact uses exact npm Registry KodaX 0.7.95 and requires `conversationHistory:2`, `runtimeExitSettlement:2`, and `sandboxRuntime:5`. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -197,8 +197,72 @@ Last Updated: 2026-08-29
 | 199 | Medium   | Resolved in source  | Manual `/compact` cannot use a Provider key stored only in the Space OS keychain                                                                                                                    | <= v0.1.37 / KodaX 0.7.83                                    | 2026-08-28 |
 | 200 | Medium   | Resolved in source  | Fixed Space reasoning enums dropped provider-specific SDK efforts and could fall back from a stronger request to a distant model default                                                            | <= v0.1.45 reasoning picker                                  | 2026-08-28 |
 | 201 | High     | Resolved in source  | Space-owned Provider paths could reuse another Provider's keychain credential or bypass the active Runtime configuration                                                                            | <= v0.1.45                                                   | 2026-08-29 |
+| 202 | High     | Resolved in source  | Post-terminal reconciliation duplicated parallel-tool turns when Runtime and canonical orders differed                                                                                              | v0.1.45 causal transcript reconciliation                     | 2026-09-01 |
 
 ## Issue Details
+
+## Issue 202: Post-terminal reconciliation duplicated parallel-tool turns when Runtime and canonical orders differed
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: v0.1.45 causal transcript reconciliation
+- Created: 2026-09-01
+- Resolved: 2026-09-01
+
+### Problem
+
+Session `20260901_162545_d271f2a182ca2d` displayed the same submitted query and completed response
+twice. The two copies also ordered the first parallel tool group differently. Canonical JSONL held
+one user boundary and one response; the Provider and Runtime executed the Run only once.
+
+### Root Cause
+
+Space used strong `(turnId, turnUserOrdinal)` identity only to select a possible duplicate, then
+required canonical history content to be one unique contiguous sequence inside the Runtime live
+journal. Parallel tools invalidate that assumption: Runtime records actual start/result chronology,
+while canonical history stores stable presentation order. `output_segment_started` activated the
+strict causal matcher, the two valid total orders contradicted, and fail-open rendering retained
+both complete projections.
+
+The paging layer already knew which exact `runtimeId/runId/generation` values were followed by a
+newest history read, but reduced that evidence to a retry boolean before installing history. The
+store therefore guessed authority from content order instead of using the existing durability
+proof.
+
+### Resolution
+
+- Preserve the exact post-terminal settled Run set from history paging through the store install.
+- Decide turn projection authority only from exact owner identity, exact Runtime terminal
+  ownership, resolved newest history, source revision, and the post-terminal read witness.
+- Let certified canonical history own transcript content and tool order without invoking the
+  content-sequence matcher.
+- Retain the exact live terminal and Runtime-only diagnostics. Matching historical Sidecar
+  placeholders are enriched in canonical position from the live payload; obsolete session/output
+  segment markers retire with the live transcript projection.
+- Keep stale, partial, ambiguous, foreign-Run, page-head, and identity-conflict cases fail-open.
+  No KodaX SDK change is required for this fix.
+
+Files changed:
+
+- `apps/desktop/renderer/src/shell/sessionHistoryPaging.ts`
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/electron/test/session-history-paging.test.ts`
+- `apps/desktop/electron/test/history-replay-no-popout.test.ts`
+- `docs/test-guides/ISSUE_202_v0.1.46_REGRESSION_GUIDE.md`
+- `docs/KNOWN_ISSUES.md`
+
+### Verification
+
+- A minimized reproduction of the reported Session now renders one user and one canonical
+  `tool-a -> tool-b` sequence although live execution observed `start-b -> start-a -> result-a ->
+result-b`.
+- The real paging workflow proves the same behavior through terminal evidence rather than a
+  hand-authored store assumption.
+- Certified failed Runs retain one canonical partial answer and the exact live error.
+- Provider recovery and rich live Sidecar payloads survive canonical transcript replacement.
+- A foreign settled Run cannot authorize destructive replacement; uncertain overlap remains
+  fail-open.
+- See [Issue 202 regression guide](test-guides/ISSUE_202_v0.1.46_REGRESSION_GUIDE.md).
 
 ## Issue 201: Space-owned Provider paths could reuse another Provider's keychain credential or bypass the active Runtime configuration
 

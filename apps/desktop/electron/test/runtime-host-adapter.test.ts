@@ -135,7 +135,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         runtimeExitSettlement: 2,
         runtimeEventCoalescing: 1,
         runtimeAutoModeGuardrail: 5,
-        sandboxRuntime: 9,
+        sandboxRuntime: 11,
         sessionEventJournal: 1,
         sharedSessionSettings: 2,
       },
@@ -156,7 +156,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
           runtimeAutoModeGuardrail: 5,
-          sandboxRuntime: 9,
+          sandboxRuntime: 11,
           sessionEventJournal: 1,
           sharedSessionSettings: 2,
         },
@@ -178,7 +178,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
           runtimeAutoModeGuardrail: 5,
-          sandboxRuntime: 9,
+          sandboxRuntime: 11,
           sessionEventJournal: 1,
           sharedSessionSettings: 2,
         },
@@ -199,7 +199,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
           runtimeAutoModeGuardrail: 5,
-          sandboxRuntime: 9,
+          sandboxRuntime: 11,
           sessionEventJournal: 1,
           sharedSessionSettings: 2,
         },
@@ -208,7 +208,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*effectiveConfig v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*runtimeAutoModeGuardrail v5.*sandboxRuntime v9.*sessionEventJournal v1.*sharedSessionSettings v2/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*effectiveConfig v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*runtimeAutoModeGuardrail v5.*sandboxRuntime v11.*sessionEventJournal v1.*sharedSessionSettings v2/i,
   );
 });
 
@@ -480,7 +480,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
       runtimeEventCoalescing: { version: 1 },
       sessionEventJournal: { version: 1 },
       sandboxRuntime: {
-        version: 9,
+        version: 11,
         asrtVersion: '0.0.65',
         backend: 'unsupported',
       },
@@ -2097,7 +2097,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.daemonShutdownVerification, undefined);
   assert.equal(options[0]?.requirements?.runtimeEventCoalescing, 1);
   assert.equal(options[0]?.requirements?.crashOutcomeModel, 2);
-  assert.equal(options[0]?.requirements?.sandboxRuntime, 9);
+  assert.equal(options[0]?.requirements?.sandboxRuntime, 11);
   assert.equal(options[0]?.requirements?.sessionEventJournal, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
   assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 5);
@@ -8693,7 +8693,7 @@ test('initialization requires crash outcome convergence v2', async () => {
   assert.equal(fake.calls.close, 1);
 });
 
-test('initialization requires the sandbox v9 lifecycle', async () => {
+test('initialization requires the sandbox v11 lifecycle', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.capabilities as Record<string, unknown>).sandboxRuntime = {
     version: 5,
@@ -8707,7 +8707,7 @@ test('initialization requires the sandbox v9 lifecycle', async () => {
     identityStore: testIdentityStore,
   });
 
-  await assert.rejects(adapter.initialize(), /sandboxRuntime v9/i);
+  await assert.rejects(adapter.initialize(), /sandboxRuntime v11/i);
   assert.equal(adapter.snapshot().state, 'failed');
   assert.equal(fake.calls.close, 1);
 });

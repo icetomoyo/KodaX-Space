@@ -84,7 +84,7 @@ test('Space kodax_manual documents the required current KodaX capability boundar
     }
   }
   assert.match(topics.get('runtime-host')?.body ?? '', /v0\.1\.45 正式发布.*KodaX 0\.7\.95/);
-  assert.match(topics.get('runtime-host')?.body ?? '', /当前源码.*KodaX 0\.7\.96-alpha\.5/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /当前源码.*KodaX 0\.7\.96-alpha\.7/);
   assert.match(topics.get('runtime-host')?.body ?? '', /conversationHistory v2/);
   assert.match(topics.get('runtime-host')?.body ?? '', /contextCompaction v3/);
   assert.match(topics.get('runtime-host')?.body ?? '', /transcriptSearch v1/);
@@ -205,7 +205,8 @@ test('Space kodax_manual describes the v0.1.45 runtime safety, recovery, attenti
   assert.match(topics.get('background-runtime')?.body ?? '', /临时 unconfirmed-owner.*自动重试/);
   assert.match(topics.get('background-runtime')?.body ?? '', /不要求用户删除标记/);
   assert.match(topics.get('runtime-host')?.body ?? '', /sandboxRuntime v4/);
-  assert.match(topics.get('runtime-host')?.body ?? '', /sandboxRuntime v9/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /sandboxRuntime v11/);
+  assert.match(topics.get('runtime-host')?.body ?? '', /不要让模型通过 Bash 工具嵌套运行/);
   assert.match(topics.get('runtime-host')?.body ?? '', /KodaX 0\.7\.95/);
   assert.match(topics.get('skills')?.body ?? '', /prepared User request overlay.*模型执行/);
   assert.match(topics.get('overview')?.body ?? '', /stale inline owner reconciliation/);

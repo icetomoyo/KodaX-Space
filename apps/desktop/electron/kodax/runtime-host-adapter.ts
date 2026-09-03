@@ -1173,8 +1173,8 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   /** Opt-in lifecycle policy for Space-managed daemons. */
   readonly daemonOrphanExitMs?: number;
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
-    /** Sandbox-first Auto and Windows concurrent sandbox repair use the v9 contract. */
-    readonly sandboxRuntime?: 9;
+    /** Sandbox-first Auto and Windows setup-generation-10 admission use the v11 contract. */
+    readonly sandboxRuntime?: 11;
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;
     /** Managed Run lifecycle events have canonical persistence boundaries. */
@@ -1440,9 +1440,9 @@ function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): voi
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
-  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 9) {
+  if (runtimeCapabilityVersion(runtime, 'sandboxRuntime') < 11) {
     throw new Error(
-      'KodaX Runtime does not support the required sandboxRuntime v9 capability. ' +
+      'KodaX Runtime does not support the required sandboxRuntime v11 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -1646,7 +1646,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...((capabilities?.runtimeAutoModeGuardrail ?? 0) >= 5
       ? []
       : ['runtimeAutoModeGuardrail v5']),
-    ...((capabilities?.sandboxRuntime ?? 0) >= 9 ? [] : ['sandboxRuntime v9']),
+    ...((capabilities?.sandboxRuntime ?? 0) >= 11 ? [] : ['sandboxRuntime v11']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
     ...((capabilities?.sharedSessionSettings ?? 0) >= 2 ? [] : ['sharedSessionSettings v2']),
   ];
@@ -2290,7 +2290,7 @@ export class RuntimeHostAdapter {
         managedRunDurability: 1,
         actorSettlementConvergence: 2,
         runtimeEventCoalescing: 1,
-        sandboxRuntime: 9,
+        sandboxRuntime: 11,
         sessionEventJournal: 1,
         liveOutputSegments: 1,
         integrationConfigResilience: 1,
@@ -2838,7 +2838,7 @@ export class RuntimeHostAdapter {
         id: 'runtime.tools.sandboxObservation',
         version: 1,
         available:
-          version('sandboxRuntime') >= 9 &&
+          version('sandboxRuntime') >= 11 &&
           version('runtimeAutoModeGuardrail') >= 5 &&
           available('typedRuntimeEvents'),
       },

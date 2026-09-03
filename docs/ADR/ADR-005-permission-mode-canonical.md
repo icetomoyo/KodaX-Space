@@ -1,10 +1,10 @@
 # ADR-005: Permission Profiles — 对齐 KodaX canonical 4 profiles
 
 - **Status**: Accepted
-- **Date**: 2026-09-01
+- **Date**: 2026-09-03
 - **Supersedes**: 本 ADR 的 canonical 3 mode + Auto engine 决策
 - **Companion**: [ADR-003 KodaX 集成模式](ADR-003-kodax-integration-in-process.md)
-- **Source of truth**: `@kodax-ai/kodax@0.7.96-alpha.5` public permission and Runtime contracts
+- **Source of truth**: `@kodax-ai/kodax@0.7.96-alpha.7` public permission and Runtime contracts
 
 ## Context
 
@@ -52,7 +52,7 @@ Space 保留 doctor/setup/readiness 界面，但不再编辑、写入或向 Run 
 
 当前集成要求：
 
-- `sandboxRuntime:9`
+- `sandboxRuntime:11`
 - `runtimeAutoModeGuardrail:5`
 - `sharedSessionSettings:2`
 - `providerCredentialBroker:2`
