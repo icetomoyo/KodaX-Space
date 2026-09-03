@@ -114,7 +114,6 @@ const equality = {
 record('Q1-equality-matrix', equality);
 
 // Q4: stale cursor behavior after append.
-const staleCursorPage = page0.count >= 0 ? null : null; // page0 had no cursor; use revision-fenced full read instead
 let staleBehavior = 'page0-had-no-cursor';
 try {
   // Re-read with an explicit limit to obtain a cursor, append, then re-read with that cursor.

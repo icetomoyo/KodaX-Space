@@ -14,6 +14,8 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.46-alpha.4] - 2026-09-04
+
 ### Changed
 
 - **Terminal-run certification anchors on identity evidence (FEATURE_274,

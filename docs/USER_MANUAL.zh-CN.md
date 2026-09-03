@@ -6,7 +6,7 @@
 
 > 当前发布精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。
 >
-> 当前源码候选为 Space `0.1.46-alpha.3`，精确锁定 KodaX `0.7.96-beta.1`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
+> 当前源码候选为 Space `0.1.46-alpha.4`，精确锁定 KodaX `0.7.96-beta.1`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
 > Windows 既有安装首次迁移可能需要用户在 Settings → Runtime 明确执行一次 Sandbox Setup；
 > 普通启动、Refresh 和工具调用不会隐式提升权限。正式发布版的 0.7.95 说明保留为历史事实。
 >
@@ -291,6 +291,16 @@ Provider catalog 全部兼容；真实 Run 的错误条和诊断导出才是对�
 当前发布版把 `provider.recovery` 仅作为诊断事件；它不再驱动文本替换。KodaX Runtime 的 `output.segment.started` 为每个 logical response 和 physical provider request 提供 append/replace 身份，raw journal 保留被放弃 attempt，live snapshot 只暴露有效输出。Space 的实时渲染、Session 切换、daemon 重连、历史重验、snapshot hydration 与 Ctrl+R 直接消费同一 SDK 投影，不运行 checkpoint replay 或文本相似度去重。已完成工具回执继续保留，延迟旧 request delta、旧 terminal、continued Run 的前一轮输出和 canonical/live leading-page 不会跨 query 归属。
 
 这不是正文去重：没有 Provider recovery 时，合法的重复文本仍会保留；fresh retry、`manual_continue`、malformed/child recovery 也不会误清理。该路径消费现有 KodaX Runtime 事件，不新增 SDK 事件、字段、能力或 Runtime projector。
+
+### 会话结算的 canonical 认证（v0.1.46-alpha.4）
+
+一轮 Run 结束后，Space 会读取 canonical 历史页并决定它能否接管该轮的显示。
+认证现在锚定身份证据而不是时序猜测（ADR-009）：只有当这一页真的包含该轮的
+回答行（按 turnId 身份匹配）时才接管；页里还没有这些行时，Space 会继续读取，
+并在连续两次读到相同页版本时确认"这一轮本来就没有可持久化的内容"（例如
+provider 失败轮）后立即结束等待。无论哪种情况，已画出的回答都不会被一个缺少
+内容的空壳替换：追问时上一轮的回答保持可见，不需要 Ctrl+R 刷新找回。出现
+provider 网络错误时，错误条与「Runtime 失败详情」仍然是对应尝试的权威信息。
 
 ### Windows 后台托盘与跨平台彻底退出
 

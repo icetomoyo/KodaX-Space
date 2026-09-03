@@ -36,13 +36,6 @@ interface ClickOutcome {
 const consoleErrors: string[] = [];
 const pageErrors: string[] = [];
 
-async function watchDiagnostics(space: SpaceInstance): Promise<void> {
-  space.page.on('console', (msg) => {
-    if (msg.type() === 'error') consoleErrors.push(msg.text);
-  });
-  space.page.on('pageerror', (err) => pageErrors.push(err.message));
-}
-
 async function dismissOverlays(page: Page): Promise<void> {
   for (let i = 0; i < 4; i++) {
     const overlayVisible = await page
@@ -212,11 +205,7 @@ test('UI button sweep keeps the shell reliable across every region', async () =>
     // Region 2: left sidebar.
     await sweepRegion(page, 'left-sidebar', page.locator('aside').first());
 
-    // Region 3: chip row — the flex row between the stream and the sidebar at
-    // the top of the workspace; sweep the composer toolbar separately.
-    const chipRow = page.locator('[data-testid="coder-workspace"] >> css=div >> nth=0');
-    // The workspace root's first container holds the chip row; fall back to the
-    // composer toolbar when the shape changes.
+    // Region 3: the composer toolbar row between the stream and the sidebar.
     await sweepRegion(page, 'composer-toolbar', page.locator('[data-testid="composer-footer-toolbar"]'));
 
     // Region 4: right sidebar (last aside / frame section).
