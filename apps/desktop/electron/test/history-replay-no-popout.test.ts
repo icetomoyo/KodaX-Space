@@ -8025,6 +8025,79 @@ test('certified failed history keeps canonical content and the exact live error'
   );
 });
 
+test('a raced newest page cannot drop a settled live answer it does not contain', () => {
+  const store = useAppStore.getState();
+  const turnId = 'turn-raced-answer';
+  const runId = 'run-raced-answer';
+  const runtimeId = 'runtime-raced-answer';
+  const runtimeEvent = (seq: number) => ({ runtimeId, runId, journalEpoch: 'epoch-raced', seq });
+  const messageId = store.appendUserMessage(SID, 'explain use()', 13_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, runId);
+  for (const event of [
+    {
+      kind: 'session_start' as const,
+      provider: 'mock',
+      turnId,
+      runtimeEvent: runtimeEvent(1),
+    },
+    {
+      kind: 'text_delta' as const,
+      text: 'use() reads a promise in render.',
+      turnId,
+      runtimeEvent: runtimeEvent(2),
+    },
+    {
+      kind: 'session_complete' as const,
+      turnId,
+      runtimeEvent: runtimeEvent(3),
+    },
+  ]) {
+    store.appendEvent({ ...event, sessionId: SID });
+  }
+
+  // The terminal-scoped newest read raced persistence: it holds the settled
+  // turn's user boundary but none of its assistant rows, yet the paging layer
+  // still witnessed this exact Run as settled. Certifying that page must not
+  // drop the painted answer — the closed-causal empty-durable adoption keeps
+  // the live content under the canonical owner instead.
+  store.prependSessionHistory(
+    SID,
+    [
+      {
+        kind: 'user',
+        content: 'explain use()',
+        sentAt: 13_000,
+        entryId: 'entry-raced-user',
+        canonicalIndex: 0,
+        turnId,
+        turnUserOrdinal: 0,
+      },
+    ],
+    FALLBACK_SENT_AT,
+    {
+      replaceLoadedWindow: true,
+      authoritativeNewest: true,
+      sourceRevision: 'source-raced-page',
+      conversationStatus: 'resolved',
+      settledRuntimeRuns: [{ runtimeId, runId, generation: 1 }],
+    },
+  );
+
+  const visible = composeMessages({
+    userMessages: useAppStore.getState().userMessagesBySession[SID] ?? [],
+    events: useAppStore.getState().eventsBySession[SID] ?? [],
+  });
+  assert.deepEqual(
+    visible.flatMap((message) => (message.kind === 'user' ? [message.content] : [])),
+    ['explain use()'],
+  );
+  assert.deepEqual(
+    visible.flatMap((message) => (message.kind === 'assistant_text' ? [message.text] : [])),
+    ['use() reads a promise in render.'],
+  );
+});
+
 test('a foreign settled Run cannot authorize destructive canonical replacement', () => {
   const store = useAppStore.getState();
   const turnId = 'turn-foreign-authority';

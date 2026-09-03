@@ -2153,6 +2153,16 @@ function decideTurnProjectionAuthority(
   ) {
     return 'coexist_fail_open';
   }
+  // A terminal-scoped newest read can race persistence and hold only the turn's
+  // user boundary while none of its assistant rows. Certifying that page hands
+  // the turn to a canonical shell that lacks the painted answer until the next
+  // reload. Withhold certification so the closed-causal empty-durable adoption
+  // keeps the live content under the canonical owner instead.
+  const liveHasAssistantContent =
+    live.text.length > 0 || live.thinking.length > 0 || live.tools.length > 0;
+  if (liveHasAssistantContent && durable.eventStart === durable.eventEnd) {
+    return 'coexist_fail_open';
+  }
   return authority.settledRuntimeRuns.some(
     (run) => run.runtimeId === live.terminalRuntimeId && run.runId === live.runtimeRunId,
   )
@@ -6311,6 +6321,10 @@ export const useAppStore = create<AppState>((set) => ({
         ? canonProjectRootShared(state.currentProjectPath, IS_WIN_RENDERER)
         : null;
       if (targetCanon === currentCanon) return { currentSessionId: sessionId, ...patch };
+      // Opening another project's Session switches the whole working context
+      // (terminal, changes, sends). Persist it so reload/boot restores the
+      // project the user actually ended up in.
+      lsSet(LS_KEY_PROJECT, found.projectRoot);
       return {
         currentSessionId: sessionId,
         currentProjectPath: found.projectRoot,

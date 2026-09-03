@@ -64,6 +64,7 @@ import {
 } from './user-config.js';
 import {
   invalidatePersistedSessionCache,
+  isSessionNotFoundError,
   loadPersistedSessionFresh,
   persistedSessionFreshnessToken,
   preparePersistedSessionFreshnessTracking,
@@ -1787,10 +1788,6 @@ function capabilitiesFor(mode: RuntimeHostMode, state: RuntimeHostState): Runtim
   ];
 }
 
-function isSessionNotFound(error: unknown): boolean {
-  return /Session not found:/i.test(error instanceof Error ? error.message : String(error));
-}
-
 export class RuntimeSessionIdentityConflictError extends Error {
   readonly code = 'session_identity_conflict' as const;
 
@@ -2567,7 +2564,7 @@ export class RuntimeHostAdapter {
       // A retired attachment is expected to reject its pending restoration. Its result has no
       // authority over either the replacement Runtime's desired bit or user-facing diagnostics.
       if (!stillCurrent) return;
-      if (isSessionNotFound(error)) this.desiredObservations.delete(sessionId);
+      if (isSessionNotFoundError(error)) this.desiredObservations.delete(sessionId);
       else {
         console.warn(
           `[runtime] could not restore observation for ${sessionId}: ${sanitizeDiagnosticError(error)}`,
@@ -3402,7 +3399,7 @@ export class RuntimeHostAdapter {
       await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot, true);
       return false;
     } catch (error: unknown) {
-      if (!isSessionNotFound(error)) throw error;
+      if (!isSessionNotFoundError(error)) throw error;
     }
     try {
       const created = await runtime.sessions.create({
@@ -3421,7 +3418,7 @@ export class RuntimeHostAdapter {
         await this.assertCoderSession(runtime, input.sessionId, undefined, input.projectRoot, true);
         return false;
       } catch (reloadError: unknown) {
-        if (!isSessionNotFound(reloadError)) throw reloadError;
+        if (!isSessionNotFoundError(reloadError)) throw reloadError;
         throw createError;
       }
     }
@@ -3486,6 +3483,10 @@ export class RuntimeHostAdapter {
       });
     } catch (error) {
       if (isRuntimeResyncRequired(error)) return { outcome: 'data_changed' };
+      // A Session the daemon has never persisted (fresh profile, mock host, or a
+      // Session the replacement daemon has not loaded) has no canonical
+      // conversation; the caller already treats a null page as an empty window.
+      if (isSessionNotFoundError(error)) return { outcome: 'ready', page: null };
       throw error;
     }
     if (
@@ -3708,7 +3709,7 @@ export class RuntimeHostAdapter {
       await this.assertCoderSession(runtime, sessionId);
       await runtime.sessions.delete(sessionId);
     } catch (error) {
-      if (!isSessionNotFound(error)) throw error;
+      if (!isSessionNotFoundError(error)) throw error;
       outcome = 'not_found';
     }
     this.desiredObservations.delete(sessionId);
@@ -4558,7 +4559,7 @@ export class RuntimeHostAdapter {
         this.actorSnapshots.set(sessionId, snapshot);
         this.push('agent.actor.changed', snapshot);
       },
-      shouldRetry: (error) => !isSessionNotFound(error) && this.state !== 'closed',
+      shouldRetry: (error) => !isSessionNotFoundError(error) && this.state !== 'closed',
       onError: (error, consecutiveFailures, retryDelayMs) => {
         if (consecutiveFailures !== 1 && consecutiveFailures % 10 !== 0) return;
         console.warn(

@@ -4,7 +4,7 @@
 - **Date**: 2026-09-03
 - **Supersedes**: 本 ADR 的 canonical 3 mode + Auto engine 决策
 - **Companion**: [ADR-003 KodaX 集成模式](ADR-003-kodax-integration-in-process.md)
-- **Source of truth**: `@kodax-ai/kodax@0.7.96-alpha.7` public permission and Runtime contracts
+- **Source of truth**: `@kodax-ai/kodax@0.7.96-beta.1` public permission and Runtime contracts
 
 ## Context
 

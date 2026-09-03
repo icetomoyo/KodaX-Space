@@ -14,6 +14,75 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Changed
+
+- **Terminal-run certification anchors on identity evidence (FEATURE_274,
+  ADR-009)** - The Issue 202/204 family all traced to one root: settlement
+  certification guessed from timing and generation counters, so every new race
+  was a new way to guess wrong. A terminal evidence Run now settles only when
+  the terminal-scoped newest page actually contains the Run's turn rows
+  (`turnId` presence on a non-user history item); when rows are absent, two
+  consecutive identical `page.revision` reads prove the source settled and the
+  turn legitimately persisted nothing (failed runs), taking the structural
+  exit; everything else stays pending on the existing bounded retry ladder.
+  The Issue 204 empty-durable guard remains as an independent last-resort
+  invariant, and every undecided case fails open to the previous behavior.
+  The alternative cross-domain revision equality fence was rejected on
+  measured evidence (the three revision domains never compare equal) — see
+  [ADR-009](docs/ADR/ADR-009-settlement-certification-identity.md) and
+  [FEATURE_274](docs/features/v0.1.46.md). Covered by five identity-gate
+  decision tests in `session-history-paging.test.ts` and evidence plumbing
+  tests in `runtime-terminal-evidence.test.ts`.
+- **KodaX 0.7.96-beta.1 baseline** - Root and Desktop now pin the exact
+  published beta.1 Registry package (lockfile, installed bytes, and the
+  capability ledger SRI move together). The first beta of the 0.7.96 line
+  retains the full alpha.7 feature set and every capability contract —
+  `sandboxRuntime:11`, `runtimeAutoModeGuardrail:5`, and
+  `sharedSessionSettings:2` are unchanged — and only restores Linux glibc 2.28
+  compatibility for the native text authority (upstream Issue 328). No Space
+  capability gate, permission profile, or Windows runtime path moves.
+- **Exec-policy boundary documented, Full Access e2e added** - The capability
+  ledger now records the measured boundary that a repo-level
+  `.kodax/exec-policy.jsonc` stays inert without `createKodaXRuntime`'s
+  `execPolicy.trustedProjectRoots` (Space connects via `connectKodaXRuntime`,
+  which does not expose it); the user-level `~/.kodax/exec-policy.jsonc`
+  remains effective. `tests/e2e/full-access-mode.spec.ts` covers the four
+  canonical permission profiles end to end in mock mode.
+
+### Fixed
+
+- **A raced terminal reconciliation can no longer drop a settled live answer
+  (Issue 204)** - After a completed answer, the terminal-scoped newest-page
+  read could race persistence and return only the follow-up's user boundary.
+  Certifying that page replaced the complete live turn, so the transcript kept
+  showing the query without its answer until Ctrl+R.
+  `decideTurnProjectionAuthority` now withholds certification when the live
+  turn carries assistant content and the certified page's segment is empty;
+  the closed-causal adoption keeps the live content under the canonical owner.
+  Covered by a deterministic regression test in
+  `history-replay-no-popout.test.ts`.
+- **`Session not found` no longer escapes persisted-session readers
+  (Issue 205)** - Sessions with no persisted record yet (fresh daemon Session
+  whose first Run failed, mock sessions) made `session.history`,
+  `session.liveSnapshot`, and surface resolution fail with handler errors and
+  uncaught renderer rejections. The SDK's not-found throw now maps to the
+  existing `null` result across `loadPersistedSession`,
+  `loadPersistedSessionFresh`, the conversation reader, and the transcript
+  fallback, and the Coder runtime adapter maps the daemon's not-found on a
+  paged conversation read to an empty window. Observing a never-persisted
+  Session keeps its typed `LIVE_SNAPSHOT_UNAVAILABLE` failure with bounded
+  retries — observing must not create daemon Sessions. Found by the new
+  `tests/e2e/ui-elements-sweep.spec.ts` availability sweep.
+- **Cross-project Session open now persists the project selection
+  (Issue 203)** - Opening another project's Session switches the working
+  context in memory, but the selection was never written to
+  `localStorage['kodax-space.currentProjectPath']`, so reload or restart
+  restored the previous project. `setCurrentSession` now persists the target
+  project on an actual cross-project switch; same-project opens keep the
+  untouched fast path. Covered by
+  `apps/desktop/renderer/src/store/appStoreProjectPersistence.test.ts` and
+  [Issue 203 regression guide](docs/test-guides/ISSUE_203_v0.1.46_REGRESSION_GUIDE.md).
+
 ## [0.1.46-alpha.3] - 2026-09-03
 
 ### Changed

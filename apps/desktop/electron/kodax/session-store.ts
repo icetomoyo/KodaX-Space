@@ -163,6 +163,44 @@ function hasStorageSave(value: unknown): value is StorageWithSave {
   );
 }
 
+/** The SDK signals a Session id that has no persisted record by throwing an
+ * Error whose message carries this marker; intermediate layers may wrap the
+ * message but the marker survives. Non-Error throws are never tolerated. */
+export function isSessionNotFoundError(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('Session not found');
+}
+
+/** `loadSession` with the never-persisted contract applied: resolves null
+ * instead of throwing. Unrelated storage failures still propagate. */
+async function loadSessionToleratingMissing(sessionId: string): Promise<LoadedSessionData | null> {
+  try {
+    return await activeImpl.loadSession(sessionId);
+  } catch (err) {
+    if (!isSessionNotFoundError(err)) throw err;
+    return null;
+  }
+}
+
+type SessionConversationHistoryData = Awaited<
+  ReturnType<NonNullable<SessionStoreImpl['readConversationHistory']>>
+>;
+
+/** `readConversationHistory` with the same never-persisted contract: a known
+ * Session whose Run failed before any entry landed reads as legitimately empty.
+ * Callers gate on `readConversationHistory` support before reaching this. */
+async function readConversationHistoryToleratingMissing(
+  sessionId: string,
+): Promise<SessionConversationHistoryData | null> {
+  const read = activeImpl.readConversationHistory;
+  if (read === undefined) return null;
+  try {
+    return await read(sessionId);
+  } catch (err) {
+    if (!isSessionNotFoundError(err)) throw err;
+    return null;
+  }
+}
+
 const DEFAULT_IMPL: SessionStoreImpl = {
   listSessions: async (opts) => (await loadSdkModule()).listSessions(opts),
   forkSession: async (id, opts) => (await loadSdkModule()).forkSession(id, opts),
@@ -703,7 +741,9 @@ export async function loadPersistedSession(sessionId: string): Promise<LoadedSes
       return cached;
     }
     const loadToken = persistedSessionFreshnessToken(sessionId);
-    const data = await activeImpl.loadSession(sessionId);
+    // A known in-memory Session with no persisted record yet (fresh daemon or
+    // mock session) reads as "no persisted data", not a storage failure.
+    const data = await loadSessionToleratingMissing(sessionId);
     // A mutation may have invalidated this Session while the asynchronous read
     // was in flight. Re-read instead of repopulating the cache with a stale
     // pre-mutation snapshot.
@@ -733,7 +773,9 @@ export async function loadPersistedSessionFresh(
 ): Promise<LoadedSessionData | null> {
   for (let attempt = 0; attempt < MAX_FRESH_READ_ATTEMPTS; attempt += 1) {
     const loadToken = persistedSessionFreshnessToken(sessionId);
-    const data = await activeImpl.loadSession(sessionId);
+    // Ownership fences treat null as "no persisted authority to verify"; a
+    // never-persisted Session has none.
+    const data = await loadSessionToleratingMissing(sessionId);
     if (loadToken === persistedSessionFreshnessToken(sessionId)) return data;
   }
   throw Object.assign(
@@ -751,7 +793,8 @@ export async function retagPersistedSession(opts: {
   readonly sessionId: string;
   readonly tag: Surface;
 }): Promise<boolean> {
-  const data = await activeImpl.loadSession(opts.sessionId);
+  // Nothing persisted means nothing to retag.
+  const data = await loadSessionToleratingMissing(opts.sessionId);
   if (data === null) return false;
   const saved = activeImpl.saveSession
     ? await activeImpl.saveSession(opts.sessionId, { ...data, tag: opts.tag })
@@ -822,7 +865,10 @@ export async function loadPersistedConversationHistory(
       return { supported: true, data: cached };
     }
     const loadToken = persistedSessionFreshnessToken(sessionId);
-    const data = await activeImpl.readConversationHistory(sessionId);
+    // A history read of a known-but-never-persisted Session is legitimately
+    // empty (a fresh daemon Session whose first Run failed before any entry
+    // landed), not a storage failure; unrelated errors still propagate.
+    const data = await readConversationHistoryToleratingMissing(sessionId);
     const stable = loadToken === persistedSessionFreshnessToken(sessionId);
     if (!stable && attempt + 1 < MAX_FRESH_READ_ATTEMPTS) continue;
     if (data === null) return { supported: true, data: null };
@@ -860,8 +906,10 @@ export async function loadPersistedTranscript(sessionId: string): Promise<Transc
       }
     }
     // Fallback: full transcript unavailable (old SDK / mock) → active branch only.
+    // Same never-persisted contract: a Session with no persisted record has an
+    // empty transcript. Unrelated storage errors propagate.
     if (data === null) {
-      data = await activeImpl.loadSession(sessionId);
+      data = await loadSessionToleratingMissing(sessionId);
     }
     const stable = loadToken === persistedSessionFreshnessToken(sessionId);
     if (!stable && attempt + 1 < MAX_FRESH_READ_ATTEMPTS) continue;

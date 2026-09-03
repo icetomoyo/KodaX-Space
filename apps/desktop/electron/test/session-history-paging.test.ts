@@ -1197,6 +1197,11 @@ afterEach(() => {
     'history-paging-foreign-owner',
     'history-paging-terminal-prunes-never-folded',
     'history-paging-partial-terminal-keeps-live',
+    'history-paging-turnid-presence',
+    'history-paging-turnid-race-in',
+    'history-paging-turnid-structural',
+    'history-paging-turnid-absent-fail-open',
+    'history-paging-turnid-source-advancing',
   ]) {
     deactivateSessionHistoryPaging(sessionId);
   }
@@ -5325,4 +5330,311 @@ test('a newest stitch that reaches its scan cap fails visibly without installing
     ['loaded query before capped scan'],
     'no unproven staged page may become visible',
   );
+});
+
+// FEATURE_274 T2 — identity-aware terminal evidence completion.
+//
+// 结算认证锚定身份证据：terminal-scoped newest 页包含该 Run turn 的非 user 条目
+// （turnId 匹配）该读才 settle 该 Run；页内没有时用"连续两次 page.revision 相同"
+// 证明源已收敛且本就无该 turn 的行，结构性放行；其余保持 pending 走既有重试梯。
+
+interface TurnIdPagePlan {
+  readonly revision: string;
+  readonly items: readonly {
+    readonly kind: 'user' | 'assistant';
+    readonly content?: string;
+    readonly text?: string;
+    readonly canonicalIndex: number;
+    readonly turnId?: string;
+  }[];
+}
+
+function seedPagingStore(sessionId: string): void {
+  useAppStore.setState({
+    sessions: [
+      {
+        sessionId,
+        projectRoot: '/project',
+        provider: 'mock',
+        reasoningMode: 'auto',
+        permissionMode: 'accept-edits',
+        agentMode: 'ama',
+        surface: 'code',
+        createdAt: 1_000,
+        lastActivityAt: 1_000,
+      },
+    ],
+    currentSessionId: sessionId,
+    eventsBySession: {},
+    userMessagesBySession: {},
+  });
+}
+
+function assistantComposedTexts(sessionId: string): readonly string[] {
+  return composeMessages({
+    userMessages: useAppStore.getState().userMessagesBySession[sessionId] ?? [],
+    events: useAppStore.getState().eventsBySession[sessionId] ?? [],
+  })
+    .filter((message) => message.kind === 'assistant_text')
+    .map((message) => message.text);
+}
+
+/** Node 22 mock timers have no tickAsync: advance virtual time, then drain the
+ * promise chains the fired retry timers scheduled before the next tick. */
+async function flushSettling(
+  t: { mock: { timers: { tick: (milliseconds: number) => void } } },
+  totalMilliseconds = 1_250,
+): Promise<void> {
+  for (let elapsed = 0; elapsed < totalMilliseconds; elapsed += 50) {
+    t.mock.timers.tick(50);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
+
+function plannedPageInvoke(plan: readonly TurnIdPagePlan[]): {
+  readonly invoke: (channel: string, input: unknown) => Promise<unknown>;
+  readonly calls: () => number;
+} {
+  let calls = 0;
+  return {
+    invoke: mockHistoryInvoke(async () => {
+      const page = plan[Math.min(calls, plan.length - 1)];
+      calls += 1;
+      return {
+        ok: true as const,
+        data: {
+          items: page.items.map((item) =>
+            item.kind === 'user'
+              ? {
+                  kind: 'user' as const,
+                  content: item.content ?? '',
+                  canonicalIndex: item.canonicalIndex,
+                }
+              : {
+                  kind: 'assistant' as const,
+                  text: item.text ?? '',
+                  canonicalIndex: item.canonicalIndex,
+                  ...(item.turnId === undefined ? {} : { turnId: item.turnId }),
+                },
+          ),
+          page: {
+            outcome: 'ready' as const,
+            revision: page.revision,
+            sourceRevision: `source-${page.revision}`,
+            hasMore: false,
+            windowMode: 'replace' as const,
+            hasNewer: false,
+          },
+        },
+      };
+    }),
+    calls: () => calls,
+  };
+}
+
+test('a run whose turn rows are in the certified page settles on that single read', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = 'history-paging-turnid-presence';
+  seedPagingStore(sessionId);
+  const page = {
+    revision: 'rev-presence',
+    items: [
+      { kind: 'user' as const, content: 'query', canonicalIndex: 0, turnId: 'turn-1' },
+      {
+        kind: 'assistant' as const,
+        text: 'answer under its turn id',
+        canonicalIndex: 1,
+        turnId: 'turn-1',
+      },
+    ],
+  };
+  const { invoke, calls } = plannedPageInvoke([page]);
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: { kodaxSpace: { invoke } },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_turnid',
+    runId: 'run_turnid_presence',
+    phase: 'completed',
+    cursorSeq: 7,
+    turnId: 'turn-1',
+  });
+  await flushSettling(t);
+
+  assert.equal(calls(), 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'ready');
+  assert.deepEqual(assistantComposedTexts(sessionId), ['answer under its turn id']);
+});
+
+test('a raced page without the turn rows holds the run until a later read contains them', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = 'history-paging-turnid-race-in';
+  seedPagingStore(sessionId);
+  const { invoke, calls } = plannedPageInvoke([
+    {
+      revision: 'rev-raced-activation',
+      items: [{ kind: 'user' as const, content: 'query', canonicalIndex: 0, turnId: 'turn-2' }],
+    },
+    {
+      revision: 'rev-raced',
+      items: [{ kind: 'user' as const, content: 'query', canonicalIndex: 0, turnId: 'turn-2' }],
+    },
+    {
+      revision: 'rev-persisted',
+      items: [
+        { kind: 'user' as const, content: 'query', canonicalIndex: 0, turnId: 'turn-2' },
+        {
+          kind: 'assistant' as const,
+          text: 'late persisted answer',
+          canonicalIndex: 1,
+          turnId: 'turn-2',
+        },
+      ],
+    },
+  ]);
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: { kodaxSpace: { invoke } },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_turnid',
+    runId: 'run_turnid_race',
+    phase: 'completed',
+    cursorSeq: 7,
+    turnId: 'turn-2',
+  });
+  assert.equal(calls(), 2);
+  assert.deepEqual(assistantComposedTexts(sessionId), []);
+  await flushSettling(t);
+
+  assert.equal(calls(), 3);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'ready');
+  assert.deepEqual(assistantComposedTexts(sessionId), ['late persisted answer']);
+});
+
+test('a stable source without the turn rows takes the structural exit and settles', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = 'history-paging-turnid-structural';
+  seedPagingStore(sessionId);
+  const failedPage = {
+    revision: 'rev-stable-failure',
+    items: [{ kind: 'user' as const, content: 'query', canonicalIndex: 0, turnId: 'turn-3' }],
+  };
+  const { invoke, calls } = plannedPageInvoke([failedPage]);
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: { kodaxSpace: { invoke } },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_turnid',
+    runId: 'run_turnid_structural',
+    phase: 'failed',
+    cursorSeq: 7,
+    turnId: 'turn-3',
+  });
+  assert.equal(calls(), 2);
+  assert.deepEqual(assistantComposedTexts(sessionId), []);
+  await flushSettling(t);
+
+  assert.equal(calls(), 3, 'two identical revisions prove the source settled without the turn');
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'ready');
+});
+
+test('evidence without a turnId settles on the first read like today', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = 'history-paging-turnid-absent-fail-open';
+  seedPagingStore(sessionId);
+  const { invoke, calls } = plannedPageInvoke([
+    {
+      revision: 'rev-fail-open',
+      items: [
+        { kind: 'user' as const, content: 'query', canonicalIndex: 0, turnId: 'turn-4' },
+        {
+          kind: 'assistant' as const,
+          text: 'answer certified as before',
+          canonicalIndex: 1,
+          turnId: 'turn-4',
+        },
+      ],
+    },
+  ]);
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: { kodaxSpace: { invoke } },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_turnid',
+    runId: 'run_turnid_fail_open',
+    phase: 'completed',
+    cursorSeq: 7,
+  });
+  await flushSettling(t);
+
+  assert.equal(calls(), 2);
+  assert.equal(sessionHistoryPagingSnapshot(sessionId).phase, 'ready');
+  assert.deepEqual(assistantComposedTexts(sessionId), ['answer certified as before']);
+});
+
+test('a still-advancing source without the turn rows keeps the run pending', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const sessionId = 'history-paging-turnid-source-advancing';
+  seedPagingStore(sessionId);
+  let advancingCalls = 0;
+  const invoke = mockHistoryInvoke(async () => {
+    advancingCalls += 1;
+    return {
+      ok: true as const,
+      data: {
+        items: [{ kind: 'user' as const, content: 'query', canonicalIndex: 0, turnId: 'turn-5' }],
+        page: {
+          outcome: 'ready' as const,
+          revision: `rev-advancing-${advancingCalls}`,
+          sourceRevision: `source-${advancingCalls}`,
+          hasMore: false,
+          windowMode: 'replace' as const,
+          hasNewer: false,
+        },
+      },
+    };
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: { kodaxSpace: { invoke } },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  await reconcileTerminalSessionHistory({
+    sessionId,
+    runtimeId: 'rt_turnid',
+    runId: 'run_turnid_advancing',
+    phase: 'completed',
+    cursorSeq: 7,
+    turnId: 'turn-5',
+  });
+  assert.deepEqual(assistantComposedTexts(sessionId), []);
+  await flushSettling(t, 500);
+  await flushSettling(t, 500);
+
+  assert.ok(advancingCalls >= 4, `source kept being reread, got ${advancingCalls}`);
+  // retainReadyProjection keeps the painted transcript visible while evidence is pending, so the
+  // user-visible settle proof is the ABSENCE of a certification install, not the phase label.
+  assert.deepEqual(assistantComposedTexts(sessionId), []);
 });

@@ -198,8 +198,190 @@ Last Updated: 2026-09-01
 | 200 | Medium   | Resolved in source  | Fixed Space reasoning enums dropped provider-specific SDK efforts and could fall back from a stronger request to a distant model default                                                            | <= v0.1.45 reasoning picker                                  | 2026-08-28 |
 | 201 | High     | Resolved in source  | Space-owned Provider paths could reuse another Provider's keychain credential or bypass the active Runtime configuration                                                                            | <= v0.1.45                                                   | 2026-08-29 |
 | 202 | High     | Resolved in source  | Post-terminal reconciliation duplicated parallel-tool turns when Runtime and canonical orders differed                                                                                              | v0.1.45 causal transcript reconciliation                     | 2026-09-01 |
+| 203 | Medium   | Resolved in source  | Opening another project's Session switched the working project in memory but never persisted it, so reload or restart restored the previous project                                                 | <= v0.1.46-alpha.3 session/project selection                 | 2026-09-03 |
+| 204 | High     | Resolved in source  | A terminal-scoped newest history read that raced persistence certified a user-only page and dropped the settled live answer until reload                                                            | v0.1.46-alpha Issue 202 certification                        | 2026-09-03 |
+| 205 | Medium   | Resolved in source  | SDK `Session not found` escaped persisted-session readers as handler errors for Sessions with no persisted record yet                                                                                | <= v0.1.46-alpha.3 persisted-session readers                 | 2026-09-03 |
 
 ## Issue Details
+
+## Issue 205: SDK `Session not found` escaped persisted-session readers as handler errors for Sessions with no persisted record yet
+
+- Priority: Medium
+- Status: Resolved in source
+- Introduced: <= v0.1.46-alpha.3 persisted-session readers
+- Created: 2026-09-03
+- Resolved: 2026-09-03
+
+### Problem
+
+The UI-elements E2E sweep observed `[session.history] handler threw: Session
+not found`, `[session.liveSnapshot] reconciliation failed ... Session not
+found`, and uncaught renderer rejections during ordinary session switching in a
+fresh profile. Any known Session whose transcript had not been persisted yet
+(fresh daemon Session whose first Run failed before landing rows, mock
+sessions) hit the same class of failure on every reader that touches
+`loadSession`.
+
+### Root Cause
+
+`loadPersistedSession`, `loadPersistedSessionFresh`, and the transcript
+fallback inside `loadPersistedTranscript` call the SDK's `loadSession` (and the
+conversation projection reader) directly. The SDK signals "no persisted record
+for this id" by throwing `Session not found`; Space let that error escape even
+though every caller already has a meaningful `null` contract.
+
+### Resolution
+
+- `isSessionNotFoundError` guards `loadPersistedSession`,
+  `loadPersistedSessionFresh`, `retagPersistedSession` (nothing persisted
+  means nothing to retag), the conversation-projection reader, and the
+  transcript fallback: the SDK's not-found throw maps to the existing `null`
+  result instead of a handler error. Unrelated storage errors still propagate.
+  The predicate is the single shared marker matcher (Error instance whose
+  message contains `Session not found`); the Coder runtime adapter imports it
+  instead of keeping a second, divergent regex.
+- The Coder runtime adapter maps the daemon's `Session not found` on a paged
+  conversation read to an empty window (the caller's existing null-page
+  contract), so the Runtime-ready wake no longer surfaces handler errors for
+  Sessions the daemon has never persisted. That empty-window escape is also
+  the fail-open path the FEATURE_274 settlement identity gate relies on when
+  a never-persisted Session yields no certifiable page
+  ([ADR-009](ADR/ADR-009-settlement-certification-identity.md)).
+- The history paging retry button no longer lets a rejected
+  `restoreNewestSessionHistory` escape as an unhandled renderer rejection; the
+  failure state is already painted by the error sentinel.
+- Observation of a never-persisted Session intentionally keeps the typed
+  `LIVE_SNAPSHOT_UNAVAILABLE` failure with bounded retries: observing must not
+  create daemon Sessions, and fabricating an authoritative live projection
+  would break the fail-closed cursor contract.
+
+Files changed:
+
+- `apps/desktop/electron/kodax/session-store.ts`
+- `apps/desktop/electron/kodax/runtime-host-adapter.ts`
+- `apps/desktop/renderer/src/shell/ConversationStreamV2.tsx`
+- `apps/desktop/electron/test/session-store-missing-session.test.ts`
+- `tests/e2e/ui-elements-sweep.spec.ts`
+
+### Verification
+
+- `apps/desktop/electron/test/session-store-missing-session.test.ts` covers the
+  transcript, conversation projection, LRU reader, fresh fence, and the
+  propagate-unrelated-failures contract.
+
+## Issue 204: A terminal-scoped newest history read that raced persistence certified a user-only page and dropped the settled live answer until reload
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: v0.1.46-alpha Issue 202 certification
+- Created: 2026-09-03
+- Resolved: 2026-09-03
+
+### Problem
+
+User report (reproducible): in one Session, ask a question, wait for the
+completed answer, then send a follow-up. The Agent answers, but the live
+transcript keeps showing only the follow-up query without its answer;
+Ctrl+R reloads the page and the answer appears from canonical history.
+
+### Root Cause
+
+The Issue 202 certification lets a terminal-scoped newest-page read take over a
+settled live Run. When that read races persistence it can return the turn's
+user boundary without any assistant rows (user rows persist at send time,
+assistant rows settle around the terminal boundary). `decideTurnProjectionAuthority`
+certified that user-only page for the exact settled Run, and the fold replaced
+the complete live turn — query plus answer — with the canonical shell.
+
+### Resolution
+
+- `decideTurnProjectionAuthority` withholds certification when the live turn
+  carries assistant content and the durable snapshot's segment is empty. The
+  existing closed-causal empty-durable adoption then keeps the live content
+  under the canonical owner, so the transcript never loses the answer and no
+  duplicate query appears. A page that arrives after persistence still
+  certifies normally (covered by the existing Issue 202 tests).
+- FEATURE_274 hardening layers identity evidence **above** this guard: a
+  terminal evidence run now settles only when the terminal-scoped newest page
+  actually contains the Run's turn rows (`turnId` presence), with a
+  two-identical-`page.revision` structural exit for turns that legitimately
+  persisted nothing. The raced user-only read therefore holds as *pending*
+  instead of being certified; this guard remains as the independent
+  last-resort invariant. Decision record: [ADR-009](ADR/ADR-009-settlement-certification-identity.md).
+
+Files changed:
+
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/electron/test/history-replay-no-popout.test.ts`
+- FEATURE_274: `apps/desktop/renderer/src/store/runtimeProjectionState.ts`,
+  `apps/desktop/renderer/src/shell/sessionHistoryPaging.ts`,
+  `apps/desktop/renderer/src/App.tsx`,
+  `apps/desktop/electron/test/runtime-terminal-evidence.test.ts`,
+  `apps/desktop/electron/test/session-history-paging.test.ts`
+
+### Verification
+
+- `history-replay-no-popout.test.ts` adds "a raced newest page cannot drop a
+  settled live answer it does not contain": live settled turn with an answer +
+  certified user-only page must still compose the answer. Failed before the
+  fix, passes after; all 134 replay tests stay green.
+- FEATURE_274: `session-history-paging.test.ts` adds five identity-gate
+  decision tests (presence settles, raced page holds until rows persist,
+  stable-source structural exit, turnId-less fail-open, advancing source stays
+  pending); `runtime-terminal-evidence.test.ts` covers evidence turnId
+  plumbing. Full history/runtime regression set 329/329 green.
+- Real-runtime reproduction script:
+  `node e2e/real-session-regression.mjs --scenarios r6 --strip-proxy`
+  (blocked during the incident window by provider `ECONNREFUSED`; the unit
+  reproduction is deterministic).
+
+## Issue 203: Opening another project's Session switched the working project in memory but never persisted it, so reload or restart restored the previous project
+
+- Priority: Medium
+- Status: Resolved in source
+- Introduced: <= v0.1.46-alpha.3 session/project selection
+- Created: 2026-09-03
+- Resolved: 2026-09-03
+
+### Problem
+
+Clicking a Session that belongs to a different project switches the whole working
+context (ChipBar project, terminal cwd, git changes, send target). That switch
+updated the renderer store only: `localStorage['kodax-space.currentProjectPath']`
+kept the previous project. Boot restore gives the persisted selection priority
+one, so every reload or app restart put the user back into the old project even
+though the last thing they did was work in the other one. A real-profile
+end-to-end probe confirmed the stream after reload reported the stale project
+while the Session under inspection belonged to the current one.
+
+### Root Cause
+
+`setCurrentProject` persists `LS_KEY_PROJECT`, but the implicit project switch
+inside `setCurrentSession` (added when multi-project Session rows learned to
+re-target the working context) never did. The two entry points diverged and the
+durable record silently lagged the in-memory state.
+
+### Resolution
+
+- `setCurrentSession` persists `LS_KEY_PROJECT` when the target Session's
+  canonical project root differs from the current one, matching the explicit
+  `setCurrentProject` path.
+- Same-project Session opens keep the untouched fast path with no write.
+- Covered by `apps/desktop/renderer/src/store/appStoreProjectPersistence.test.ts`
+  (project switch persists, cross-project Session open persists, same-project
+  open keeps the stored value).
+
+Files changed:
+
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/renderer/src/store/appStoreProjectPersistence.test.ts`
+- `docs/test-guides/ISSUE_203_v0.1.46_REGRESSION_GUIDE.md`
+- `docs/KNOWN_ISSUES.md`
+
+### Verification
+
+- Node test run of the new store test passes; existing store suites stay green.
+- See [Issue 203 regression guide](test-guides/ISSUE_203_v0.1.46_REGRESSION_GUIDE.md).
 
 ## Issue 202: Post-terminal reconciliation duplicated parallel-tool turns when Runtime and canonical orders differed
 

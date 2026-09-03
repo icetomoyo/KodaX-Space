@@ -39,6 +39,7 @@ import {
   shouldReconcileRuntimeConnection,
   shouldRerunRejectedHydrationSnapshot,
   shouldRequestSessionLiveSnapshot,
+  terminalEventEvidence,
   type RuntimeTerminalEvidence,
 } from './store/runtimeProjectionState.js';
 import { createSessionEventBatcher } from './store/sessionEventBatcher.js';
@@ -184,22 +185,18 @@ export default function App(): JSX.Element {
     };
     const reconcileTerminalEventHistory = (event: Parameters<typeof appendEvent>[0]): boolean => {
       if (event.kind !== 'session_complete' && event.kind !== 'session_error') return false;
-      const origin = event.runtimeEvent;
-      const connection = useAppStore.getState().runtimeConnection;
-      if (
-        origin === undefined ||
-        !runtimeConnectionHasFreshLiveAuthority(connection) ||
-        connection.runtimeId !== origin.runtimeId
-      ) {
+      const state = useAppStore.getState();
+      const evidence = terminalEventEvidence({
+        kind: event.kind,
+        sessionId: event.sessionId,
+        runtimeEvent: event.runtimeEvent,
+        connection: state.runtimeConnection,
+        liveBySession: state.liveProjectionBySession,
+      });
+      if (evidence === undefined) {
         return reconcileAuthoritativeTerminalHistory(event.sessionId);
       }
-      reconcileTerminalHistory({
-        sessionId: event.sessionId,
-        runtimeId: origin.runtimeId,
-        runId: origin.runId,
-        phase: event.kind === 'session_complete' ? 'completed' : 'failed',
-        cursorSeq: origin.seq,
-      });
+      reconcileTerminalHistory(evidence);
       return true;
     };
     const sessionEventBatcher = createSessionEventBatcher(

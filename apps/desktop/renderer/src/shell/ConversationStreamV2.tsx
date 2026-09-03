@@ -2109,7 +2109,12 @@ export function ConversationStreamV2(): JSX.Element {
                   phase="error"
                   onRetry={() => {
                     if (historyPaging.surface !== undefined) {
-                      void restoreNewestSessionHistory(currentSessionId, historyPaging.surface);
+                      // Failure is already painted by this error sentinel; the
+                      // rejection itself must not escape as an unhandled error.
+                      void restoreNewestSessionHistory(
+                        currentSessionId,
+                        historyPaging.surface,
+                      ).catch(() => {});
                     }
                   }}
                 />

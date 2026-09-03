@@ -27,6 +27,11 @@ export interface RuntimeTerminalEvidence {
   readonly startedAt?: number;
   readonly completedAt?: number;
   readonly transcriptRevision?: string;
+  /** FEATURE_274: identity of the turn this terminal Run produced. Lets the terminal-history
+   * completion gate certify a read only when the canonical page actually contains the turn's
+   * rows. Absent (legacy projections, unmatched live terminal) = fail-open: the presence gate
+   * is skipped and completion keeps today's generation-based behavior. */
+  readonly turnId?: string;
 }
 
 export type ApplySessionLiveChangeStatus =
@@ -80,6 +85,7 @@ export function runtimeProfileSessionTerminalEvidence(
     cursorSeq: profile.cursor?.seq ?? 0,
     ...(terminal.startedAt !== undefined ? { startedAt: terminal.startedAt } : {}),
     ...(terminal.completedAt !== undefined ? { completedAt: terminal.completedAt } : {}),
+    ...(terminal.turnId !== undefined ? { turnId: terminal.turnId } : {}),
   };
 }
 
@@ -111,6 +117,7 @@ export function runtimeTerminalEvidenceCandidates(
           ...(liveTerminal.completedAt !== undefined
             ? { completedAt: liveTerminal.completedAt }
             : {}),
+          ...(liveTerminal.turnId !== undefined ? { turnId: liveTerminal.turnId } : {}),
           transcriptRevision: currentLive.transcriptRevision,
         };
   const profile = state.profile?.connection.runtimeId === runtimeId ? state.profile : undefined;
@@ -124,6 +131,48 @@ export function runtimeTerminalEvidenceCandidates(
     return [liveEvidence];
   }
   return [profileEvidence, liveEvidence];
+}
+
+/**
+ * Evidence for a directly observed terminal session event (`session_complete`/`session_error`
+ * carrying a Runtime origin). The origin carries no turn identity, so the turnId is filled from
+ * the fresh live projection's `lastTerminalRun` when it names the exact Run — normally already
+ * updated because the terminal event itself lands in the live reducer before reconciliation.
+ * `undefined` means the caller must fall back to authoritative candidates (no origin, stale
+ * connection, or cross-runtime origin).
+ */
+export function terminalEventEvidence(input: {
+  readonly kind: 'session_complete' | 'session_error';
+  readonly sessionId: string;
+  readonly runtimeEvent:
+    | { readonly runtimeId: string; readonly runId: string; readonly seq: number }
+    | undefined;
+  readonly connection: SpaceCoderConnectionProjectionT;
+  readonly liveBySession: Readonly<Record<string, SpaceSessionLiveProjectionT | undefined>>;
+}): RuntimeTerminalEvidence | undefined {
+  const origin = input.runtimeEvent;
+  if (
+    origin === undefined ||
+    !runtimeConnectionHasFreshLiveAuthority(input.connection) ||
+    input.connection.runtimeId !== origin.runtimeId
+  ) {
+    return undefined;
+  }
+  const live = input.liveBySession[input.sessionId];
+  const liveTerminal =
+    live !== undefined &&
+    live.cursor.runtimeId === origin.runtimeId &&
+    live.lastTerminalRun?.runId === origin.runId
+      ? live.lastTerminalRun
+      : undefined;
+  return {
+    sessionId: input.sessionId,
+    runtimeId: origin.runtimeId,
+    runId: origin.runId,
+    phase: input.kind === 'session_complete' ? 'completed' : 'failed',
+    cursorSeq: origin.seq,
+    ...(liveTerminal?.turnId !== undefined ? { turnId: liveTerminal.turnId } : {}),
+  };
 }
 
 export interface ApplySessionLiveChangeResult {

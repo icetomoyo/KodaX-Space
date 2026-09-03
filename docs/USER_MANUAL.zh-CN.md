@@ -6,7 +6,7 @@
 
 > 当前发布精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。
 >
-> 当前源码候选为 Space `0.1.46-alpha.3`，精确锁定 KodaX `0.7.96-alpha.7`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
+> 当前源码候选为 Space `0.1.46-alpha.3`，精确锁定 KodaX `0.7.96-beta.1`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
 > Windows 既有安装首次迁移可能需要用户在 Settings → Runtime 明确执行一次 Sandbox Setup；
 > 普通启动、Refresh 和工具调用不会隐式提升权限。正式发布版的 0.7.95 说明保留为历史事实。
 >
@@ -274,7 +274,7 @@ Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 n
 
 ### Runtime 失败详情
 
-当前源码候选继续接入 KodaX 0.7.96-alpha.7 的凭据安全
+当前源码候选继续接入 KodaX 0.7.96-beta.1 的凭据安全
 `RuntimeFailureDetail`。真实 Run 失败时，错误条优先显示 SDK 固定且有界的
 `safeMessage`；展开“Runtime 失败详情”可以查看稳定 KodaX 错误码、失败阶段、
 Run/Request ID、HTTP 状态、上游短错误码、建议等待时间和上下文容量数据（仅在

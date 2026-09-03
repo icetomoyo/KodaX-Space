@@ -63,11 +63,28 @@ interface TerminalHistoryWorkflowGroup {
     readonly runId: string;
     readonly generation: number;
     readonly status: TerminalHistoryWorkflowStatus;
+    /** FEATURE_274: the settled Run's turn identity. Present turns require the newest page to
+     * actually contain the turn's rows before a read may settle this evidence. */
+    readonly turnId?: string;
+    /** page.revision of the last read that lacked the turn rows; two identical consecutive
+     * revisions prove the source settled and the turn legitimately persisted nothing. */
+    readonly lastSeenRevision?: string;
   }[];
 }
 interface TerminalHistoryRequestScope {
   readonly runtimeId: string;
-  readonly runs: readonly { readonly runId: string; readonly generation: number }[];
+  readonly runs: readonly {
+    readonly runId: string;
+    readonly generation: number;
+    readonly turnId?: string;
+  }[];
+}
+/** The terminal evidence read about to install. `items` may be a stitched
+ * multi-page window; `revision` is the newest page's revision, which the
+ * stitch fence has already proven identical across every merged page. */
+interface TerminalHistoryRead {
+  readonly items: readonly SessionHistoryItem[];
+  readonly revision?: string;
 }
 interface TerminalHistoryRequestCompletion {
   readonly needsRetry: boolean;
@@ -121,7 +138,11 @@ function captureTerminalHistoryRequestScope(
   if (group === undefined) return undefined;
   const runs = group.runs
     .filter((run) => run.status !== 'completed')
-    .map(({ runId, generation }) => ({ runId, generation }));
+    .map(({ runId, generation, turnId }) => ({
+      runId,
+      generation,
+      ...(turnId !== undefined ? { turnId } : {}),
+    }));
   if (runs.length === 0) return undefined;
   terminalHistoryEvidenceBySession.set(sessionId, {
     ...group,
@@ -132,20 +153,44 @@ function captureTerminalHistoryRequestScope(
   return { runtimeId: group.runtimeId, runs };
 }
 
-/** Complete only evidence that existed when this authoritative newest-page read started. */
+/** FEATURE_274: presence of the Run's own rows is the identity fact a read must show. */
+function pageContainsRunTurn(page: TerminalHistoryRead, turnId: string): boolean {
+  return page.items.some(
+    (item) => item.kind !== 'user' && 'turnId' in item && item.turnId === turnId,
+  );
+}
+
+/** Complete only evidence that existed when this authoritative newest-page read started.
+ * A run carrying a turnId settles only when the page contains that turn's rows (identity
+ * certification) or when two consecutive reads returned the identical page revision —
+ * provably stable storage that will never contain the turn (e.g. a run that failed before
+ * producing assistant output). Everything else stays pending on the existing retry ladder. */
 function completeTerminalHistoryRequestScope(
   sessionId: string,
   scope: TerminalHistoryRequestScope | undefined,
+  page: TerminalHistoryRead,
 ): TerminalHistoryRequestCompletion {
   if (scope === undefined) return { needsRetry: false, settledRuntimeRuns: [] };
   const group = terminalHistoryEvidenceBySession.get(sessionId);
   if (group === undefined || group.runtimeId !== scope.runtimeId) {
     return { needsRetry: true, settledRuntimeRuns: [] };
   }
-  const generations = new Map(scope.runs.map((run) => [run.runId, run.generation]));
-  const runs = group.runs.map((run) =>
-    generations.get(run.runId) === run.generation ? { ...run, status: 'completed' as const } : run,
-  );
+  const scopes = new Map(scope.runs.map((run) => [run.runId, run]));
+  const runs = group.runs.map((run) => {
+    const scoped = scopes.get(run.runId);
+    if (scoped === undefined || scoped.generation !== run.generation) return run;
+    if (scoped.turnId === undefined || pageContainsRunTurn(page, scoped.turnId)) {
+      return { ...run, status: 'completed' as const };
+    }
+    if (run.lastSeenRevision !== undefined && run.lastSeenRevision === page.revision) {
+      return { ...run, status: 'completed' as const };
+    }
+    return {
+      ...run,
+      status: 'pending' as const,
+      ...(page.revision !== undefined ? { lastSeenRevision: page.revision } : {}),
+    };
+  });
   terminalHistoryEvidenceBySession.set(sessionId, { ...group, runs });
   const needsRetry = runs.some((run) => run.status !== 'completed');
   return {
@@ -333,6 +378,7 @@ export function reconcileTerminalSessionHistory(evidence: RuntimeTerminalEvidenc
         runId: evidence.runId,
         generation: currentGroup.nextGeneration,
         status: 'pending' as const,
+        ...(evidence.turnId !== undefined ? { turnId: evidence.turnId } : {}),
       },
     ].slice(-MAX_TERMINAL_HISTORY_RUN_IDS),
   });
@@ -900,6 +946,10 @@ async function requestHistory(
     const terminalHistoryCompletion = completeTerminalHistoryRequestScope(
       sessionId,
       terminalHistoryRequestScope,
+      {
+        items: result.items,
+        revision: page?.outcome === 'ready' ? page.revision : undefined,
+      },
     );
     if (terminalHistoryCompletion.needsRetry) {
       publish(sessionId, {
