@@ -14,6 +14,8 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.46-alpha.5] - 2026-09-04
+
 ### Fixed
 
 - **Foreground convergence guarantee for the transcript (Issue 206)** - A

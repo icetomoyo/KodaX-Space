@@ -13,7 +13,7 @@
 > root/Desktop manifest、lockfile、物理安装与打包 ASAR 必须解析到同一个正式 Registry URL/SRI。
 > v0.1.44 / KodaX 0.7.93 及更早的发布记录保持历史事实。
 
-> **2026-09-04 当前源码候选**：Space package 为 `0.1.46-alpha.4`，root/Desktop/lockfile 已精确锁定已发布的
+> **2026-09-04 当前源码候选**：Space package 为 `0.1.46-alpha.5`，root/Desktop/lockfile 已精确锁定已发布的
 > `@kodax-ai/kodax@0.7.96-beta.1`。SDK 包门要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2` 与 `effectiveConfig:1`；daemon 准入与连接后 Runtime 门额外要求 `providerCredentialBroker:2`。Windows native protocol/setup generation 10、真实 target-start doctor 证明、私有逐命令 Temp 与 64 端口 broker 范围都由 v11 门隔离。KodaX
 > universal native bundle 会整体解包，并在 packaged smoke 中按 manifest hash 校验；权限面仍为 Plan、Edits、Auto[LLM]、Full Access 四档；这不会
 > 把 v0.1.45 / KodaX 0.7.95 的正式发布记录改写成 alpha 版本。
