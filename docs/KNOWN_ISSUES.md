@@ -201,8 +201,72 @@ Last Updated: 2026-09-01
 | 203 | Medium   | Resolved in source  | Opening another project's Session switched the working project in memory but never persisted it, so reload or restart restored the previous project                                                 | <= v0.1.46-alpha.3 session/project selection                 | 2026-09-03 |
 | 204 | High     | Resolved in source  | A terminal-scoped newest history read that raced persistence certified a user-only page and dropped the settled live answer until reload                                                            | v0.1.46-alpha Issue 202 certification                        | 2026-09-03 |
 | 205 | Medium   | Resolved in source  | SDK `Session not found` escaped persisted-session readers as handler errors for Sessions with no persisted record yet                                                                                | <= v0.1.46-alpha.3 persisted-session readers                 | 2026-09-03 |
+| 206 | High     | Resolved in source  | Canonical convergence was purely event-driven: one missed renderer push left the painted transcript stale until a manual reload even though canonical history was complete and healthy                    | <= v0.1.46-alpha.4 transcript convergence                    | 2026-09-04 |
 
 ## Issue Details
+
+## Issue 206: Canonical convergence was purely event-driven — one missed push left the transcript stale until a manual reload
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: <= v0.1.46-alpha.4 transcript convergence design
+- Created: 2026-09-04
+- Resolved: 2026-09-04
+
+### Problem
+
+Customer report on v0.1.46-alpha.4 (macOS): the Agent visibly ran, the painted
+transcript never showed the answer, and only Ctrl+R revealed it. The supplied
+session artifacts prove the persistence side was completely healthy — the
+lineage JSONL holds both turns (user + assistant, correct `turnId`s), and the
+conversation cache is `resolved` with `entryCount: 4` and every entry carrying
+its turn identity. The renderer therefore had complete, correct canonical data
+available and still failed to converge to it while the session stayed open.
+
+### Root Cause
+
+Convergence to canonical was 100% event-driven. Painting new canonical content
+required having received a prior notification (terminal event, live projection
+change, lineage notice); every self-heal path (retry ladder, deferred refresh,
+runtime-ready wake) is downstream of one of those notifications. If the single
+relevant push was lost — occlusion-related transport drops, a daemon reconnect
+gap, or any transport hiccup — nothing re-read canonical for a `ready`-phase
+page: not the focus edge (it only wakes `waiting`/`error` pages), not the 30s
+profile tick (it reconciles only from terminal evidence, which requires a fresh
+live authority). The manual reload was the only unconditional convergence
+point. FEATURE_274 (ADR-009) fixed the certification race specifically and by
+design could not cover this sibling: certification correctness does not help
+when the reconciliation read never happens.
+
+### Resolution
+
+- Foreground convergence guarantee: the 30s visibility tick and every
+  focus/visibility edge now revalidate the current Session's newest canonical
+  page (`revalidateNewestSessionHistory`, generation-fenced with
+  `retainReadyProjection`). A healthy painted page is retained; a stale one is
+  replaced through the full certification chain, so Issue 202/204 guarantees
+  are unchanged. A missed push can now only delay convergence to at most one
+  tick (~30s) — a manual reload is never required on a foreground window.
+- Real-runtime probes added: r7 (turn 2 fully minimized — occlusion +
+  78s inter-turn gap) and r8 (main process drops EVERY renderer push for the
+  session during turn 2 — deterministic missed-notification). r8 also proves
+  the pre-existing partial healer: the 30s profile tick reconciles from
+  terminal evidence when the live authority is fresh.
+
+Files changed:
+
+- `apps/desktop/renderer/src/App.tsx`
+- `e2e/real-session-regression.mjs`
+
+### Verification
+
+- r8 (push suppression): canonical settles at +16s; painted transcript
+  converges without reload (focus edge / profile tick), reload confirms.
+- r7 (minimized turn 2): content paints under occlusion; canonical settles;
+  restore keeps the answer.
+- r6 with corrected structural paint assertion (rows, not keywords — the
+  turn-2 query itself contains the answer keywords).
+- Full history/runtime unit regression set green; mock e2e suite green.
 
 ## Issue 205: SDK `Session not found` escaped persisted-session readers as handler errors for Sessions with no persisted record yet
 

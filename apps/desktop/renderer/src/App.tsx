@@ -50,6 +50,7 @@ import {
   invalidateSessionHistoryPaging,
   reconcileTerminalSessionHistory,
   refreshDeferredSessionHistory,
+  revalidateNewestSessionHistory,
   sessionEventInvalidatesHistoryCache,
   sessionHistoryPagingSnapshot,
   useSessionHistoryPaging,
@@ -586,6 +587,7 @@ export default function App(): JSX.Element {
       requestObservedActiveLiveSnapshots({
         ...(currentSessionId !== null ? { excludeSessionId: currentSessionId } : {}),
       });
+      revalidateCurrentSessionCanonicalPage();
     };
     let windowReconciliationActive = !document.hidden && document.hasFocus();
     const reconcileWindowActivation = (): void => {
@@ -598,6 +600,28 @@ export default function App(): JSX.Element {
       windowReconciliationActive = true;
       flushSessionEventsIfActive();
     };
+    // Foreground convergence guarantee (Issue 206): canonical truth must never depend on having
+    // received every push. Whenever the window is visible, the current Session's newest canonical
+    // page is revalidated on a bounded interval and on every focus edge — generation-fenced with
+    // retainReadyProjection, so a healthy painted page is kept and a missed notification (lost
+    // deltas/terminal/liveChanged) can only delay convergence to this tick, never require a
+    // manual reload.
+    const revalidateCurrentSessionCanonicalPage = (): void => {
+      const state = useAppStore.getState();
+      const sessionId = state.currentSessionId;
+      if (!sessionId) return;
+      const selected = state.sessions.find((session) => session.sessionId === sessionId);
+      if (selected?.surface === 'partner') return;
+      void revalidateNewestSessionHistory(
+        sessionId,
+        selected?.surface ?? 'code',
+      ).catch((error: unknown) => {
+        console.error('[session.history] foreground convergence revalidate failed', {
+          sessionId,
+          error,
+        });
+      });
+    };
     const liveReconciliationTimer = setInterval(() => {
       if (document.hidden) return;
       requestRuntimeProfileSnapshot();
@@ -606,6 +630,7 @@ export default function App(): JSX.Element {
         visibleOnly: true,
         ...(current !== undefined ? { excludeSessionId: current } : {}),
       });
+      revalidateCurrentSessionCanonicalPage();
     }, 30_000);
     window.addEventListener('focus', reconcileWindowActivation);
     window.addEventListener('blur', reconcileWindowActivation);

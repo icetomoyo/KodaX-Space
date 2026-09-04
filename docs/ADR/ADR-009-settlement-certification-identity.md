@@ -40,6 +40,10 @@ Run 结束（`session_complete`/`session_error`）后，Space 需要决定 termi
 - 失败/中断轮次（无 assistant 输出）依赖源静止放行结束，至多多 1 次重读（有界，~100-300ms）。
 - mock 路径（`KODAX_FORCE_MOCK`）无 runtime 证据，不走认证链，行为不变。
 
+### 补充（Issue 206）：认证之外还需要收敛活性
+
+认证正确性只保证"该读发生时结论正确"，不保证"该读一定会发生"。Issue 206 证明收敛到 canonical 此前 100% 依赖事件通知，漏掉任何一条推送就会停摆到手动刷新。设计补充为**前台收敛保证**：可见窗口的 30s tick 与每个 focus/visibility 边缘对当前会话做 revision/generation 栅栏化的 newest 页重验（`revalidateNewestSessionHistory`）。不变式：**任何推送丢失最多把收敛延迟一个前台周期（~30s），永远不需要手动刷新**；安装仍走完整认证链，本 ADR 的所有 fail-open 保证不变。
+
 ## 撤销/重审条件
 
 - SDK 未来把页 revision、sourceRevision、live transcriptRevision 统一为同一哈希域 → 等式栅栏可重审（预期收益仅是少一次身份检查）。

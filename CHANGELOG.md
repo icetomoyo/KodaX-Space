@@ -14,6 +14,26 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Fixed
+
+- **Foreground convergence guarantee for the transcript (Issue 206)** - A
+  customer report on alpha.4 showed the Agent running with nothing painted and
+  the answer appearing only after Ctrl+R, while their session artifacts prove
+  persistence and the canonical projection were complete and healthy
+  (`resolved`, all four entries carrying their turn identity). Root cause:
+  converging the painted transcript to canonical was 100% event-driven — every
+  self-heal path was downstream of a prior notification, so losing the one
+  relevant push (occlusion transport drop, reconnect gap) stalled the session
+  until a manual reload. The 30s visibility tick and every focus/visibility
+  edge now revalidate the current Session's newest canonical page through the
+  generation-fenced, certification-preserving read, so a missed push can only
+  delay convergence by one tick instead of requiring a refresh. Probes added:
+  r7 (turn 2 fully minimized after a 78s gap) and r8 (main process drops every
+  renderer push for the session — deterministic missed-notification).
+  Decision record: [ADR-009](docs/ADR/ADR-009-settlement-certification-identity.md)
+  (foreground-convergence addendum) and
+  [Issue 206](docs/KNOWN_ISSUES.md).
+
 ## [0.1.46-alpha.4] - 2026-09-04
 
 ### Changed

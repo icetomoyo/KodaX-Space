@@ -663,14 +663,14 @@ const scenarios = {
         problems: ['provider transport error persisted (E2E environment) — scenario inconclusive'],
       };
     }
-    // Sample for late self-heal (revalidation) up to 15s after settle.
+    // Sample for late self-heal (revalidation) up to 15s after settle. The turn-2 query itself
+    // contains the answer keywords, so paint detection is structural: a rendered row AFTER the
+    // second user bubble (turn 1 + query 2 alone are 4 rows).
     let answer2PaintedAt = null;
     const sampleStart = Date.now();
     while (Date.now() - sampleStart < 15_000) {
       const state = await transcriptState(page);
-      const answers = state.userBubbles.length;
-      const tail = state.streamTail;
-      if (answers >= 2 && /(Suspense|区别|不同|useEffect)/i.test(tail)) {
+      if (state.userBubbles.length >= 2 && state.rows >= 5) {
         answer2PaintedAt = Date.now() - sampleStart;
         break;
       }
@@ -685,10 +685,10 @@ const scenarios = {
       problems.push(`turn2 userBubbles=${afterTurn2.userBubbles.length} (expected 2)`);
     }
     if (afterTurn2.pagingError) problems.push(`turn2 pagingError=${afterTurn2.pagingError}`);
-    const tailHasAnswer2 = /(Suspense|useEffect|区别)/i.test(afterTurn2.streamTail);
+    const tailHasAnswer2 = afterTurn2.rows >= 5;
     if (!tailHasAnswer2) {
       problems.push(
-        `REPRODUCED: turn-2 answer missing from live transcript after settle+15s (streamTail=${JSON.stringify(afterTurn2.streamTail.slice(-200))})`,
+        `REPRODUCED: turn-2 answer missing from live transcript after settle+15s (rows=${afterTurn2.rows})`,
       );
     }
     // Reload must recover the answer from canonical history.
@@ -709,6 +709,222 @@ const scenarios = {
       afterTurn2: { rows: afterTurn2.rows, tail: afterTurn2.streamTail.slice(-200) },
       afterReload: { rows: afterReload.rows, tail: afterReload.streamTail.slice(-200) },
       ipc,
+      problems,
+    };
+  },
+  async r7(ctx) {
+    // Customer-shaped repro on the released alpha: turn 2 is sent after a long pause with the
+    // window MINIMIZED (occluded/throttled) while the agent runs. Canonical serving is probed
+    // through session.history the whole time so a renderer-only hold becomes provable: if the
+    // IPC page contains the answer but the restored window still does not paint it without a
+    // reload, the live render pipeline (not persistence) is losing the turn.
+    const { app, page, shot, projectRoot } = ctx;
+    await newSession(page);
+    const baseline = await listSessionIds(page, projectRoot);
+    await send(page, '用不超过60字解释：React 19 的 use() Hook 是什么。');
+    const probeId = await resolveProbeSessionId(page, projectRoot, baseline);
+    await waitForTurnEnd(page, Math.max(TURN_TIMEOUT_MS, 150_000));
+    await sleep(5_000);
+    // Customer pause between turns: ~78s.
+    await sleep(75_000);
+
+    const minimize = () =>
+      app.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows().forEach((w) => w.minimize());
+      });
+    const restore = () =>
+      app.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows().forEach((w) => w.restore());
+      });
+    const statusSnapshot = () =>
+      page.evaluate(async (sid) => {
+        const r = await window.kodaxSpace.invoke('session.liveSnapshot', { sessionId: sid });
+        if (!r.ok) return { ok: false };
+        return {
+          ok: true,
+          activeRun: r.data.activeRun
+            ? { phase: r.data.activeRun.phase, turnId: r.data.activeRun.turnId }
+            : null,
+          lastTerminalRun: r.data.lastTerminalRun
+            ? { phase: r.data.lastTerminalRun.phase, turnId: r.data.lastTerminalRun.turnId }
+            : null,
+        };
+      }, probeId);
+
+    await minimize();
+    await send(page, '它和 useEffect 有什么区别？不超过60字。');
+    const timeline = [];
+    const start = Date.now();
+    let historyHasAnswerAt = null;
+    let domPaintedWhileMinimizedAtMs = null;
+    let firstFailSample = null;
+    // The turn-2 query itself contains the answer keywords, so text matching is vacuous.
+    // Structural signal instead: a rendered row AFTER the second user bubble (thinking chip
+    // or answer block) — turn 1 + query 2 alone are 4 rows.
+    const turn2ContentPainted = (state) => state.rows >= 5 || state.spinnerRunning || state.stopButtonVisible;
+    while (Date.now() - start < 240_000) {
+      const state = await transcriptState(page);
+      const status = await statusSnapshot();
+      const ipc = await readHistoryViaIpc(page, probeId);
+      const painted = turn2ContentPainted(state);
+      const histHas = ipc.ok && (ipc.kinds.assistant ?? 0) >= 2;
+      if (histHas && historyHasAnswerAt === null) historyHasAnswerAt = Date.now() - start;
+      if (painted && domPaintedWhileMinimizedAtMs === null) domPaintedWhileMinimizedAtMs = Date.now() - start;
+      timeline.push({
+        t: Date.now() - start,
+        rows: state.rows,
+        bubbles: state.userBubbles.length,
+        painted,
+        histAssistant: ipc.ok ? (ipc.kinds.assistant ?? 0) : null,
+        runPhase: status.ok ? (status.activeRun?.phase ?? status.lastTerminalRun?.phase ?? null) : 'ipc-fail',
+        terminalTurnId: status.ok ? (status.lastTerminalRun?.turnId ?? null) : null,
+        minimized: true,
+      });
+      if (painted && historyHasAnswerAt !== null) break;
+      await sleep(3_000);
+    }
+    // Restore WITHOUT reload. A healthy pipeline must paint the already-persisted answer now.
+    await restore();
+    await sleep(4_000);
+    let restoredPainted = null;
+    const restoreStart = Date.now();
+    while (Date.now() - restoreStart < 45_000) {
+      const state = await transcriptState(page);
+      restoredPainted = turn2ContentPainted(state);
+      timeline.push({
+        t: Date.now() - start,
+        rows: state.rows,
+        bubbles: state.userBubbles.length,
+        painted: restoredPainted,
+        restored: true,
+      });
+      if (restoredPainted) break;
+      await sleep(3_000);
+    }
+    if (restoredPainted !== true) {
+      firstFailSample = await transcriptState(page);
+    }
+    await shot('r7-restored');
+    // Reload proves canonical was always complete.
+    await page.reload();
+    await page.waitForSelector('[data-space-shell-ready]', { timeout: 60_000 });
+    await openSessionById(page, probeId);
+    const afterReload = await transcriptState(page);
+    const reloadHasAnswer = afterReload.rows >= 5;
+    const problems = [];
+    if (historyHasAnswerAt === null) problems.push('history IPC never showed the answer');
+    if (restoredPainted !== true) {
+      problems.push(
+        `REPRODUCED: answer in canonical but restored window did not paint it without reload (paintedAfterRestore=${restoredPainted}, reloadRows=${afterReload.rows}, tail=${JSON.stringify((firstFailSample ?? afterReload).streamTail.slice(-160))})`,
+      );
+    }
+    return {
+      probeId,
+      historyHasAnswerAtMs: historyHasAnswerAt,
+      domPaintedWhileMinimizedAtMs,
+      domPaintedAfterRestoreMs: restoredPainted === true ? Date.now() - restoreStart : null,
+      reloadHasAnswer,
+      timeline: timeline.filter((_, i) => i % 3 === 0 || timeline[i].painted || timeline[i].restored),
+      problems,
+    };
+  },
+  async r8(ctx) {
+    // Deterministic repro of the "answer only visible after refresh" class: the main process
+    // drops EVERY renderer push for this Session (deltas, terminal, live projection) during
+    // turn 2, simulating any missed-notification trigger. Canonical keeps persisting, so the
+    // transcript must converge through a renderer-driven revalidation — a focus edge (user
+    // switches away and back) is the minimum such moment. RED on a build where a ready page
+    // has no canonical revalidation path; GREEN once the focus edge converges it.
+    const { app, page, shot, projectRoot } = ctx;
+    await newSession(page);
+    const baseline = await listSessionIds(page, projectRoot);
+    await send(page, '用不超过60字解释：React 19 的 use() Hook 是什么。');
+    const probeId = await resolveProbeSessionId(page, projectRoot, baseline);
+    await waitForTurnEnd(page, Math.max(TURN_TIMEOUT_MS, 150_000));
+    await sleep(5_000);
+
+    const suppressed = await app.evaluate(({ BrowserWindow }, sid) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      if (!win) return false;
+      const wc = win.webContents;
+      const original = wc.send.bind(wc);
+      wc.send = (channel, ...args) => {
+        if (
+          (channel === 'session.event' ||
+            channel === 'session.liveChanged' ||
+            channel === 'session.liveInvalidated') &&
+          args[0] &&
+          typeof args[0] === 'object' &&
+          args[0].sessionId === sid
+        ) {
+          return true;
+        }
+        return original(channel, ...args);
+      };
+      return true;
+    }, probeId);
+    if (!suppressed) throw new Error('could not install the push suppressor');
+
+    await send(page, '它和 useEffect 有什么区别？不超过60字。');
+    const start = Date.now();
+    let historySettledAt = null;
+    let bubblesAfterSend = 0;
+    while (Date.now() - start < 180_000) {
+      const state = await transcriptState(page);
+      const ipc = await readHistoryViaIpc(page, probeId);
+      bubblesAfterSend = state.userBubbles.length;
+      if (ipc.ok && (ipc.kinds.assistant ?? 0) >= 2 && historySettledAt === null) {
+        historySettledAt = Date.now() - start;
+        break;
+      }
+      await sleep(3_000);
+    }
+    if (historySettledAt === null) {
+      return { probeId, problems: ['canonical never settled under suppression — scenario inconclusive'] };
+    }
+    await sleep(3_000);
+    const staleState = await transcriptState(page);
+    const staleRows = staleState.rows;
+
+    // Switch away and back (blur + focus): the natural user moment that must converge the
+    // transcript to canonical without a manual reload.
+    await app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      win.blur();
+      setTimeout(() => win.focus(), 800);
+    });
+    let selfHealed = false;
+    const focusStart = Date.now();
+    while (Date.now() - focusStart < 30_000) {
+      await sleep(2_500);
+      const state = await transcriptState(page);
+      if (state.rows >= 5) {
+        selfHealed = true;
+        break;
+      }
+    }
+    await shot('r8-focus');
+    await page.reload();
+    await page.waitForSelector('[data-space-shell-ready]', { timeout: 60_000 });
+    await openSessionById(page, probeId);
+    const afterReload = await transcriptState(page);
+    const reloadRows = afterReload.rows;
+    const problems = [];
+    if (bubblesAfterSend < 2) {
+      problems.push(`optimistic turn-2 bubble missing under suppression (${bubblesAfterSend})`);
+    }
+    if (!selfHealed) {
+      problems.push(
+        `REPRODUCED: canonical settled at +${historySettledAt}ms but the painted transcript stayed at ${staleRows} rows and a blur+focus edge did NOT converge it (rows after focus=${selfHealed ? '>=5' : '<5'}; reload rows=${reloadRows})`,
+      );
+    }
+    return {
+      probeId,
+      suppressed: true,
+      historySettledAtMs: historySettledAt,
+      staleRowsBeforeFocus: staleRows,
+      selfHealedOnFocus: selfHealed,
+      reloadRows,
       problems,
     };
   },
