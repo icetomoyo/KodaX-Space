@@ -5969,6 +5969,7 @@ function promoteQueuedUserMessageForPrompt(
   queueId?: string,
   identity?: StrongUserTurnIdentity,
   entryId?: string,
+  ordinalSelfResolved?: boolean,
 ): Partial<AppState> {
   const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
   const queueIdIndex =
@@ -6016,7 +6017,24 @@ function promoteQueuedUserMessageForPrompt(
               !message.restoredFromHistory &&
               message.turnId === identity.turnId &&
               message.turnUserOrdinal === identity.turnUserOrdinal,
-          )
+          ) ||
+          // A self-resolved ordinal (fail-open max+1) is a replay signal, not an owner
+          // fact: it can never equal a canonical row's ordinal, and a live owner for the
+          // same turn already carries the delivery (Issue 207 ghost bubble). An explicit
+          // daemon ordinal is untouched — legal same-text interrupts keep minting fresh.
+          (ordinalSelfResolved === true &&
+            (userBucket.some(
+              (message) =>
+                !message.restoredFromHistory &&
+                message.turnId === identity.turnId &&
+                (message.content === matchContent || message.content === normalized),
+            ) ||
+              userBucket.some(
+                (message) =>
+                  message.restoredFromHistory === true &&
+                  message.turnId === identity.turnId &&
+                  (message.content === matchContent || message.content === normalized),
+              )))
         : userBucket.some(
             (message) => message.content === matchContent || message.content === normalized,
           );
@@ -7880,6 +7898,7 @@ export const useAppStore = create<AppState>((set) => ({
             event.queueId,
             identity,
             event.entryId,
+            event.turnUserOrdinal === undefined,
           ),
         );
       } else if (event.kind === 'queued_user_prompt_started') {
@@ -7920,6 +7939,8 @@ export const useAppStore = create<AppState>((set) => ({
             event.content,
             event.queueId,
             identity,
+            undefined,
+            event.turnUserOrdinal === undefined,
           ),
         );
       } else if (event.kind === 'queued_user_prompt_failed') {

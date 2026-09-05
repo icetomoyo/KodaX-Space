@@ -5638,3 +5638,51 @@ test('a still-advancing source without the turn rows keeps the run pending', asy
   // user-visible settle proof is the ABSENCE of a certification install, not the phase label.
   assert.deepEqual(assistantComposedTexts(sessionId), []);
 });
+
+test('an identical newest read is an idempotent no-op (fold not re-run)', async () => {
+  const sessionId = 'history-paging-idempotent-revalidate';
+  seedPagingStore(sessionId);
+  let calls = 0;
+  const invoke = mockHistoryInvoke(async () => {
+    calls += 1;
+    return {
+      ok: true as const,
+      data: {
+        items: [
+          { kind: 'user' as const, content: 'query', canonicalIndex: 0, turnId: 'turn-9' },
+          {
+            kind: 'assistant' as const,
+            text: 'answer',
+            canonicalIndex: 1,
+            turnId: 'turn-9',
+          },
+        ],
+        conversation: { status: 'resolved' as const },
+        page: {
+          outcome: 'ready' as const,
+          revision: 'rev-same',
+          sourceRevision: 'source-same',
+          hasMore: false,
+          windowMode: 'replace' as const,
+          hasNewer: false,
+        },
+      },
+    };
+  });
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: { kodaxSpace: { invoke } },
+  });
+
+  await restoreNewestSessionHistory(sessionId, 'code');
+  const firstEvents = useAppStore.getState().eventsBySession[sessionId];
+  const firstMessages = useAppStore.getState().userMessagesBySession[sessionId];
+  assert.ok(firstEvents.length > 0);
+
+  await revalidateNewestSessionHistory(sessionId, 'code');
+  assert.equal(calls, 2, 'the revalidation read still happens');
+  const secondEvents = useAppStore.getState().eventsBySession[sessionId];
+  assert.equal(secondEvents, firstEvents);
+  assert.equal(useAppStore.getState().userMessagesBySession[sessionId], firstMessages);
+});

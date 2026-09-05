@@ -14,6 +14,30 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ghost duplicate of a settled user query can no longer be minted below its
+  own answer (Issue 207)** - A second customer disorder report (session
+  `20260905_100939_ct9f3d224aaf44`): after sending a new query, the previous
+  turn's query bubble reappeared below its own final answer and above the new
+  query; Ctrl+R healed. Root cause: when a queued-prompt boundary event
+  arrived after its delivery had already canonicalized, the no-match promotion
+  branch minted a fresh visible user owner with a self-resolved ordinal
+  (max+1 over all messages) and wall-clock `sentAt`, which compose then sorted
+  below the answer. The daemon stamps legal boundary events with an explicit
+  `turnUserOrdinal`; its absence is now treated as a replay signal — when an
+  identical-content owner for the same `turnId` already exists (live or
+  canonical), the boundary binds to it instead of minting. Explicit ordinals
+  are untouched, so legal same-text interrupts still mint fresh owners. A
+  same-revision idempotence guard on the newest-history read also stops the
+  Issue 206 foreground tick from re-running the fold ~30x per minute on an
+  unchanged page. Acceptance: a 12-case regression suite over the customer's
+  real lineage (`transcript-order-real-lineage-repro.test.ts`), with case J as
+  the on-HEAD symptom proof. The structural fix — retiring the live/canonical
+  dual-role buffer that produced this class — is scoped as
+  [FEATURE_275](docs/features/v0.1.46.md) and lands before v0.1.46 final, with
+  the full record in [Issue 207](docs/KNOWN_ISSUES.md).
+
 ## [0.1.46-alpha.5] - 2026-09-04
 
 ### Fixed

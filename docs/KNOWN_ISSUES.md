@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-09-01
+Last Updated: 2026-09-05
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) artifact uses exact npm Registry KodaX 0.7.95 and requires `conversationHistory:2`, `runtimeExitSettlement:2`, and `sandboxRuntime:5`. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -202,8 +202,83 @@ Last Updated: 2026-09-01
 | 204 | High     | Resolved in source  | A terminal-scoped newest history read that raced persistence certified a user-only page and dropped the settled live answer until reload                                                            | v0.1.46-alpha Issue 202 certification                        | 2026-09-03 |
 | 205 | Medium   | Resolved in source  | SDK `Session not found` escaped persisted-session readers as handler errors for Sessions with no persisted record yet                                                                                | <= v0.1.46-alpha.3 persisted-session readers                 | 2026-09-03 |
 | 206 | High     | Resolved in source  | Canonical convergence was purely event-driven: one missed renderer push left the painted transcript stale until a manual reload even though canonical history was complete and healthy                    | <= v0.1.46-alpha.4 transcript convergence                    | 2026-09-04 |
+| 207 | High     | Resolved in source  | A replayed queued-prompt boundary could mint a ghost duplicate of the already-canonicalized user query, painted below its own answer until a manual reload                                                | <= v0.1.46-alpha queued-prompt boundary promotion             | 2026-09-05 |
 
 ## Issue Details
+
+## Issue 207: A replayed queued-prompt boundary could mint a ghost duplicate of the already-canonicalized user query, painted below its own answer until a manual reload
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: <= v0.1.46-alpha queued-prompt boundary promotion
+- Created: 2026-09-05
+- Resolved: 2026-09-05
+
+### Problem
+
+Customer report on v0.1.46-alpha.4/alpha.5 (Windows, session
+`20260905_100939_ct9f3d224aaf44`): after sending a new query Y while the
+previous turn X was fully settled, the OLD query bubble X reappeared a second
+time below X's own final answer and above Y. Ctrl+R healed the transcript.
+The persistence side was healthy — the lineage held every entry exactly once,
+and a cold restore rendered the correct order, so the corruption existed only
+in the live painted projection.
+
+### Root Cause
+
+The transcript is a two-plane projection: a live plane
+(`userMessagesBySession`/`eventsBySession`, monotonic, never reclaimed) folded
+with a canonical plane (paged `session.history` reads). When a queued-prompt
+boundary event (`queued_user_prompt_started` / `mid_turn_user_prompt`) arrived
+after its delivery had already canonicalized — the queued entry it belonged to
+was gone because the turn had settled and the query row now lived only in the
+canonical plane — `promoteQueuedUserMessageForPrompt` fell into its no-match
+branch and minted a brand-new visible user owner: a self-resolved ordinal
+(max+1 over ALL messages, including canonical rows) plus wall-clock `sentAt`.
+`composeMessages` then sorted that ghost bubble by its fresh `sentAt`, placing
+it below X's final answer and above Y — exactly the reported disorder. Two
+amplifiers made it reproducible rather than incidental: (1) alpha.5's Issue 206
+foreground tick re-ran the fold on every 30s same-revision revalidate, so a
+fold that minted the ghost once could do so on a timer; (2) live shadows of
+already-canonicalized messages are never reclaimed
+(`historyLiveBaselines`), so identity gates that compared live against
+canonical could not veto the mint. Ctrl+R healed because cold restore builds
+the projection from canonical rows alone with deterministic identities.
+
+### Resolution
+
+- Discriminator (bind-don't-mint hotfix): the daemon stamps legal boundary
+  events with an explicit `turnUserOrdinal`; its ABSENCE means the renderer is
+  self-resolving the ordinal — a replay signal, not an owner fact. When the
+  ordinal is self-resolved AND an identical-content owner for the same
+  `turnId` already exists (live or canonical), the boundary now binds to it
+  instead of minting a second bubble. Explicit daemon ordinals are untouched:
+  legal same-text interrupts keep minting fresh owners.
+- Same-revision idempotence guard in the newest-history read: an identical
+  ready page is a no-op instead of re-running the fold, removing the 30x
+  re-fold amplification introduced with the Issue 206 tick.
+- 12-case regression suite over the customer's real lineage
+  (`electron/test/transcript-order-real-lineage-repro.test.ts`); case J is the
+  on-HEAD symptom proof (X bubble below X's answer) and is the acceptance gate.
+- Root-cause rewrite tracked as FEATURE_275 (identity-anchored transcript
+  model, `docs/features/v0.1.46.md`): the hotfix removes the symptom class;
+  the rewrite removes the live/canonical dual-role buffer that produced it,
+  landing before v0.1.46 final.
+
+### Files Changed
+
+- `apps/desktop/renderer/src/store/appStore.ts`
+- `apps/desktop/renderer/src/shell/sessionHistoryPaging.ts`
+- `apps/desktop/electron/test/transcript-order-real-lineage-repro.test.ts` (new)
+- `apps/desktop/electron/test/session-history-paging.test.ts`
+- `docs/features/v0.1.46.md` (FEATURE_275)
+
+### Verification
+
+- Repro suite 12/12 (case J green); transcript/history/session-history suites
+  278/278 (previously broken distinct-boundary cases 89/96 and legal
+  same-text-interrupt cases 248/259 all green).
+- Desktop TypeScript checks and full ESLint clean.
 
 ## Issue 206: Canonical convergence was purely event-driven — one missed push left the transcript stale until a manual reload
 
@@ -14669,13 +14744,13 @@ misclassified as missing before the durable mutation is attempted.
 
 ## Summary
 
-- Total: 188
+- Total: 189
 - Open: 1
 - Ready: 1
 - In Progress: 10
 - Deferred: 0
-- Resolved: 176
-- High: 96
+- Resolved: 177
+- High: 97
 - Medium: 80
 - Low: 12
 - Next to resolve: 199

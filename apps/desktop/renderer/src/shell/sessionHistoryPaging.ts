@@ -965,6 +965,29 @@ async function requestHistory(
     // boundary. A KodaX cursor may still validly serve that immutable old snapshot, so epoch
     // mismatch must restart at newest instead of accidentally certifying an old continuation as
     // the current generation.
+    // A newest-boundary read of an identical, fully-resolved projection cannot change the
+    // composed transcript: re-running the fold on it is a no-op at best and an ordering
+    // hazard at worst (Issue 207 — repeated foreground revalidation re-ran an unstable fold
+    // ~2x/minute on a healthy page). Terminal evidence was already settled above, so this
+    // skip only drops the redundant re-install.
+    if (
+      !continueFromCurrentBoundary &&
+      previous.phase === 'ready' &&
+      page?.outcome === 'ready' &&
+      page.windowMode === 'replace' &&
+      page.hasMore === false &&
+      page.hasNewer !== true &&
+      result.conversation?.status === 'resolved' &&
+      previous.revision !== undefined &&
+      previous.revision === page.revision &&
+      previous.sourceRevision === page.sourceRevision
+    ) {
+      deferredReadyRevalidations.delete(sessionId);
+      loadedEpochs.set(sessionId, requestedEpoch);
+      clearRetry(sessionId);
+      publish(sessionId, { ...previous, ...(surface !== undefined ? { surface } : {}) });
+      return;
+    }
     applyHistoryResult(
       sessionId,
       result,
