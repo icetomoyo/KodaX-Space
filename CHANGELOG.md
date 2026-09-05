@@ -14,6 +14,8 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.46-alpha.6] - 2026-09-05
+
 ### Fixed
 
 - **Ghost duplicate of a settled user query can no longer be minted below its

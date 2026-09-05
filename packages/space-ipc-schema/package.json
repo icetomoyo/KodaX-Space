@@ -1,6 +1,6 @@
 {
   "name": "@kodax-space/space-ipc-schema",
-  "version": "0.1.46-alpha.5",
+  "version": "0.1.46-alpha.6",
   "description": "Zod schemas for renderer↔main IPC channels (single source of truth)",
   "private": true,
   "type": "module",
