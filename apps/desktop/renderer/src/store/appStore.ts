@@ -298,11 +298,28 @@ interface HistoryLiveBaseline {
   canonicalSourceRevision?: string;
   /** Live owners that were once proven to occupy an exact canonical transcript index. */
   canonicalIndexByUserId: Map<string, number>;
+  /**
+   * FEATURE_275 票 5 结算即退役：owners whose shadow turn was physically reclaimed from this
+   * baseline after a certified canonical merge. A tombstoned id must never re-enter the live
+   * baseline — its content already lives in the canonical page, so re-admission can only ever
+   * resurrect a duplicate (rehydration / window rebuild replay the same row).
+   */
+  readonly retiredCanonicalizedUserIds: Set<string>;
 }
 
 interface CanonicalizedLiveOwner {
   readonly messageId: string;
   readonly canonicalIndex: number;
+  /** Runtime run of the settled live turn — the retirement removal key (events of one Run are
+   * causally contiguous). Present only on certified owners. */
+  readonly runtimeRunId?: string;
+  readonly turnId?: string;
+  /**
+   * FEATURE_275 票 5: set only when the fold merged under certified canonical authority
+   * (decideTurnProjectionAuthority === 'canonical'). Certification authorizes physical shadow
+   * reclamation; compatibility folds keep today's fail-open coexistence.
+   */
+  readonly certified?: true;
 }
 
 /**
@@ -384,7 +401,14 @@ function rememberHistoryLiveUsers(sessionId: string, users: readonly UserMessage
     }),
   );
   for (const message of users) {
-    if (message.restoredFromHistory !== true) byId.set(message.id, liveBaselineUser(message));
+    // FEATURE_275 票 5: a tombstoned owner was physically reclaimed into the canonical page;
+    // re-remembering it would resurrect a settled duplicate.
+    if (
+      message.restoredFromHistory !== true &&
+      !baseline.retiredCanonicalizedUserIds.has(message.id)
+    ) {
+      byId.set(message.id, liveBaselineUser(message));
+    }
   }
   baseline.userMessages = [...byId.values()];
 }
@@ -392,6 +416,13 @@ function rememberHistoryLiveUsers(sessionId: string, users: readonly UserMessage
 function rememberOpenedHistoryLiveOwner(sessionId: string, message: UserMessage): void {
   const baseline = historyLiveBaselines.get(sessionId);
   if (!baseline) return;
+  // FEATURE_275 票 5: tombstoned owners stay retired across promotion/re-open replays.
+  if (
+    baseline.retiredCanonicalizedUserIds.has(message.id) ||
+    baseline.retiredCanonicalizedUserIds.has(`${message.id}:runtime`)
+  ) {
+    return;
+  }
   const {
     restoredFromHistory: _restored,
     canonicalIndex: _canonicalIndex,
@@ -434,6 +465,29 @@ function forgetHistoryLiveUsers(sessionId: string, messageIds: readonly string[]
   }
 }
 
+/**
+ * FEATURE_275 票 5 结算即退役：从影子缓存中物理删除一个已结算 live 轮（user 行 + 该 Run 的
+ * 全部事件）。删除按运行身份（runtimeEvent.runId / 无 origin 事件的 turnId）而非轮快照范围：
+ * 影子缓存内多个 live 轮相邻时，段切分会在 prompt 边界处把 session_start 与其后续事件拆进
+ * 不同段，位置范围回收会留下错位残件。一个 settled Run 的事件在因果上连续且不可能再增长，
+ * 按身份整块清除既精确又不会误伤其它轮。
+ */
+function retireSettledTurnFromBaseline(
+  baseline: HistoryLiveBaseline,
+  owner: CanonicalizedLiveOwner,
+): void {
+  const runId = owner.runtimeRunId;
+  const turnId = owner.turnId;
+  baseline.userMessages = baseline.userMessages.filter((message) => message.id !== owner.messageId);
+  if (runId === undefined && turnId === undefined) return;
+  baseline.events = baseline.events.filter((event) => {
+    const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+    if (origin !== undefined) return origin.runId !== runId;
+    if ('turnId' in event) return event.turnId !== turnId;
+    return true;
+  });
+}
+
 function rememberCanonicalizedHistoryLiveOwners(
   sessionId: string,
   owners: readonly CanonicalizedLiveOwner[],
@@ -441,11 +495,21 @@ function rememberCanonicalizedHistoryLiveOwners(
   const baseline = historyLiveBaselines.get(sessionId);
   if (!baseline || owners.length === 0) return;
   const baselineIds = new Set(baseline.userMessages.map((message) => message.id));
+  const settledOwners: CanonicalizedLiveOwner[] = [];
   for (const owner of owners) {
-    if (baselineIds.has(owner.messageId)) {
-      baseline.canonicalIndexByUserId.set(owner.messageId, owner.canonicalIndex);
-      baseline.durableCanonicalizedUserIds.add(owner.messageId);
-    }
+    if (!baselineIds.has(owner.messageId)) continue;
+    baseline.canonicalIndexByUserId.set(owner.messageId, owner.canonicalIndex);
+    baseline.durableCanonicalizedUserIds.add(owner.messageId);
+    if (owner.certified === true) settledOwners.push(owner);
+  }
+  // FEATURE_275 票 5 结算即退役：certified canonical 权威成立 = 该 live 轮的持久层副本已在
+  // canonical 页中逐条在场（身份 + settled Run 证据），影子行/事件在此物理删除并记墓碑。
+  // 稳态 buffer 不再依赖下一次 fold 的 fail-closed 隐藏；墓碑防止窗口重建 / 重水合把同一行
+  // 再次送回缓冲（只会以重复形态复活，不可能携带新内容 —— settled Run 已终结）。
+  // 兼容性 fold（无 certified 权威）保持 fail-open coexist，一律不删。
+  for (const owner of settledOwners) {
+    retireSettledTurnFromBaseline(baseline, owner);
+    baseline.retiredCanonicalizedUserIds.add(owner.messageId);
   }
 }
 
@@ -1418,6 +1482,43 @@ function liveEventRuntimeSequenceIsContinuous(
   );
 }
 
+/**
+ * FEATURE_275 票 5：run 终端之后才到达的同 Run 流式 delta 是该答案的迟到 journal 块（到达序
+ * ≠ journal 因果序）。留在终端之后会被轮快照与所有位置消费者孤立 —— 内容对用户静默消失
+ * （L 变体 C 的内容丢失形态）。runtime origin 是因果身份：同 Run + turn 兼容则重锚回自己
+ * 段内、终端之前。fail-open：origin 不匹配（合成终端 / 跨 Run / 跨 turn）一律不动。
+ * 返回该迟到 delta 应重锚到的终端索引；-1 表示无需重锚。
+ */
+function lateDeltaSegmentTerminalIndex(
+  bucket: readonly SessionEvent[],
+  event: StreamDeltaEvent,
+): number {
+  const origin = event.runtimeEvent;
+  if (origin === undefined) return -1;
+  for (let index = bucket.length - 1; index >= 0; index--) {
+    const candidate = bucket[index]!;
+    if (
+      candidate.kind === 'session_start' ||
+      candidate.kind === 'mid_turn_user_prompt' ||
+      candidate.kind === 'queued_user_prompt_started'
+    ) {
+      return -1; // 尾块属于其后开启的更新段，不属于任何已闭合 run。
+    }
+    if (candidate.kind === 'session_complete' || candidate.kind === 'session_error') {
+      if (!liveEventRuntimeOriginsMatch(candidate, event)) return -1;
+      if (
+        candidate.turnId !== undefined &&
+        event.turnId !== undefined &&
+        candidate.turnId !== event.turnId
+      ) {
+        return -1;
+      }
+      return index;
+    }
+  }
+  return -1;
+}
+
 function runtimeJournalEventWasApplied(
   events: readonly SessionEvent[],
   event: SessionEvent,
@@ -1485,6 +1586,31 @@ function appendSessionEvent(
       ) {
         return bucket.map((item, itemIndex) => (itemIndex === index ? event : item));
       }
+    }
+  }
+  if (isStreamDeltaEvent(event)) {
+    const terminalIndex = lateDeltaSegmentTerminalIndex(bucket, event);
+    if (terminalIndex > 0) {
+      const previous = bucket[terminalIndex - 1]!;
+      if (
+        isStreamDeltaEvent(previous) &&
+        previous.kind === event.kind &&
+        liveEventRuntimeSequenceIsContinuous(previous, event) &&
+        runtimeDeltasShareSnapshotSide(previous, event, snapshotCursor) &&
+        previous.text.length + event.text.length <= MAX_MERGED_LIVE_EVENT_TEXT
+      ) {
+        return [
+          ...bucket.slice(0, terminalIndex - 1),
+          {
+            ...event,
+            text: previous.text + event.text,
+            textStartOffset: previous.textStartOffset,
+            sentAt: previous.sentAt ?? event.sentAt,
+          },
+          ...bucket.slice(terminalIndex),
+        ];
+      }
+      return [...bucket.slice(0, terminalIndex), event, ...bucket.slice(terminalIndex)];
     }
   }
   const last = bucket[bucket.length - 1];
@@ -3968,6 +4094,15 @@ function foldStrongIdentityDuplicateTurns(
       canonicalizedLiveOwners.push({
         messageId: duplicateMessage.id,
         canonicalIndex: pair.durable.canonicalIndex,
+        // FEATURE_275 票 5 结算即退役：certified canonical 合并授权物理回收影子（见
+        // rememberCanonicalizedHistoryLiveOwners）；兼容性 fold 只登记，不删。
+        ...(pair.projectionAuthority === 'canonical'
+          ? {
+              certified: true as const,
+              runtimeRunId: pair.duplicate.runtimeRunId,
+              turnId: pair.duplicate.turnId,
+            }
+          : {}),
       });
     }
     didFold = true;
@@ -3977,6 +4112,26 @@ function foldStrongIdentityDuplicateTurns(
       ...nextEvents.slice(pair.durable.eventEnd, pair.duplicate.eventStart),
       ...nextEvents.slice(pair.duplicate.eventEnd),
     ];
+    // FEATURE_275 票 5 结算即退役：settled Run 的答案已整体归属 canonical 页。段边界可以把
+    // 同一 settled Run 的后续块留在合并轮之外（轮中段的 mid-turn 投递把 live 流切成多段，只有
+    // 首段随轮快照参与合并；该形态下轮快照失去终端、整轮认证被扣住）——这些散块是 canonical
+    // 内容的影子，按 Run 身份清扫出缓冲。触发证据是 settledRuntimeRuns（exact post-terminal
+    // read 的持久层证据），与内容启发式无关；Run 未结算时一律不扫（fail-open）。
+    // 终端事件是结构闭合标记而非内容，保留；清扫只针对内容块（delta / 工具事件）。
+    if (pair.duplicate.runtimeRunId !== undefined) {
+      const retiredRunId = pair.duplicate.runtimeRunId;
+      const runSettled =
+        authority?.settledRuntimeRuns.some((run) => run.runId === retiredRunId) === true;
+      if (runSettled) {
+        const mergedEnd = pair.durable.eventStart + mergedSegment.length;
+        nextEvents = nextEvents.filter((event, index) => {
+          if (index >= pair.durable.eventStart && index < mergedEnd) return true;
+          const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+          if (origin?.runId !== retiredRunId) return true;
+          return event.kind === 'session_complete' || event.kind === 'session_error';
+        });
+      }
+    }
 
     const durableMessage = nextUsers[pair.durable.userIndex];
     nextUsers = nextUsers
@@ -7420,6 +7575,7 @@ export const useAppStore = create<AppState>((set) => ({
           ),
           durableCanonicalizedUserIds: new Set(),
           canonicalIndexByUserId: new Map(),
+          retiredCanonicalizedUserIds: new Set(),
         };
         rememberHistoryLiveBaseline(sessionId, liveBaseline);
       }

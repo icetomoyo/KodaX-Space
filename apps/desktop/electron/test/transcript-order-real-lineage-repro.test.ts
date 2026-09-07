@@ -1748,7 +1748,7 @@ function lBaseProjection(cursorSeq = 7): SpaceSessionLiveProjectionT {
   };
 }
 
-test('L. 真实时序：terminal 后迟到尾 delta + 快照重水合 → a2 尾句 ghost 骑到 q1 之上且 a1 被吞（失败门）', { skip: 'FEATURE_275 失败门：20260816 session 实测 RED（主配方暴露 closed live 残件重复渲染；变体 B 复现 canonical a1/a2 骑到 q1 之上，变体 C/D 复现尾句丢失/ghost 复制）。P1 排序单一化 + P2 结算即退役落地后移除 skip 转绿。' }, async () => {
+test('L. 真实时序：terminal 后迟到尾 delta + 快照重水合 → 结算即退役后四变体全绿（FEATURE_275 票 5 转绿）', async () => {
   // ---------- 主配方 ----------
   // 步骤 5（主配方）：activeRun=undefined、lastTerminalRun=run-y；cursor 覆盖到尾 delta；
   // assistantDraft/合成段 startedAt = a2 canonical 完成时间（复现 ghost 显示 canonical 时间戳）。

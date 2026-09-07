@@ -662,7 +662,13 @@ function composeAssistantSegment(
       case 'text_delta': {
         if (
           evt.providerRequestId !== undefined &&
-          evt.providerRequestId !== activeProviderRequestId
+          evt.providerRequestId !== activeProviderRequestId &&
+          // FEATURE_275 票 5: a tagged delta with no segment marker at all is an unmanaged
+          // late chunk (arrival raced the terminal), not a discarded replacement — the segment
+          // protocol only governs once a marker is on the floor. Dropping it here silently
+          // lost the only renderer copy while hydration deliberately kept it (票 4 stale-scan
+          // doctrine). Once a marker exists, foreign requestIds stay excluded.
+          activeResponseId !== undefined
         ) {
           break;
         }
@@ -685,7 +691,8 @@ function composeAssistantSegment(
       case 'thinking_delta': {
         if (
           evt.providerRequestId !== undefined &&
-          evt.providerRequestId !== activeProviderRequestId
+          evt.providerRequestId !== activeProviderRequestId &&
+          activeResponseId !== undefined
         ) {
           break;
         }

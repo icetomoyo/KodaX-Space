@@ -446,15 +446,14 @@ function diffProjectionLines(expected: readonly string[], actual: readonly strin
 type EquivalencePath = 'pathA' | 'pathB' | 'pathC' | 'pathD' | 'pathE';
 
 /**
- * HEAD（2026-09-07 实测）5 条路径共同命中的残件 diff（排序后）：
- * closed live 轮的 3 行（live a1 残件、live q2、live a2）在 canonical rev-2 装页后不被清除。
- * 最终投影 = 冷基线 8 行 + 这 3 行 live 残件；行内容来自 fixture 常量，避免转写漂移。
+ * FEATURE_275 票 5（2026-09-07，结算即退役落地）后按路径登记：
+ *   pathA/pathC/pathE（逐轮认证 + 幂等重验 + 切换往返）：diff 0 —— certified 合并即物理退役
+ *   已收编 live 影子（tombstone 防复活），渐增终态 == 冷 reload，allowlist 清零。
+ *   pathB/pathD（迟读 / 纯 live 后装页）：装页时无 terminal 认证证据（settledRuntimeRuns 为空，
+ *   revalidate/restore 不携带 terminal workflow），fail-open coexist 保留 3 行 live 残件，
+ *   与票 1 落地时的名单逐行相同（内容未扩大）。按 DAG 由票 6 双平面拆分收口。
+ * 行内容来自 fixture 常量，避免转写漂移；任何名单之外的 diff = 回归红门。
  */
-// FEATURE_275 票 4（2026-09-07）：closed live 轮的 3 行残件在本票后保持原样 —— 票 4 的
-// 段归属修复（transcriptTurnSnapshots 在"段不含外来轮内容且尾全同 turnId"时重新归属孤儿尾）
-// 只作用于单 live 轮尾形态（M 失败门的芯片 8≠4 / 正文丢失簇，已转绿）；多轮 live 尾的
-// 渐增装页残差（本名单）按 DAG 属于票 5 结算即退役 / 票 6 双平面拆分的收口范围。
-// 行内容来自 fixture 常量，避免转写漂移；任何名单之外的 diff = 回归红门。
 const HEAD_RESIDUE_DIFF: readonly string[] = [
   `expected:∅||actual:assistant:${GOLD_A2_FULL}`,
   `expected:∅||actual:assistant:${GOLD_A1}`,
@@ -463,14 +462,14 @@ const HEAD_RESIDUE_DIFF: readonly string[] = [
 
 /**
  * HEAD 已知 live/canonical 投影偏差按路径登记；出现 allowlist 之外的新偏差 → 测试红。
- * P2/P3 落地后逐路径清零（票 4 修复的是 M 失败门簇，本名单留给票 5/6）。
+ * 票 5 后 pathA/C/E 清零；pathB/D 维持 3 行（未扩大），票 6 收口。
  */
 const ALLOWLIST: Record<EquivalencePath, readonly string[]> = {
-  pathA: HEAD_RESIDUE_DIFF,
+  pathA: [],
   pathB: HEAD_RESIDUE_DIFF,
-  pathC: HEAD_RESIDUE_DIFF,
+  pathC: [],
   pathD: HEAD_RESIDUE_DIFF,
-  pathE: HEAD_RESIDUE_DIFF,
+  pathE: [],
 };
 
 async function assertRefreshEquivalence(
