@@ -3585,15 +3585,20 @@ function relocateLiveTurnsBeforeDurableAnchor(
 /**
  * A canonical page that begins with a complete user row never triggers
  * stabilizeAmbiguousLeadingHistoryOrder, yet its reconstructed segments are still prepended ahead
- * of live turns that are chronologically older. composeMessages sorts owners by sentAt while
- * pairing segments positionally, so that inversion splices canonical text into an earlier owner's
- * segment and leaves the latest query's segment empty at the bottom. Relocate only the truly
- * misplaced live turns (closed, strong identity, no canonical counterpart anywhere in the loaded
- * page, older than some canonical row behind them) before the earliest canonical row that is
- * newer than the block. A live turn matched by a canonical row stays behind its durable copy so
- * the fold keeps its durable-before-duplicate premise, and each re-loaded page re-derives the
- * placement, so older pagination anchors cannot resurrect the inversion. Live turns without
- * turnId keep today's behavior (no identity basis for a safe move).
+ * of live turns the page's window omitted (bounded pages start mid-conversation). compose
+ * pairs segments positionally, so an unmatched live turn sitting behind the page head loses its
+ * own query bubble at the bottom. Relocation requires evidence (FEATURE_275 ticket 3, B2):
+ * identity (an unmatched live turn above the loaded live copy of a canonical page turn — the
+ * page's cut into the live timeline) always; the old `turn.sentAt < canonical.sentAt` clock
+ * comparison ONLY on a truncated page, whose omitted region can contain older live turns. On an
+ * untruncated page the point-in-time read is complete, so a closed live turn missing from it
+ * completed after the read: there the raw cross-plane clock comparison — every local live turn
+ * looks "older" than server-stamped page rows when the server clock runs ahead — dragged NEWER
+ * live turns above older canonical rows, the inversion the mechanism baseline B2 pins.
+ * A live turn matched by a canonical row stays behind its durable copy so the fold keeps its
+ * durable-before-duplicate premise, and each re-loaded page re-derives the placement, so older
+ * pagination anchors cannot resurrect the inversion. Live turns without turnId keep today's
+ * behavior (no identity basis for a safe move).
  */
 function stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
   userMessages: readonly UserMessage[],
@@ -3609,21 +3614,39 @@ function stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
     ),
   );
   if (canonicalTurnIds.size === 0) return { userMessages, events };
+  // FEATURE_275 票 3 (B2) relocation evidence, two branches:
+  //  (a) identity — where the page cuts into the live timeline: the LATEST loaded live copy of
+  //      a canonical turn. Only unmatched turns ABOVE that copy provably predate the page head;
+  //      a turn at or below it is newer than everything the page covers and keeps its position.
+  //  (b) wall clock — allowed only on a TRUNCATED (bounded) page, whose omitted region can
+  //      genuinely contain older live turns. On an untruncated page the read is point-in-time
+  //      complete, so a closed live turn missing from it completed after the read was taken:
+  //      trusting `turn.sentAt < canonical.sentAt` there is exactly what dragged NEWER live
+  //      turns above older canonical rows when the server clock ran ahead (mechanism baseline B2).
+  const pageCutUserIndex = turns.reduce(
+    (latest, turn) =>
+      !turn.restoredFromHistory && turn.turnId !== undefined && canonicalTurnIds.has(turn.turnId)
+        ? Math.max(latest, turn.userIndex)
+        : latest,
+    -1,
+  );
+  const pageIsTruncated = events.some(
+    (event) => event.kind === 'history_truncation' && event.scope === 'history',
+  );
   const misplacedLiveTurns = turns.filter(
     (turn) =>
       !turn.restoredFromHistory &&
       turn.turnId !== undefined &&
       !canonicalTurnIds.has(turn.turnId) &&
       turn.terminal &&
-      // A live turn sitting behind a chronologically newer canonical row proves the inversion;
-      // a live turn newer than every canonical row before it keeps its position (a stale page
-      // head must not drag newer runs across the page).
-      turns.some(
-        (canonical) =>
-          canonical.restoredFromHistory &&
-          canonical.userIndex < turn.userIndex &&
-          turn.sentAt < canonical.sentAt,
-      ),
+      (turn.userIndex < pageCutUserIndex ||
+        (pageIsTruncated &&
+          turns.some(
+            (canonical) =>
+              canonical.restoredFromHistory &&
+              canonical.userIndex < turn.userIndex &&
+              turn.sentAt < canonical.sentAt,
+          ))),
   );
   if (misplacedLiveTurns.length === 0) return { userMessages, events };
   const lastRelocationTarget = misplacedLiveTurns[misplacedLiveTurns.length - 1]!;
@@ -5796,6 +5819,40 @@ function deliveredInputBoundaryInsertionIndex(
   });
 }
 
+/**
+ * FEATURE_275 票 3（B1）：delivered-input owner 的就位摆放索引。
+ *
+ * 组合投影把 events 按段（delivery 边界 / terminal 切开）与 user 行按位置配对，
+ * 所以一个 delivered interrupt 的 owner 行必须插在 users 数组中"边界之前已有的段数"
+ * 对应的位置——尾部 append 只在"边界落在最后一个段"时恰好正确；一次快照携带多个
+ * 已投递 interrupt 且投影列表序 ≠ 投递序时，处理序驱动的尾部 append 会让边界更早的
+ * owner 被后处理的 owner 压到错误位置，回答拼到别人的提问之下。
+ *
+ * 计数走与 `alignSegmentOwnersBeforePrompt` 相同的段遍历（边界事件本身归属下一段）；
+ * `historyNoAssistantSegment` 行不占位置段，跳过计数。
+ */
+function deliveredInputOwnerInsertionIndex(
+  userMessages: readonly UserMessage[],
+  events: readonly SessionEvent[],
+  boundaryIndex: number,
+): number {
+  let segmentOwners = 0;
+  let eventCursor = 0;
+  while (eventCursor < boundaryIndex) {
+    const eventEnd = transcriptSegmentEnd(events, eventCursor);
+    if (eventEnd <= eventCursor || eventEnd > boundaryIndex) break;
+    segmentOwners += 1;
+    eventCursor = eventEnd;
+  }
+  let visibleOwners = 0;
+  for (let index = 0; index < userMessages.length; index += 1) {
+    if (userMessages[index]?.historyNoAssistantSegment === true) continue;
+    if (visibleOwners >= segmentOwners) return index;
+    visibleOwners += 1;
+  }
+  return userMessages.length;
+}
+
 function reconcileRuntimeDeliveredInputs(
   events: readonly SessionEvent[],
   userMessages: readonly UserMessage[],
@@ -5863,7 +5920,15 @@ function reconcileRuntimeDeliveredInputs(
       boundaryIndex,
       delivered.sentAt,
     );
-    nextUsers.splice(0, nextUsers.length, ...remainingUsers, delivered);
+    // 就位摆放（B1）：owner 落在其 delivery 边界对应的事件段位置，而非数组尾部。
+    const ownerInsertionIndex = deliveredInputOwnerInsertionIndex(
+      remainingUsers,
+      nextEvents,
+      boundaryIndex,
+    );
+    const alignedUsers = [...remainingUsers];
+    alignedUsers.splice(ownerInsertionIndex, 0, delivered);
+    nextUsers.splice(0, nextUsers.length, ...alignedUsers);
   }
   return { events: nextEvents, userMessages: nextUsers, queuedMessages: nextQueued };
 }
