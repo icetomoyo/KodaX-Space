@@ -203,8 +203,65 @@ Last Updated: 2026-09-05
 | 205 | Medium   | Resolved in source  | SDK `Session not found` escaped persisted-session readers as handler errors for Sessions with no persisted record yet                                                                                | <= v0.1.46-alpha.3 persisted-session readers                 | 2026-09-03 |
 | 206 | High     | Resolved in source  | Canonical convergence was purely event-driven: one missed renderer push left the painted transcript stale until a manual reload even though canonical history was complete and healthy                    | <= v0.1.46-alpha.4 transcript convergence                    | 2026-09-04 |
 | 207 | High     | Resolved in source  | A replayed queued-prompt boundary could mint a ghost duplicate of the already-canonicalized user query, painted below its own answer until a manual reload                                                | <= v0.1.46-alpha queued-prompt boundary promotion             | 2026-09-05 |
+| 209 | High     | Resolved in source  | The KodaX daemon never consulted the scoped credential broker for compaction summarizer requests, so keychain-only Providers still failed `/compact` and managed compaction after the Issue 199 client fix | KodaX 0.7.96-alpha.3 scoped credential runtime (Issue 199)    | 2026-09-07 |
 
 ## Issue Details
+
+## Issue 209: The KodaX daemon never consulted the scoped credential broker for compaction summarizer requests, so keychain-only Providers still failed `/compact` and managed compaction after the Issue 199 client fix
+
+- Priority: High
+- Status: Resolved in source
+- Introduced: KodaX 0.7.96-alpha.3 scoped credential runtime (the Issue 199 resolution)
+- Fixed: KodaX 0.7.96-beta.2
+- Created: 2026-09-07
+- Resolved: 2026-09-07
+
+### Original Problem
+
+On Space v0.1.46-alpha.6 with KodaX 0.7.96-beta.1, manual `/compact` on a Coder Session reported:
+
+`Compaction skipped: <provider> API error: <ENV_NAME> not set`
+
+for every Provider whose key existed only in the Space OS keychain — exactly the scenario Issue 199
+was supposed to close. The daemon's control journal showed the `session.compact` operation arriving
+with the `space-compact-*` operationId and being rejected with `PROVIDER_ERROR` about 150 ms after
+dispatch, before any summarizer HTTP request was attempted. Run-internal managed compaction failed
+the same way (`[coding:managed-compaction] Managed history compaction summary failed` in
+`daemon.log`), so automatic compaction silently never succeeded for keychain-only Providers and
+context usage kept growing. Ordinary Run requests were unaffected because the Run primary path does
+consult the broker.
+
+### Root Cause
+
+The Issue 199 resolution was verified only against a mocked Runtime facade. The daemon-side half was
+incomplete: the `session.compact` handler built `providerCredentialAccess` and wrapped the
+compaction operation in the credential lease scope, but the summarizer's Provider request resolved
+its key through the environment-variable path, which by design returns nothing inside a lease scope
+(a lease scope must go through broker acquire). The broker `acquire(provider, purpose:'compaction')`
+was therefore never invoked: a protocol-level probe against a live beta.1 daemon — client-registered
+v2 scoped lease, `sessions.compact` with `credential: {leaseId, mode:'scoped', providers}` and a
+matching `operation.operationId` — produced **zero** broker invocations and the `not set` error.
+Providers whose key happened to be present in the daemon's environment masked the defect, which is
+why the daemon-side path was never exercised end to end before release.
+
+### Resolution
+
+KodaX 0.7.96-beta.2 routes the compaction summarizer's Provider request through the lease acquire
+with purpose `compaction` (manual `session.compact` and managed in-run compaction, custom Providers
+included). Space pins beta.2. Verified against a live beta.2 daemon with the same probe: the client
+broker receives exactly one request with `purpose='compaction'` and
+`target={kind:'operation', operation:'session.compact', operationId:<envelope operationId>}`, the
+keychain key is delivered to the daemon, and the summarizer's provider HTTP request is actually
+attempted (previously `TOKENHUB_API_KEY not set`). A fully successful compact could not be completed
+at verification time because the configured custom Provider endpoint was unhealthy (HTTP 502 from
+`10.10.20.241:8000`), which is independent of the credential chain.
+
+Verification recipe (replayable when a healthy keychain-only Provider is configured): connect a
+Runtime client, `credentials.registerScoped({providers:[<provider>]}, broker)`, fork a Session with
+history, call `sessions.compact({sessionId:<fork>, provider, credential:{leaseId, mode:'scoped',
+providers:[<provider>]}, operation:{operationId}})`, and assert the broker sees one
+`purpose='compaction'` operation-target request and the result is compacted or fails with a
+provider-side auth/network error instead of `<ENV> not set`.
 
 ## Issue 207: A replayed queued-prompt boundary could mint a ghost duplicate of the already-canonicalized user query, painted below its own answer until a manual reload
 
@@ -723,6 +780,10 @@ Runtime config, IPC, or the compact input.
 Regression coverage proves keychain-only compaction succeeds through the scoped broker, mismatched
 Session/purpose/operation requests return no credential, and the lease is revoked. Automatic
 threshold compaction remains inside its admitted credential-bound Run and is unchanged.
+
+Follow-up: that coverage mocked the Runtime facade, and the daemon-side half of this resolution
+shipped incomplete — the summarizer never consulted the broker, so keychain-only compaction still
+failed until KodaX 0.7.96-beta.2. See Issue 209.
 
 ## Issue 198: Right-sidebar work-budget display is accurate but the SDK 90% budget-approval askUser loop has been retired from the main AMA loop
 

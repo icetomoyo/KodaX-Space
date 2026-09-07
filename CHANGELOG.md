@@ -14,6 +14,22 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+## [0.1.46-alpha.7] - 2026-09-07
+
+### Changed
+
+- **KodaX 0.7.96-beta.2 compaction credential fix** - Root and Desktop pin the exact published
+  prerelease and Registry integrity. The Issue 199 scoped-credential resolution had shipped with an
+  incomplete daemon-side half: the compaction summarizer resolved its Provider key through the
+  environment-variable path, which returns nothing inside a credential lease scope, so keychain-only
+  Providers failed manual `/compact` and run-internal managed compaction with `<ENV> not set` while
+  the registered broker was never consulted (Issue 209). KodaX 0.7.96-beta.2 routes the summarizer's
+  Provider request through the compaction-purpose lease acquire. Verified end to end against a live
+  beta.2 daemon: the Space-side broker receives exactly one `purpose='compaction'` operation-target
+  request whose `operationId` matches the compact envelope, the keychain key reaches the provider
+  call, and a real OpenAI-compatible provider completes the compaction (`compacted: true`, 88409 →
+  39071 tokens). The SDK capability contract is unchanged.
+
 ## [0.1.46-alpha.6] - 2026-09-05
 
 ### Fixed
