@@ -39,15 +39,14 @@
  *   否则红（新偏差 = 回归）。P1 排序单一化 / P2 结算即退役 / P3 双平面拆分落地后
  *   ALLOWLIST 应逐步清零（票 2/5/6 验收）。
  *
- * allowlist 现状（2026-09-07 HEAD 实测）：
- *   5 条路径全部命中同一 3 行残件 diff（HEAD_RESIDUE_DIFF）：closed live 轮在 canonical
- *   rev-2 装页后不被清除 → 渐增终态 11 行 vs 冷基线 8 行，a1 答案卡 ×2、q2 气泡 ×2、
- *   a2 卡 ×2（live/canonical 两平面并存，各成 q2→a2 段）。与 repro 套件 L 主配方观察到的
- *   "closed live 残件重复渲染"同族（Issue 208 机制族）；T1 的 live user（q1）被 fold 绑定
- *   吸收故不重复。5 条路径（含 pathC 幂等重验、pathE 切换往返、pathD 纯 live 后装页）
- *   diff 完全一致 —— 偏差由终态装页动作本身决定，与渐增方式无关。位置翻转族（B1
- *   interrupt delivery 等）未被本 fixture 踩到，由 L/M 失败门（机制基线）负责证明；
- *   本测试当前形态 = 已知偏差记录门 + 未来回归红门。
+ * allowlist 现状（2026-09-07，FEATURE_275 票 4 后保持 5 路径 × 3 行）：
+ *   票 1 落地时 5 条路径全部命中同一 3 行残件 diff（closed live 轮在 canonical rev-2 装页后
+ *   不被清除 → 渐增终态 11 行 vs 冷基线 8 行，a1 ×2、q2 ×2、a2 ×2，Issue 208 机制族）。
+ *   票 4 的主验收是 M 失败门簇（芯片 8≠4、正文丢失）转绿，由水合补发 + 空壳段的孤儿尾
+ *   归属（transcriptTurnSnapshots，见 appStore 票 4 注释）+ 工具执行痕迹认证护栏达成；
+ *   本名单描述的多轮 live 尾装页残差属于另一机制分支（跨轮错位段，票 4 的归属规则刻意
+ *   不碰它），按 DAG 由票 5 结算即退役 / 票 6 双平面拆分收口。位置翻转族（B1 interrupt
+ *   delivery 等）由 L/M 失败门负责证明；本测试当前形态 = 等价性红门（名单外 diff 即回归）。
  *
  * live 流式保真：text_delta 逐段拼接与 canonical assistant item 的 text 逐字一致
  *   （canonical 就是流式 delta 原样落盘；拼固定前缀会让 certified 合并走 fail-open，
@@ -451,6 +450,11 @@ type EquivalencePath = 'pathA' | 'pathB' | 'pathC' | 'pathD' | 'pathE';
  * closed live 轮的 3 行（live a1 残件、live q2、live a2）在 canonical rev-2 装页后不被清除。
  * 最终投影 = 冷基线 8 行 + 这 3 行 live 残件；行内容来自 fixture 常量，避免转写漂移。
  */
+// FEATURE_275 票 4（2026-09-07）：closed live 轮的 3 行残件在本票后保持原样 —— 票 4 的
+// 段归属修复（transcriptTurnSnapshots 在"段不含外来轮内容且尾全同 turnId"时重新归属孤儿尾）
+// 只作用于单 live 轮尾形态（M 失败门的芯片 8≠4 / 正文丢失簇，已转绿）；多轮 live 尾的
+// 渐增装页残差（本名单）按 DAG 属于票 5 结算即退役 / 票 6 双平面拆分的收口范围。
+// 行内容来自 fixture 常量，避免转写漂移；任何名单之外的 diff = 回归红门。
 const HEAD_RESIDUE_DIFF: readonly string[] = [
   `expected:∅||actual:assistant:${GOLD_A2_FULL}`,
   `expected:∅||actual:assistant:${GOLD_A1}`,
@@ -459,7 +463,7 @@ const HEAD_RESIDUE_DIFF: readonly string[] = [
 
 /**
  * HEAD 已知 live/canonical 投影偏差按路径登记；出现 allowlist 之外的新偏差 → 测试红。
- * P1/P2/P3 落地后逐路径清零。
+ * P2/P3 落地后逐路径清零（票 4 修复的是 M 失败门簇，本名单留给票 5/6）。
  */
 const ALLOWLIST: Record<EquivalencePath, readonly string[]> = {
   pathA: HEAD_RESIDUE_DIFF,

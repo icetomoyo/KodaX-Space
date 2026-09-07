@@ -207,6 +207,28 @@ function projectedProviderRequestIds(
   ]);
 }
 
+/**
+ * Full replacement evidence for a delta whose segment-start marker is outside the scan window:
+ * the authoritative snapshot holds the segment and carries the complete content of the very text
+ * stream (assistant or thinking) this delta belongs to, from offset 0. A windowed segment
+ * (startOffset > 0) or an empty replacement is NOT evidence — deleting the delivered chunk then
+ * would silently lose content that the snapshot cannot re-emit.
+ */
+function snapshotCoversSegmentCompletely(
+  projection: SpaceSessionLiveProjectionT | undefined,
+  providerRequestId: string,
+  kind: DraftEventKind,
+): boolean {
+  const output = projection?.outputSegment;
+  if (output === undefined) return false;
+  const segments = [...output.retained, ...(output.active ? [output.active] : [])];
+  const segment = segments.find((candidate) => candidate.providerRequestId === providerRequestId);
+  if (segment === undefined) return false;
+  return kind === 'thinking_delta'
+    ? segment.thinkingTextStartOffset === 0 && segment.thinkingText.length > 0
+    : segment.assistantTextStartOffset === 0 && segment.assistantText.length > 0;
+}
+
 function discardExcludedProjectedSegment(
   event: SessionEvent,
   providerRequestId: string,
@@ -260,7 +282,12 @@ function scanOutputSegmentDelta(
   const requestId = event.providerRequestId;
   if (requestId === undefined) return;
   if (requestId === state.activeProviderRequestId) state.segmentByIndex.set(index, requestId);
-  else state.staleDeltaIndexes.add(index);
+  else if (snapshotCoversSegmentCompletely(projection, requestId, event.kind)) {
+    // FEATURE_275 票 4: a delta without a visible segment-start marker is only stale when the
+    // snapshot itself carries the segment's complete replacement content. Without that evidence
+    // the delivered chunk is the renderer's only copy of the text and must be kept.
+    state.staleDeltaIndexes.add(index);
+  }
   discardExcludedProjectedSegment(event, requestId, state, projection);
 }
 
@@ -544,6 +571,11 @@ function hydrateOutputSegment(
     const event = reconciledOutputSegmentDraft(events, projection, runId, turnId, segment, kind);
     return event ? [event] : [];
   });
+  if (synthetic.length === 0) {
+    // The snapshot segment carries no replacement text: covered delivered chunks stay intact —
+    // removing them without a substitute would silently lose visible content (票 4).
+    return [...events];
+  }
   const next = removeCoveredOutputSegmentDeltas(
     events,
     projection,
@@ -857,7 +889,11 @@ export function hydrateSessionEventsFromLiveSnapshot(
     run.runId,
     run.turnId,
   );
-  if (projection.activeRun !== undefined && projection.outputSegment !== undefined) {
+  if (projection.outputSegment !== undefined) {
+    // FEATURE_275 票 4: segment synthesis must not depend on activeRun. A snapshot whose only
+    // run fact is lastTerminalRun still carries the authoritative segment drafts; skipping the
+    // re-emission while the stale scan above removed covered chunks loses the whole streamed
+    // answer (pure lastTerminalRun snapshots used to delete without ever synthesizing).
     active = hydrateOutputSegments(active, projection, run.runId, run.turnId);
   } else if (projection.activeRun !== undefined) {
     active = hydrateDraft(

@@ -1647,6 +1647,40 @@ function transcriptTurnSnapshots(
     });
     eventCursor = eventEnd;
   }
+  // FEATURE_275 票 4: an after-turn boundary (queued_user_prompt_started) cuts the streamed
+  // turn's segment right after session_start, orphaning the rest of the run's events behind the
+  // last user row. Reattach such a same-turnId orphan tail to that turn so its snapshot carries
+  // the run's terminal and content instead of a session_start-only shell. Reattachment is
+  // all-or-nothing and only when the segment holds no other turn's content: a prompt boundary
+  // can offset a later live row's segment across an earlier turn's stream, and extending such a
+  // mixed segment doubled content in the refresh-equivalence pathB/D lifelines. Events without
+  // a turnId never count as foreign.
+  const lastTurn = turns[turns.length - 1];
+  if (lastTurn !== undefined && lastTurn.turnId !== undefined && eventCursor < events.length) {
+    const turnIdOf = (event: SessionEvent): string | undefined =>
+      'turnId' in event ? event.turnId : undefined;
+    const segmentOwnsNoForeignTurn = events
+      .slice(lastTurn.eventStart, eventCursor)
+      .every((event) => turnIdOf(event) === undefined || turnIdOf(event) === lastTurn.turnId);
+    let orphanEnd = eventCursor;
+    if (segmentOwnsNoForeignTurn) {
+      while (orphanEnd < events.length && turnIdOf(events[orphanEnd]!) === lastTurn.turnId) {
+        orphanEnd += 1;
+      }
+    }
+    if (orphanEnd === events.length) {
+      const semantic = transcriptSegmentSemantic(events.slice(lastTurn.eventStart, orphanEnd));
+      turns[turns.length - 1] = {
+        ...lastTurn,
+        eventEnd: orphanEnd,
+        ...semantic,
+        closed:
+          semantic.terminal ||
+          orphanEnd < events.length ||
+          lastTurn.userIndex < userMessages.length - 1,
+      };
+    }
+  }
   return turns;
 }
 
@@ -2163,11 +2197,46 @@ function decideTurnProjectionAuthority(
   if (liveHasAssistantContent && durable.eventStart === durable.eventEnd) {
     return 'coexist_fail_open';
   }
+  // FEATURE_275 票 4: a durable segment asserting tool work the live run never performed is a
+  // foreign projection wearing the same turnId. Certifying it would zero the live answer under
+  // canonical authority, so withhold certification and let both projections coexist until
+  // settlement retirement reclaims the shadow.
+  if (liveHasAssistantContent && !turnProjectionContentCorresponds(durable, live)) {
+    return 'coexist_fail_open';
+  }
   return authority.settledRuntimeRuns.some(
     (run) => run.runtimeId === live.terminalRuntimeId && run.runId === live.runtimeRunId,
   )
     ? 'canonical'
     : 'coexist_fail_open';
+}
+
+/**
+ * Tool-work correspondence for the certified-authority guard (FEATURE_275 票 4): every tool the
+ * durable page records must have been executed by the live run it would absorb (multiset
+ * containment — parallel tools legitimately complete in a different arrival order than the
+ * page's display order, and the page owns that order). Answer text is deliberately NOT an axis:
+ * raced persistence legitimately stores partial text, and live segments shift across turn rows
+ * at prompt boundaries, so text equality is neither necessary for certification nor evidence of
+ * a foreign page. A durable page asserting tool work the live run never performed is foreign
+ * content wearing the turn's identity and must not win canonical authority over the live draft.
+ */
+function turnProjectionContentCorresponds(
+  durable: TranscriptTurnSnapshot,
+  live: TranscriptTurnSnapshot,
+): boolean {
+  const signature = (tool: TranscriptTurnSnapshot['tools'][number]): string =>
+    `${tool.toolName}\u0000${tool.input}`;
+  const liveSignatures = new Map<string, number>();
+  for (const tool of live.tools) {
+    liveSignatures.set(signature(tool), (liveSignatures.get(signature(tool)) ?? 0) + 1);
+  }
+  return durable.tools.every((tool) => {
+    const remaining = liveSignatures.get(signature(tool)) ?? 0;
+    if (remaining === 0) return false;
+    liveSignatures.set(signature(tool), remaining - 1);
+    return true;
+  });
 }
 
 type LeadingHistoryOwnerResolution =

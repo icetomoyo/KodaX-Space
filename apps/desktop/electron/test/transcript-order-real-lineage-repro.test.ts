@@ -2232,7 +2232,7 @@ function assertMFailureGates(
   }
 }
 
-test('M. 多段 tool 轮快照重水合 → 整轮文本合并大卡骑到 query5 之上且芯片消失（失败门）', { skip: 'FEATURE_275 失败门：20260816 session 实测 RED（快照覆盖删除无条件清 delta、合成补发被 activeRun 门跳过、fold 不清孤儿 live 段 → 芯片 8≠4 且正文丢失）。P2 结算即退役落地后移除 skip 转绿。' }, async () => {
+test('M. 多段 tool 轮快照重水合 → 整轮文本合并大卡骑到 query5 之上且芯片消失（失败门）', async () => {
   // 步骤 1-2：起步页含 query1..answer4（全部 canonical），恢复 rev-0
   await seedSession();
   revisionByCall = ['rev-0', 'rev-1'];
