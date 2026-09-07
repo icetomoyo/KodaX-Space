@@ -4,7 +4,9 @@
 //   - events 是 main 推过来的有序 push 事件流（thinking_delta / text_delta / tool_start /
 //     tool_progress / tool_result / iteration_end / session_complete / session_error）
 //   - userMessages 是 renderer 本地记录的"用户发的 prompt"（main 不通过 push 回放）
-//   - userMessages 的 sentAt 与 event 时间在同一 wall-clock；merge 时按时间穿插
+//   - user 槽之间的顺序 = sortKey 单一化（FEATURE_275 票 2）：canonicalIndex ?? historyTurnIndex
+//     ?? users 数组序；sentAt 不再参与 user 槽排序，只用于 local/workflow notice 与 user 槽的
+//     交织和 footer 相对时间显示（三种时钟混排下 sentAt 序 ≠ 持久化序，见 Issue 208）
 //
 // 输出语义：
 //   - 一条 ConversationMessage 对应 UI 上一个气泡 / 卡片
@@ -121,6 +123,51 @@ interface ComposeInput {
   readonly includeAuditLineage?: boolean;
 }
 
+/**
+ * FEATURE_275 票 2：user 槽排序的唯一比较器（compose 遍历序与 routeRuntimeOwnedEvents 的
+ * runId owner 序共用同一把尺子，见 routeRuntimeOwnedEvents）。
+ *
+ * sortKey 降级链：canonicalIndex（canonical/restored 行）→ historyTurnIndex（已绑 turn 身份的行）
+ * → users 数组序（live admission 序）。sentAt 不参与可见 user 槽之间的排序（退为 notice 交织
+ * 与 footer）。唯一例外是 hiddenHistoryAnchor 行：它不渲染 user 气泡、只为"页首 assistant 先于
+ * 首个 user 行"的历史页对齐位置段（无 canonical key），其 sentAt 是 store 派生的排序位
+ * （首条 canonical 历史时间 ?? fallback，见 prependSessionHistory），与 wall-clock 无关，
+ * 因此仅当锚点参与比较时沿用 sentAt——否则锚点会按 buffer 头位吞掉首个位置段、把
+ * leading-partial 的回答顶到其 live 提问之上。
+ *
+ * 跨 key 空间（canonical vs turn-index vs 纯 live）保持 users 数组稳定序：userMessages 与
+ * events 是平行位置缓冲（history 原子前置 / live 追加 / 整轮成对搬移），跨空间强制名次会把
+ * user 行抽离其位置 event 段、破坏按 cursor 位置消费的 (user, events) 配对。真实安装路径下
+ * canonicalIndex 序 / historyTurnIndex 序与数组序一致，显式主键负责在时钟混排（Issue 208）
+ * 与页面乱序时把持久化序钉死，而不是靠 sentAt 兜底。
+ */
+function compareUserSlotOrder(
+  left: { readonly message: UserMessage; readonly index: number },
+  right: { readonly message: UserMessage; readonly index: number },
+): number {
+  const a = left.message;
+  const b = right.message;
+  if (a.canonicalIndex !== undefined && b.canonicalIndex !== undefined) {
+    return a.canonicalIndex - b.canonicalIndex || left.index - right.index;
+  }
+  if (
+    a.canonicalIndex === undefined &&
+    b.canonicalIndex === undefined &&
+    a.historyTurnIndex !== undefined &&
+    b.historyTurnIndex !== undefined
+  ) {
+    return a.historyTurnIndex - b.historyTurnIndex || left.index - right.index;
+  }
+  if (
+    a.canonicalIndex === undefined &&
+    b.canonicalIndex === undefined &&
+    (a.hiddenHistoryAnchor === true || b.hiddenHistoryAnchor === true)
+  ) {
+    return a.sentAt - b.sentAt || left.index - right.index;
+  }
+  return left.index - right.index;
+}
+
 export function composeMessages({
   events,
   userMessages,
@@ -171,14 +218,14 @@ export function composeMessages({
   const selectorTurnIndexes = selectorTurnIndexesByMessageId(userMessages);
   const routedEvents = routeRuntimeOwnedEvents(events, userMessages);
 
-  let cursor = 0;
-  const localMessages = [
-    ...userMessages.map((userMsg, order) => ({
-      kind: 'user' as const,
-      sentAt: userMsg.sentAt,
-      order,
-      userMsg,
-    })),
+  // FEATURE_275 票 2：user 槽按 sortKey（canonicalIndex ?? historyTurnIndex ?? 数组序）排序，
+  // 不再看 sentAt。notice 类行（local/workflow/failed queued）仍按 sentAt 与 user 槽交织，
+  // 交织锚定各 user 行自己的 sentAt：扫描 sortKey 有序的 user 序列，在每个 sentAt 更大的
+  // user 之前落位（相等时 user 在前，与旧平排的 order tie-break 一致）。
+  const orderedUserRows = [...userMessages]
+    .map((message, index) => ({ message, index }))
+    .sort(compareUserSlotOrder);
+  const interleavedRows = [
     ...localNotices.map((notice, order) => ({
       kind: 'local_notice' as const,
       sentAt: notice.sentAt,
@@ -199,37 +246,47 @@ export function composeMessages({
     })),
   ].sort((a, b) => a.sentAt - b.sentAt || a.order - b.order);
 
-  for (const local of localMessages) {
-    if (local.kind === 'local_notice') {
+  let interleavedCursor = 0;
+  const emitInterleavedRow = (): void => {
+    const row = interleavedRows[interleavedCursor];
+    if (row === undefined) return;
+    interleavedCursor += 1;
+    if (row.kind === 'local_notice') {
       result.push({
         kind: 'local_notice',
-        id: local.notice.id,
-        content: local.notice.content,
-        sentAt: local.notice.sentAt,
+        id: row.notice.id,
+        content: row.notice.content,
+        sentAt: row.notice.sentAt,
         variant:
-          local.notice.variant ??
-          (local.notice.content.trimStart().startsWith('/') ? 'echo' : 'output'),
+          row.notice.variant ??
+          (row.notice.content.trimStart().startsWith('/') ? 'echo' : 'output'),
       });
-      continue;
+      return;
     }
-
-    if (local.kind === 'workflow_notice') {
+    if (row.kind === 'workflow_notice') {
       result.push({
         kind: 'system_notice',
-        id: local.notice.id,
+        id: row.notice.id,
         variant: 'workflow',
-        text: local.notice.content,
-        sentAt: local.notice.sentAt,
+        text: row.notice.content,
+        sentAt: row.notice.sentAt,
       });
-      continue;
+      return;
     }
-
-    if (local.kind === 'failed_queued_user') {
-      result.push(toQueuedConversationMessage(local.queued));
-      continue;
+    result.push(toQueuedConversationMessage(row.queued));
+  };
+  const emitInterleavedBefore = (userSentAt: number): void => {
+    while (interleavedCursor < interleavedRows.length) {
+      const row = interleavedRows[interleavedCursor];
+      if (row === undefined || row.sentAt >= userSentAt) break;
+      emitInterleavedRow();
     }
+  };
 
-    const userMsg = local.userMsg;
+  let cursor = 0;
+  for (const { message: userMsg } of orderedUserRows) {
+    emitInterleavedBefore(userMsg.sentAt);
+
     if (userMsg.hiddenHistoryAnchor !== true && userMsg.hiddenProjectionDuplicate !== true) {
       result.push({
         kind: 'user',
@@ -272,6 +329,7 @@ export function composeMessages({
       );
     }
   }
+  emitInterleavedBefore(Number.POSITIVE_INFINITY);
   if (cursor < routedEvents.events.length) {
     composeAssistantSegment(
       routedEvents.events.slice(cursor),
@@ -297,8 +355,13 @@ function routeRuntimeOwnedEvents(
   readonly eventsByUserId: ReadonlyMap<string, readonly SessionEvent[]>;
   readonly eventIndexes: ReadonlyMap<SessionEvent, number>;
 } {
+  // owner 序 = compose 的 user 槽遍历序（compareUserSlotOrder）。ownerIndex 沿位置段推进，
+  // 两边必须同一把尺子：sentAt 乱序（三种时钟混排）下按 sentAt 排 owner 会把事件从正确的
+  // 位置段上摘走、拼回错误的 owner（FEATURE_275 票 2）。
   const owners = [...userMessages]
-    .sort((a, b) => a.sentAt - b.sentAt)
+    .map((message, index) => ({ message, index }))
+    .sort(compareUserSlotOrder)
+    .map(({ message }) => message)
     .filter((message) => message.historyNoAssistantSegment !== true);
   const kept: SessionEvent[] = [];
   const eventsByUserId = new Map<string, SessionEvent[]>();
