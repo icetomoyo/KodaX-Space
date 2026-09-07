@@ -2272,10 +2272,63 @@ function userEntryIdentityRelation(
 
 type TurnProjectionAuthority = 'canonical' | 'live' | 'coexist_fail_open';
 
+/**
+ * Minimal run identity for settlement-membership checks. Generation is a paging-workflow-local
+ * token and carries no authority semantics, so page-derived settlement evidence (ticket 6) and
+ * workflow reads (ticket 5) share this shape.
+ */
+interface RuntimeRunIdentity {
+  readonly runtimeId: string;
+  readonly runId: string;
+}
+
+/**
+ * FEATURE_275 票 6: identity-scoped terminal observation for one Runtime Run, indexed from the
+ * whole event buffer. The positional segment a turn snapshot owns can carry another run's
+ * terminal (prompt boundaries split multi-turn backlogs), so run-scoped closure must not be
+ * read positionally.
+ */
+interface RuntimeRunTerminalEvidence {
+  readonly turnId?: string;
+  readonly runtimeId?: string;
+}
+
+function runtimeRunTerminalIndex(
+  events: readonly SessionEvent[],
+): Map<string, RuntimeRunTerminalEvidence> {
+  const index = new Map<string, RuntimeRunTerminalEvidence>();
+  for (const event of events) {
+    if (event.kind !== 'session_complete' && event.kind !== 'session_error') continue;
+    const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
+    if (origin?.runId === undefined) continue;
+    const previous = index.get(origin.runId);
+    index.set(origin.runId, {
+      ...(event.turnId !== undefined
+        ? { turnId: event.turnId }
+        : previous?.turnId !== undefined
+          ? { turnId: previous.turnId }
+          : {}),
+      ...(origin.runtimeId !== undefined
+        ? { runtimeId: origin.runtimeId }
+        : previous?.runtimeId !== undefined
+          ? { runtimeId: previous.runtimeId }
+          : {}),
+    });
+  }
+  return index;
+}
+
 interface CertifiedCanonicalTranscriptAuthority {
   readonly sourceRevision: string;
   readonly canonicalMessageIds: ReadonlySet<string>;
-  readonly settledRuntimeRuns: readonly SettledRuntimeHistoryRun[];
+  /**
+   * FEATURE_275: runs whose durable copy is proven. Two evidence sources — exact post-terminal
+   * workflow reads (票 5) and the installed authoritative page's own coverage of a renderer-closed
+   * live run (票 6 装页平面切割). Membership authorizes certified canonical authority; the guards
+   * in decideTurnProjectionAuthority (identity, terminal self-consistency, user-only page, tool
+   * correspondence) still apply per turn.
+   */
+  readonly settledRuntimeRuns: readonly RuntimeRunIdentity[];
 }
 
 /** Identity and persistence facts decide authority; transcript content and event order never do. */
@@ -2283,6 +2336,7 @@ function decideTurnProjectionAuthority(
   durable: TranscriptTurnSnapshot,
   live: TranscriptTurnSnapshot,
   authority: CertifiedCanonicalTranscriptAuthority | undefined,
+  runTerminals: ReadonlyMap<string, RuntimeRunTerminalEvidence>,
 ): TurnProjectionAuthority {
   if (authority === undefined || !durable.restoredFromHistory || live.restoredFromHistory) {
     return live.closed ? 'coexist_fail_open' : 'live';
@@ -2300,16 +2354,39 @@ function decideTurnProjectionAuthority(
       !durable.leadingPartialHistory &&
       !durable.omittedHistoryUserOrdinal &&
       strongTurnIdentityMatches(durable, live));
-  if (!exactOwner || !live.terminal || live.runtimeRunId === undefined) {
+  // FEATURE_275 票 6（双平面拆分）: prompt boundaries split a multi-turn live backlog into
+  // positional segments whose terminal can belong to the previous run (票 4 段错位分支) or trail
+  // in a later segment. The run's OWN terminal anywhere in the buffer — same Run + turnId
+  // consistent with the owner — is identity-scoped closure evidence and stands in for the
+  // positional terminal when the two disagree.
+  const observedTerminal =
+    live.runtimeRunId !== undefined ? runTerminals.get(live.runtimeRunId) : undefined;
+  const identityScopedClosure =
+    observedTerminal !== undefined &&
+    (observedTerminal.turnId === undefined ||
+      live.turnId === undefined ||
+      observedTerminal.turnId === live.turnId);
+  if (
+    !exactOwner ||
+    live.runtimeRunId === undefined ||
+    (!live.terminal && !identityScopedClosure)
+  ) {
     return 'coexist_fail_open';
   }
+  const positionalTerminalConsistent =
+    live.terminalRunId === live.runtimeRunId &&
+    live.terminalRuntimeId !== undefined &&
+    (live.terminalTurnId === undefined ||
+      live.turnId === undefined ||
+      live.terminalTurnId === live.turnId);
   if (
-    live.terminalRunId !== live.runtimeRunId ||
-    live.terminalRuntimeId === undefined ||
-    (durable.runtimeRunId !== undefined && durable.runtimeRunId !== live.runtimeRunId) ||
-    (live.terminalTurnId !== undefined &&
-      live.turnId !== undefined &&
-      live.terminalTurnId !== live.turnId)
+    (live.terminalRunId !== live.runtimeRunId ||
+      live.terminalRuntimeId === undefined ||
+      (durable.runtimeRunId !== undefined && durable.runtimeRunId !== live.runtimeRunId) ||
+      (live.terminalTurnId !== undefined &&
+        live.turnId !== undefined &&
+        live.terminalTurnId !== live.turnId)) &&
+    !identityScopedClosure
   ) {
     return 'coexist_fail_open';
   }
@@ -2330,8 +2407,11 @@ function decideTurnProjectionAuthority(
   if (liveHasAssistantContent && !turnProjectionContentCorresponds(durable, live)) {
     return 'coexist_fail_open';
   }
+  const terminalRuntimeId = positionalTerminalConsistent
+    ? live.terminalRuntimeId
+    : observedTerminal?.runtimeId;
   return authority.settledRuntimeRuns.some(
-    (run) => run.runtimeId === live.terminalRuntimeId && run.runId === live.runtimeRunId,
+    (run) => run.runtimeId === terminalRuntimeId && run.runId === live.runtimeRunId,
   )
     ? 'canonical'
     : 'coexist_fail_open';
@@ -2849,12 +2929,26 @@ function preserveRelocatedSegmentClosure(
   ];
 }
 
-function liveTurnCanFold(turn: TranscriptTurnSnapshot, exactEntryIdentity = false): boolean {
+function liveTurnCanFold(
+  turn: TranscriptTurnSnapshot,
+  exactEntryIdentity = false,
+  runTerminals?: ReadonlyMap<string, RuntimeRunTerminalEvidence>,
+): boolean {
   if (!turn.closed) return false;
   if (!turn.terminal) return true;
   if (turn.restoredFromHistory) return true;
   if (exactEntryIdentity && turn.entryId !== undefined) return true;
   if (turn.turnId !== undefined && turn.terminalTurnId === turn.turnId) return true;
+  // FEATURE_275 票 6: prompt boundaries split multi-turn live backlogs so the positional
+  // segment can own the PREVIOUS run's terminal (票 4 段错位分支). The run's own terminal
+  // anywhere in the buffer — same Run + turnId consistent — proves closure identity-scoped.
+  const observed = turn.runtimeRunId !== undefined ? runTerminals?.get(turn.runtimeRunId) : undefined;
+  if (
+    observed !== undefined &&
+    (observed.turnId === undefined || turn.turnId === undefined || observed.turnId === turn.turnId)
+  ) {
+    return true;
+  }
   // A run-scoped terminal that omits turnId still proves closure for the live owner bound to
   // that Runtime Run (bindUserMessageRuntimeRun). Without this fallback one turnId-less
   // terminal blocks the fold forever, and the stale live segment resurfaces at the transcript
@@ -3941,6 +4035,9 @@ function foldStrongIdentityDuplicateTurns(
   const canonicalizedLiveOwners: CanonicalizedLiveOwner[] = [];
   for (;;) {
     const turns = transcriptTurnSnapshots(nextUsers, nextEvents);
+    // FEATURE_275 票 6: rebuilt per iteration — merges/sweeps splice the buffer, and terminals
+    // survive both, so the index stays in sync with the buffer this iteration decides on.
+    const runTerminals = runtimeRunTerminalIndex(nextEvents);
     let pair: DuplicateTranscriptTurnPair | undefined;
 
     for (let duplicateIndex = 0; duplicateIndex < turns.length && !pair; duplicateIndex++) {
@@ -3975,7 +4072,12 @@ function foldStrongIdentityDuplicateTurns(
           durable.runtimeRunId === undefined ||
           duplicate.runtimeRunId === undefined ||
           durable.runtimeRunId === duplicate.runtimeRunId;
-        const projectionAuthority = decideTurnProjectionAuthority(durable, duplicate, authority);
+        const projectionAuthority = decideTurnProjectionAuthority(
+          durable,
+          duplicate,
+          authority,
+          runTerminals,
+        );
         const certifiedCanonical = projectionAuthority === 'canonical';
         // The newest canonical page can persist the user boundary before any assistant row.
         // Its empty durable segment and the exact open live owner are two projections of one turn,
@@ -4029,7 +4131,7 @@ function foldStrongIdentityDuplicateTurns(
             !certifiedCanonical &&
             openLiveAdoption === undefined &&
             ownerResolution?.kind !== 'promote_open_live_owner' &&
-            !liveTurnCanFold(duplicate, entryIdentity === 'match'))
+            !liveTurnCanFold(duplicate, entryIdentity === 'match', runTerminals))
         ) {
           continue;
         }

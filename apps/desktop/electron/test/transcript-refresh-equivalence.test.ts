@@ -39,14 +39,11 @@
  *   否则红（新偏差 = 回归）。P1 排序单一化 / P2 结算即退役 / P3 双平面拆分落地后
  *   ALLOWLIST 应逐步清零（票 2/5/6 验收）。
  *
- * allowlist 现状（2026-09-07，FEATURE_275 票 4 后保持 5 路径 × 3 行）：
+ * allowlist 现状（2026-09-07，FEATURE_275 票 6 双平面拆分后）：全 5 路径 diff 0。
  *   票 1 落地时 5 条路径全部命中同一 3 行残件 diff（closed live 轮在 canonical rev-2 装页后
- *   不被清除 → 渐增终态 11 行 vs 冷基线 8 行，a1 ×2、q2 ×2、a2 ×2，Issue 208 机制族）。
- *   票 4 的主验收是 M 失败门簇（芯片 8≠4、正文丢失）转绿，由水合补发 + 空壳段的孤儿尾
- *   归属（transcriptTurnSnapshots，见 appStore 票 4 注释）+ 工具执行痕迹认证护栏达成；
- *   本名单描述的多轮 live 尾装页残差属于另一机制分支（跨轮错位段，票 4 的归属规则刻意
- *   不碰它），按 DAG 由票 5 结算即退役 / 票 6 双平面拆分收口。位置翻转族（B1 interrupt
- *   delivery 等）由 L/M 失败门负责证明；本测试当前形态 = 等价性红门（名单外 diff 即回归）。
+ *   不被清除）；票 5 的结算即退役清零了逐轮认证簇（pathA/C/E）；票 6 的装页平面切割把
+ *   "canonical 页对 closed live 轮的覆盖"本身作为结算证据，在装页接缝物理退役页面覆盖区
+ *   的 live 影子（迟读 pathB / 纯 live 后装页 pathD），allowlist 全路径清零。
  *
  * live 流式保真：text_delta 逐段拼接与 canonical assistant item 的 text 逐字一致
  *   （canonical 就是流式 delta 原样落盘；拼固定前缀会让 certified 合并走 fail-open，
@@ -446,29 +443,17 @@ function diffProjectionLines(expected: readonly string[], actual: readonly strin
 type EquivalencePath = 'pathA' | 'pathB' | 'pathC' | 'pathD' | 'pathE';
 
 /**
- * FEATURE_275 票 5（2026-09-07，结算即退役落地）后按路径登记：
- *   pathA/pathC/pathE（逐轮认证 + 幂等重验 + 切换往返）：diff 0 —— certified 合并即物理退役
- *   已收编 live 影子（tombstone 防复活），渐增终态 == 冷 reload，allowlist 清零。
- *   pathB/pathD（迟读 / 纯 live 后装页）：装页时无 terminal 认证证据（settledRuntimeRuns 为空，
- *   revalidate/restore 不携带 terminal workflow），fail-open coexist 保留 3 行 live 残件，
- *   与票 1 落地时的名单逐行相同（内容未扩大）。按 DAG 由票 6 双平面拆分收口。
- * 行内容来自 fixture 常量，避免转写漂移；任何名单之外的 diff = 回归红门。
- */
-const HEAD_RESIDUE_DIFF: readonly string[] = [
-  `expected:∅||actual:assistant:${GOLD_A2_FULL}`,
-  `expected:∅||actual:assistant:${GOLD_A1}`,
-  `expected:∅||actual:user:${GOLD_Q2}`,
-];
-
-/**
- * HEAD 已知 live/canonical 投影偏差按路径登记；出现 allowlist 之外的新偏差 → 测试红。
- * 票 5 后 pathA/C/E 清零；pathB/D 维持 3 行（未扩大），票 6 收口。
+ * FEATURE_275 票 6（2026-09-07，canonicalPage / liveTail 双平面拆分）后全路径清零：
+ * 装页（replace 窗口）时 canonical 页对 closed live 轮的覆盖即结算证据（装页平面切割），
+ * 页面覆盖的 live 影子在装页接缝物理退役入 canonical 平面（tombstone 防复活），
+ * live 尾只保留切割点之后的开放轮与身份未收编轮 —— 渐增终态 == 冷 reload，5 路径 diff 0。
+ * 任何 diff = 回归红门。
  */
 const ALLOWLIST: Record<EquivalencePath, readonly string[]> = {
   pathA: [],
-  pathB: HEAD_RESIDUE_DIFF,
+  pathB: [],
   pathC: [],
-  pathD: HEAD_RESIDUE_DIFF,
+  pathD: [],
   pathE: [],
 };
 

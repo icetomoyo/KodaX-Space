@@ -151,10 +151,17 @@ function buildTurn2Items(): SessionHistoryItem[] {
   ];
 }
 
-function buildPageItems(revision: Revision, options: { readonly omitTurn2?: boolean } = {}): SessionHistoryItem[] {
+function buildPageItems(
+  revision: Revision,
+  options: { readonly omitTurn2?: boolean; readonly turn2UserOnly?: boolean } = {},
+): SessionHistoryItem[] {
   if (revision === 'rev-0') return buildBackgroundItems();
   const items = [...buildBackgroundItems(), ...buildTurn1Items()];
-  if (revision === 'rev-2' && options.omitTurn2 !== true) items.push(...buildTurn2Items());
+  if (revision === 'rev-2' && options.omitTurn2 !== true) {
+    // 204 守卫形态：canonical 只持久化了 T2 的 user 边界，assistant 行缺席（读与落盘竞速）。
+    if (options.turn2UserOnly === true) items.push(buildTurn2Items()[0]!);
+    else items.push(...buildTurn2Items());
+  }
   return items;
 }
 
@@ -177,10 +184,15 @@ interface PageResponse {
 // 页内容用"暂存"：每次装页前 stage 一次，paging 内部读几次都拿到同一页。
 let stagedRevision: Revision = 'rev-0';
 let stagedOmitTurn2 = false;
+let stagedTurn2UserOnly = false;
 
-function stagePage(revision: Revision, options: { readonly omitTurn2?: boolean } = {}): void {
+function stagePage(
+  revision: Revision,
+  options: { readonly omitTurn2?: boolean; readonly turn2UserOnly?: boolean } = {},
+): void {
   stagedRevision = revision;
   stagedOmitTurn2 = options.omitTurn2 === true;
+  stagedTurn2UserOnly = options.turn2UserOnly === true;
 }
 
 function installWindow(): void {
@@ -193,7 +205,10 @@ function installWindow(): void {
           const result: PageResponse = {
             ok: true,
             data: {
-              items: buildPageItems(stagedRevision, { omitTurn2: stagedOmitTurn2 }),
+              items: buildPageItems(stagedRevision, {
+                omitTurn2: stagedOmitTurn2,
+                turn2UserOnly: stagedTurn2UserOnly,
+              }),
               conversation: { status: 'resolved' },
               page: {
                 outcome: 'ready',
@@ -613,4 +628,130 @@ test('票5·刷新等价：逐轮认证渐增路径终态 == 冷 reload 投影',
   );
   // 双向都钉在 canonical 形状上，防止基线空洞让等价断言 vacuous。
   assert.deepEqual(coldBaseline, CANONICAL_BULLETS);
+});
+
+// ---- FEATURE_275 票 6：canonicalPage / liveTail 双平面拆分（P3，装页平面切割）----
+//
+// 机制：replace 窗口装页时，canonical 页对 closed live 轮的覆盖本身就是结算证据 ——
+// authoritative newest 读返回了该 turn 的非 user durable 行（身份在场判据，与 ADR-009
+// 认证链同一证据类），据此在装页接缝把页面覆盖区的 live 影子确定性移交 canonical 平面
+// （经既有 certified fold：合并 + 物理退役 + 墓碑），live 尾只保留切割点之后的开放轮与
+// 身份未收编轮。内存有界：稳态 buffer 无已收编内容的重复副本。
+
+/** 票 6 生命线：restore rev-0 → 纯 live 流完 T1+T2（中间不读页，迟读形态）。 */
+async function runLateReadLifeline(): Promise<void> {
+  await seedSession();
+  installWindow();
+  stagePage('rev-0');
+  await restoreNewestSessionHistory(SID, 'code');
+  streamTurn({
+    content: Q1_TEXT,
+    sentAt: REAL_T.q1 + 800,
+    runId: RUN_1,
+    epoch: 'epoch-run-x',
+    turnId: TURN_1,
+    thinking: A1_THINKING,
+    answerText: A1_TEXT,
+  });
+  streamTurn({
+    content: Q2_TEXT,
+    sentAt: REAL_T.q2 + 1_200,
+    runId: RUN_2,
+    epoch: EPOCH_2,
+    turnId: TURN_2,
+    thinking: A2_THINKING,
+    answerText: A2_HEAD,
+  });
+}
+
+test('票6·装页平面拆分：迟读装页把页面覆盖的 closed live 轮移交 canonical 平面（影子物理退役、内存有界）', async () => {
+  await runLateReadLifeline();
+
+  // 一次 revalidate 装 rev-2（覆盖 T1+T2）：无 terminal workflow、无 settledRuntimeRuns，
+  // 装页平面切割应把两轮影子整体移交 canonical 平面 —— 删除而非隐藏。
+  stagePage('rev-2');
+  await revalidateNewestSessionHistory(SID, 'code');
+  dumpState('ticket6 after late revalidate rev-2');
+
+  assertSettledBuffers('ticket6 late install rev-2');
+  assert.deepEqual(composedBullets(), CANONICAL_BULLETS);
+
+  // 同 revision 重复 revalidate（前台每分钟形态）幂等，不引入偏差、不复活影子。
+  await revalidateNewestSessionHistory(SID, 'code');
+  assertSettledBuffers('ticket6 after same-revision revalidate');
+  assert.deepEqual(composedBullets(), CANONICAL_BULLETS);
+
+  deactivateSessionHistoryPaging(SID);
+  resetSessionHistoryPagingLifecycle();
+});
+
+test('票6·live 尾边界：装页未覆盖的 closed live 轮留在 live 尾（fail-open，不删不丢），后续装页继续收编', async () => {
+  await runLateReadLifeline();
+
+  // 装 rev-1（只覆盖 T1）：T1 影子退役；T2 页面无对手行 → 留在 live 尾完整可见。
+  stagePage('rev-1');
+  await revalidateNewestSessionHistory(SID, 'code');
+  dumpState('ticket6 after revalidate rev-1 (T2 uncovered)');
+
+  const state = useAppStore.getState();
+  const users = state.userMessagesBySession[SID] ?? [];
+  const liveRows = users.filter((message) => message.restoredFromHistory !== true);
+  assert.deepEqual(
+    liveRows.map((message) => message.turnId ?? '-'),
+    [TURN_2],
+    `rev-1 装页后 live 尾应恰剩未覆盖的 T2，实际 ${JSON.stringify(liveRows.map((message) => message.turnId ?? '-'))}`,
+  );
+  const bullets = composedBullets();
+  const a1Cards = bullets.filter((line) => line.startsWith('assistant:') && line.includes(A1_TEXT));
+  const a2Cards = bullets.filter((line) => line.startsWith('assistant:') && line.includes(A2_HEAD));
+  assert.equal(a1Cards.length, 1, `已收编 T1 的 a1 应恰 1 卡，实际 ${a1Cards.length}`);
+  assert.equal(a2Cards.length, 1, `未收编 T2 的 a2 应恰 1 卡（fail-open 保留），实际 ${a2Cards.length}`);
+  assert.equal(
+    bullets.filter((line) => line === `user:${Q2_TEXT}`).length,
+    1,
+    'q2 user 行不得出现重复气泡',
+  );
+  assert.ok(
+    bullets.some((line) => line === `assistant:${A2_HEAD}`),
+    'live 尾 T2 的已流式正文必须可见',
+  );
+
+  // 后续装 rev-2（覆盖 T2）：live 尾继续收编，终态 == canonical 页。
+  stagePage('rev-2');
+  await revalidateNewestSessionHistory(SID, 'code');
+  dumpState('ticket6 after follow-up revalidate rev-2');
+  assertSettledBuffers('ticket6 follow-up install rev-2');
+  assert.deepEqual(composedBullets(), CANONICAL_BULLETS);
+
+  deactivateSessionHistoryPaging(SID);
+  resetSessionHistoryPagingLifecycle();
+});
+
+test('票6·204 守卫：user-only 页不结算 —— 页面缺该轮非 user durable 行时 live 内容原样保留', async () => {
+  await runLateReadLifeline();
+
+  // 页面只含 T2 的 user 边界（读与落盘竞速形态）：turnId 在场但非 user 行缺席。
+  // 认证被扣住（204 守卫），live 内容经 closed-causal 空壳收养保持在 canonical owner 之下
+  // —— 观察契约：内容零丢失、无重复气泡、已收编的 T1 照常退役。
+  stagePage('rev-2', { turn2UserOnly: true });
+  await revalidateNewestSessionHistory(SID, 'code');
+  dumpState('ticket6 after user-only-page revalidate');
+
+  const bullets = composedBullets();
+  const a1Cards = bullets.filter((line) => line.startsWith('assistant:') && line.includes(A1_TEXT));
+  assert.equal(a1Cards.length, 1, `页面完整覆盖的 T1 照常收编，a1 应恰 1 卡，实际 ${a1Cards.length}`);
+  const a2Cards = bullets.filter((line) => line.startsWith('assistant:') && line.includes(A2_HEAD));
+  assert.equal(a2Cards.length, 1, `a2 正文必须恰 1 卡（user-only 页不得吞掉 live 回答），实际 ${a2Cards.length}`);
+  assert.equal(
+    bullets.filter((line) => line === `user:${Q2_TEXT}`).length,
+    1,
+    'q2 user 行不得出现重复气泡',
+  );
+  assert.ok(
+    bullets.includes(`assistant:${A2_HEAD}`),
+    'user-only 页缺该轮回答行时 live 内容必须完整可见（Issue 204 红线）',
+  );
+
+  deactivateSessionHistoryPaging(SID);
+  resetSessionHistoryPagingLifecycle();
 });

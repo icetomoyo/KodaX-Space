@@ -160,6 +160,61 @@ function pageContainsRunTurn(page: TerminalHistoryRead, turnId: string): boolean
   );
 }
 
+/**
+ * FEATURE_275 票 6（双平面拆分）：renderer 已观察到的 Run terminal（runId → 身份），在读取
+ * capture 时点采样。一个 terminal 已在本地下水的 Run，其 journal 贡献必然先于本次读取的
+ * snapshot —— 该读取对它是 exact post-terminal read，无需 workflow 证据。身份事实只此一层：
+ * 页面是否携带该 Run 的 turn 行（pageContainsRunTurn，与 workflow 同一判据）。
+ */
+interface ObservedRuntimeTerminal {
+  readonly runtimeId: string;
+  readonly turnId?: string;
+}
+
+function captureObservedRuntimeTerminals(
+  sessionId: string,
+): Map<string, ObservedRuntimeTerminal> {
+  const state = useAppStore.getState();
+  const observed = new Map<string, ObservedRuntimeTerminal>();
+  for (const event of state.eventsBySession[sessionId] ?? []) {
+    if (event.kind !== 'session_complete' && event.kind !== 'session_error') continue;
+    const origin = event.runtimeEvent;
+    if (origin === undefined) continue;
+    const previous = observed.get(origin.runId);
+    observed.set(origin.runId, {
+      runtimeId: origin.runtimeId,
+      ...(event.turnId !== undefined
+        ? { turnId: event.turnId }
+        : previous?.turnId !== undefined
+          ? { turnId: previous.turnId }
+          : {}),
+    });
+  }
+  return observed;
+}
+
+/**
+ * 票 6 装页平面切割的成员授予：capture 时已观察到 terminal、且本次读取的页面携带该 Run 的
+ * turn 行（非 user durable 行在场 = 204 守卫：user-only 页不授予）的 Run，加入 settled
+ * 成员。workflow scope 内的 Run 不在此授予 —— 它们按 FEATURE_274 阶梯（presence →
+ * source-quiet 放行）走，本授予不得绕过其 pending 语义。
+ */
+function grantPostTerminalCoveredRuns(
+  observed: ReadonlyMap<string, ObservedRuntimeTerminal>,
+  page: TerminalHistoryRead,
+  scopedRunIds: ReadonlySet<string>,
+): SettledRuntimeHistoryRun[] {
+  if (observed.size === 0) return [];
+  const granted: SettledRuntimeHistoryRun[] = [];
+  for (const [runId, terminal] of observed) {
+    if (scopedRunIds.has(runId) || terminal.turnId === undefined) continue;
+    if (!pageContainsRunTurn(page, terminal.turnId)) continue;
+    // generation 是 paging workflow 的本地 token，对 store 的成员判定无语义。
+    granted.push({ runtimeId: terminal.runtimeId, runId, generation: 0 });
+  }
+  return granted;
+}
+
 /** Complete only evidence that existed when this authoritative newest-page read started.
  * A run carrying a turnId settles only when the page contains that turn's rows (identity
  * certification) or when two consecutive reads returned the identical page revision —
@@ -713,6 +768,12 @@ async function requestHistory(
   const terminalHistoryRequestScope = continuation
     ? undefined
     : captureTerminalHistoryRequestScope(sessionId);
+  // 票 6：watermark 必须在 fetch 之前采样 —— capture 时已在本地下水的 terminal，其 Run 的
+  // journal 贡献先于本次读取 snapshot，读取即该 Run 的 exact post-terminal read。
+  const observedTerminalsAtCapture = captureObservedRuntimeTerminals(sessionId);
+  const scopedRunIds = new Set(
+    (terminalHistoryRequestScope?.runs ?? []).map((run) => run.runId),
+  );
 
   const pending = (async () => {
     const bridge = window.kodaxSpace;
@@ -951,6 +1012,16 @@ async function requestHistory(
         revision: page?.outcome === 'ready' ? page.revision : undefined,
       },
     );
+    // 票 6：workflow 结算 + 装页平面切割授予（capture 后置 terminal 的页面覆盖 Run）同一
+    // 成员表进 store；装页侧的 certified 阶梯仍逐轮复核身份/204 守卫/工具对应性。
+    const settledRuntimeRuns = [
+      ...terminalHistoryCompletion.settledRuntimeRuns,
+      ...grantPostTerminalCoveredRuns(
+        observedTerminalsAtCapture,
+        { items: result.items },
+        scopedRunIds,
+      ),
+    ];
     if (terminalHistoryCompletion.needsRetry) {
       publish(sessionId, {
         ...(retainReadyProjection && previous.phase === 'ready'
@@ -988,12 +1059,7 @@ async function requestHistory(
       publish(sessionId, { ...previous, ...(surface !== undefined ? { surface } : {}) });
       return;
     }
-    applyHistoryResult(
-      sessionId,
-      result,
-      continueFromCurrentBoundary,
-      terminalHistoryCompletion.settledRuntimeRuns,
-    );
+    applyHistoryResult(sessionId, result, continueFromCurrentBoundary, settledRuntimeRuns);
     deferredReadyRevalidations.delete(sessionId);
     loadedEpochs.set(sessionId, requestedEpoch);
     clearRetry(sessionId);
