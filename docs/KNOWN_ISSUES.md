@@ -203,8 +203,79 @@ Last Updated: 2026-09-05
 | 205 | Medium   | Resolved in source  | SDK `Session not found` escaped persisted-session readers as handler errors for Sessions with no persisted record yet                                                                                | <= v0.1.46-alpha.3 persisted-session readers                 | 2026-09-03 |
 | 206 | High     | Resolved in source  | Canonical convergence was purely event-driven: one missed renderer push left the painted transcript stale until a manual reload even though canonical history was complete and healthy                    | <= v0.1.46-alpha.4 transcript convergence                    | 2026-09-04 |
 | 207 | High     | Resolved in source  | A replayed queued-prompt boundary could mint a ghost duplicate of the already-canonicalized user query, painted below its own answer until a manual reload                                                | <= v0.1.46-alpha queued-prompt boundary promotion             | 2026-09-05 |
+| 208 | High     | In Progress         | Assistant-side transcript disorder survived the Issue 207 hotfix: answer content painted above its own/previous query, whole turns swallowed, tool chips lost — cured only by manual reload                 | <= v0.1.46-alpha.6 live/canonical dual-plane reconciliation    | 2026-09-07 |
 
 ## Issue Details
+
+## Issue 208: Assistant-side transcript disorder survived the Issue 207 hotfix — answer content above its own query, whole turns swallowed, tool chips lost
+
+- Priority: High
+- Status: In Progress
+- Introduced: <= v0.1.46-alpha.6 live/canonical dual-plane reconciliation
+- Created: 2026-09-07
+
+### Problem
+
+Two further customer disorder reports on v0.1.46-alpha.6 (Windows, session
+`20260816_110200_432759c1554ee5`), each cured by Ctrl+R:
+
+1. The tail question of turn N's answer appeared as a standalone assistant
+   card above the PREVIOUS turn's query (carrying turn N's canonical
+   timestamp), while turn N-1's entire answer (thinking + body) vanished —
+   its query sat directly adjacent to the next query.
+2. A multi-segment tool-use turn painted its whole answer as one continuous
+   card above its own query, with every tool-run chip missing; the restored
+   view shows five text segments interleaved with four chips.
+
+The persistence plane was verified healthy entry-by-entry (lineage and
+conversation cache clean, correct turnIds; the runtime journal stamps every
+assistant delta with the correct turnId), so the corruption again exists only
+in the live painted projection. The Issue 207 hotfix is scope-disjoint: it
+gates user-bubble minting on replayed boundary events, and neither shape
+mints a user row.
+
+### Root Cause (pinned by code tracing + deterministic repro)
+
+The renderer maintains one global invariant — user-slot sentAt order ==
+events position-pairing order — and three paths break it:
+
+- `reconcileRuntimeDeliveredInputs` (appStore.ts ~L5850): delivery boundaries
+  are positioned by `deliverySeq`, but their owner rows are appended to the
+  END of the users array with sentAt rewritten to the server clock.
+- The canonical page install seam (appStore.ts ~L7334): canonical and live
+  planes are each internally ordered, with no cross-seam global order across
+  three mixed clocks (server restore sentAt / local Date.now / admission
+  order).
+- `stabilizeCanonicalPageHeadBeforeEarlierLiveTurns` (~L3598): its
+  `turn.sentAt < canonical.sentAt` comparison mis-relocates live turns when
+  the server clock runs ahead.
+
+Once slots are misaligned, the certified canonical merge
+(`mergeIdentityProvenTurnProjections`) zeroes live text/thinking suffixes and
+drops live tool events in the misplaced slot — its only guard checks
+"durable segment is EMPTY", not "non-empty but foreign". Separately, terminal
+snapshot hydration deletes any delta carrying a providerRequestId without a
+segment-start marker unconditionally, skips synthesis for pure
+lastTerminalRun snapshots (`activeRun !== undefined` gate), and the fold
+never reclaims orphaned closed-live segments — producing doubled tool chips,
+lost bodies, and tail-fragment ghosts carrying canonical timestamps.
+Ctrl+R rebuilds cold from canonical rows alone, which is why it always heals.
+
+### Resolution (in progress)
+
+Tracked as FEATURE_275 (`docs/features/v0.1.46.md`, mechanism baseline
+section). Two deterministic failing-gate cases (L and M) are committed
+skipped in `transcript-order-real-lineage-repro.test.ts`: case L variant B
+reproduces "canonical answers painted above the previous query" exactly;
+case M reproduces doubled chips + lost body. P1 (compose sortKey
+unification) kills the position half; P2 (settle-and-retire + shadow
+reclaim) kills the content half. The gates flip green as those land before
+v0.1.46 final.
+
+### Files Changed
+
+- `apps/desktop/electron/test/transcript-order-real-lineage-repro.test.ts` (cases L/M)
+- `docs/features/v0.1.46.md` (FEATURE_275 mechanism baseline)
 
 ## Issue 207: A replayed queued-prompt boundary could mint a ghost duplicate of the already-canonicalized user query, painted below its own answer until a manual reload
 
@@ -14744,13 +14815,13 @@ misclassified as missing before the durable mutation is attempted.
 
 ## Summary
 
-- Total: 189
+- Total: 190
 - Open: 1
 - Ready: 1
-- In Progress: 10
+- In Progress: 11
 - Deferred: 0
 - Resolved: 177
-- High: 97
+- High: 98
 - Medium: 80
 - Low: 12
 - Next to resolve: 199

@@ -26,7 +26,10 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { SessionHistoryItem } from '@kodax-space/space-ipc-schema';
+import type {
+  SessionHistoryItem,
+  SpaceSessionLiveProjectionT,
+} from '@kodax-space/space-ipc-schema';
 import { composeMessages } from '../../renderer/src/features/session/composeMessages.js';
 import { useAppStore } from '../../renderer/src/store/appStore.js';
 import {
@@ -1314,4 +1317,1113 @@ test('J2. 逐步 bisect 重复 owner 的产生点', async () => {
   console.log('J2 step6 after certified read:', JSON.stringify((useAppStore.getState().userMessagesBySession[SID] ?? []).map((m) => [m.id.slice(-6), m.content.slice(0, 10), m.turnId ?? '-', m.turnUserOrdinal ?? '-', m.restoredFromHistory === true ? 'canon' : 'live'])));
   deactivateSessionHistoryPaging(SID);
   resetSessionHistoryPagingLifecycle();
+});
+
+// ============================================================================
+// L / M：真实客户时序（客户 session 20260816_110200_432759c1554ee5，canonical 已验证干净）
+//
+// 真实时序：
+//   turn_8860b0bc18424193  完成于 01:07:52.931Z（背景轮）
+//   turn_4cbd9ec8cf71403b  q1 01:09:41.527Z → a1 01:10:03.394Z（单 assistant entry：thinking+text）
+//   turn_041d7c13178c4975  q2 01:10:21.800Z → a2 01:10:38.680Z（thinking+text，尾句 = 最后两个 delta）
+//   q2 的 run run_mtqjnc8r_38e86d14 terminal 于 01:10:44.494Z；journal 里 assistant.delta 的
+//   turnId 全部正确；最后两个 delta 恰为尾句（01:10:38.532 / 01:10:38.595）。
+//
+// 症状一（L）：a2 的尾句作为独立 assistant 卡（显示 a2 的 canonical 时间戳）画在 q1 之上
+//   （turn_8860 区域）；同时 a1 整轮消失（q1、q2 直接相邻）；q2 下方 a2 完整正常。
+// 症状二（M）：一轮 5 段 text + 4 个 tool 的回答，5 段文本合并成一张大卡骑到 query5 之上，
+//   4 个工具芯片消失。
+//
+// 复现判定（2026-09-07 运行，详细观察见各场景注释）：
+//   - L 主配方 GREEN（未复现"尾句 ghost 骑到 q1/a1 被吞"的位置翻转），但 composed 里留有
+//     同族缺陷残件：closed live 轮在 certified canonical 安装后不被清除 → a1 答案卡 ×2、
+//     q2 气泡 ×2、live a2 卡残件（见 dumpUserMessages 输出）。
+//   - L 变体 B（B1：interrupt deliveredAt 服务钟偏早）RED：canonical a1/a2 卡骑到 q1 之上。
+//   - L 变体 C（canonical 滞后 + 服务钟超前）RED：迟到尾 delta 被快照重水合永久删除，
+//     canonical 页又没有它 → 尾句在全局 0 次渲染（内容丢失形态）。
+//   - L 变体 D（cursor 部分覆盖）RED：合成 cumulative 全文卡与 canonical a2 并存 →
+//     尾句全局渲染 2 次（ghost 复制形态）。
+//   - M 主配方 RED：终态快照把带 providerRequestId 的已覆盖 text_delta 全部删除
+//     （filterEffectiveOutputSegmentEvents 的 stale 扫描），而合成补发因
+//     hydrateSessionEventsFromLiveSnapshot 的 activeRun 门被跳过 → live 轮只剩
+//     thinking + 4 个孤儿 tool 段；canonical 安装后芯片 4+4=8（失败门 b）。
+//   - M 变体（activeRun 在场驱动合成 / startedAtSeq 错位）：合成重建本身正确还原 5 段，
+//     但 fold 依旧不清 live 残件 → 门(b) 同样 RED（芯片 8）。
+// ============================================================================
+
+// ---- 真实时序时间戳（epoch ms）----
+const REAL_T = {
+  bgDone: Date.parse('2026-08-16T01:07:52.931Z'),
+  q1: Date.parse('2026-08-16T01:09:41.527Z'),
+  a1: Date.parse('2026-08-16T01:10:03.394Z'),
+  q2: Date.parse('2026-08-16T01:10:21.800Z'),
+  a2: Date.parse('2026-08-16T01:10:38.680Z'),
+  run2Terminal: Date.parse('2026-08-16T01:10:44.494Z'),
+};
+
+const TURN_BG = 'turn_8860b0bc18424193';
+const L_TURN_1 = 'turn_4cbd9ec8cf71403b';
+const L_TURN_2 = 'turn_041d7c13178c4975';
+const L_RUN_1 = 'run-x';
+const L_RUN_2 = 'run-y';
+const L_EPOCH_2 = 'epoch-run-y';
+const L_RUNTIME_ID = 'rt-live';
+
+const L_BG_Q = '先把昨天评审会的结论整理成一条待办，同步到项目看板里';
+const L_BG_A = '已整理完成：评审结论共 3 条已同步到看板，其中两条标记为高优先级，后续按优先级推进。';
+const L_Q1_TEXT = '接着把这套视频的三条叙事线各自再打磨一版，重点补上数据支撑';
+const L_A1_THINKING =
+  'The user wants three narrative lines polished with data support. Plan: line 1 retention data, line 2 conversion comparison, line 3 opening hook. Draft each version and annotate the evidence source…';
+const L_A1_TEXT =
+  '三条叙事线的打磨稿已经完成：第一条线补齐了留存数据，第二条线加入了转化对比，第三条线重构了开场钩子。每一版都附上了依据和风险提示，可以直接进入评审。';
+const L_Q2_TEXT = '很好，那第二条线先来，把转化对比那部分再展开讲讲';
+const L_A2_THINKING =
+  'Expand line 2 with conversion comparison: baseline retention, uplift after redesign, confidence interval and sample size. Close with an offer to enumerate the currently valid versions…';
+const L_A2_HEAD =
+  '第二条线的转化对比可以从三个维度展开：先看改版前的基线留存，再看改版后的转化提升幅度，最后给出置信区间和样本量说明，方便你判断结论是否站得住。';
+// 真实 journal 里 a2 的最后两个 delta 恰为这句尾句（01:10:38.532 / 01:10:38.595）。
+const L_A2_TAIL_1 = '要不要我先把这套视频的“现在到底哪几个版本是有效的”';
+const L_A2_TAIL_2 = '理一份清单给您，再决定哪条线继续打磨？';
+const L_A2_FULL = `${L_A2_HEAD}${L_A2_TAIL_1}${L_A2_TAIL_2}`;
+
+function buildLBackgroundItems(clockAheadMs = 0): SessionHistoryItem[] {
+  return [
+    {
+      kind: 'user',
+      content: L_BG_Q,
+      sentAt: REAL_T.bgDone - 120_000 + clockAheadMs,
+      entryId: 'entry_l_bg_u',
+      canonicalIndex: 60,
+      turnId: TURN_BG,
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: L_BG_A,
+      thinking: '整理评审会结论为待办…',
+      sentAt: REAL_T.bgDone + clockAheadMs,
+      entryId: 'entry_l_bg_a',
+      canonicalIndex: 61,
+      turnId: TURN_BG,
+    },
+  ];
+}
+
+function buildLQ1Items(clockAheadMs = 0): SessionHistoryItem[] {
+  return [
+    {
+      kind: 'user',
+      content: L_Q1_TEXT,
+      sentAt: REAL_T.q1 + clockAheadMs,
+      entryId: 'entry_l_q1_u',
+      canonicalIndex: 62,
+      turnId: L_TURN_1,
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: L_A1_TEXT,
+      thinking: L_A1_THINKING,
+      sentAt: REAL_T.a1 + clockAheadMs,
+      entryId: 'entry_l_q1_a',
+      canonicalIndex: 63,
+      turnId: L_TURN_1,
+    },
+  ];
+}
+
+function buildLQ2Items(clockAheadMs = 0, a2SentAt = REAL_T.a2): SessionHistoryItem[] {
+  return [
+    {
+      kind: 'user',
+      content: L_Q2_TEXT,
+      sentAt: REAL_T.q2 + clockAheadMs,
+      entryId: 'entry_l_q2_u',
+      canonicalIndex: 64,
+      turnId: L_TURN_2,
+      turnUserOrdinal: 0,
+    },
+    {
+      kind: 'assistant',
+      text: L_A2_FULL,
+      thinking: L_A2_THINKING,
+      sentAt: a2SentAt + clockAheadMs,
+      entryId: 'entry_l_q2_a',
+      canonicalIndex: 65,
+      turnId: L_TURN_2,
+    },
+  ];
+}
+
+/** L 变体开关：默认主配方；C 变体改 canonical 行数与时间基准。 */
+interface LVariantOptions {
+  /** 变体 C：canonical 滞后 —— rev-2 页不含 q2/a2 行（live q2 无 canonical 对手）。 */
+  readonly rev2OmitQ2?: boolean;
+  /** 变体 C：服务钟超前 —— canonical sentAt 全部改为 Date.now()+ahead-偏移（本地钟落后）。 */
+  readonly canonicalClockAheadMs?: number;
+}
+
+/** 只改写带 sentAt 的 history item（tool_call 等无 sentAt 的行原样返回）。 */
+function stampLHistorySentAt(item: SessionHistoryItem, sentAt: number): SessionHistoryItem {
+  return 'sentAt' in item && item.sentAt !== undefined ? { ...item, sentAt } : item;
+}
+
+function installWindowL(options: LVariantOptions = {}): void {
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(() => {
+          const revision = windowRevisionForCall();
+          const ahead = options.canonicalClockAheadMs ?? 0;
+          // ahead=0 → 保留 builders 里的真实 canonical 时间；ahead>0 → 服务钟超前形态。
+          const clock = (item: SessionHistoryItem, secondsAgo: number): SessionHistoryItem =>
+            ahead === 0
+              ? item
+              : stampLHistorySentAt(item, Date.now() + ahead - secondsAgo * 1_000);
+          const bg = buildLBackgroundItems().map((item) => clock(item, 180));
+          const q1 = buildLQ1Items().map((item) => clock(item, 60));
+          const q2 = buildLQ2Items().map((item) =>
+            clock(item, 0),
+          );
+          const items =
+            revision === 'rev-0'
+              ? bg
+              : revision === 'rev-1'
+                ? [...bg, ...q1]
+                : options.rev2OmitQ2 === true
+                  ? [...bg, ...q1]
+                  : [...bg, ...q1, ...q2];
+          return pageResponse(items, revision);
+        }),
+      },
+    },
+  });
+}
+
+/** replaceSessionLiveProjectionState 要求 fresh live authority + profile runtimeId 一致。 */
+function seedRuntimeAuthority(runtimeId: string): void {
+  const connection = {
+    state: 'ready' as const,
+    changedAt: Date.now(),
+    stale: false,
+    runtimeId,
+    capabilities: [],
+  };
+  useAppStore.setState({
+    runtimeConnection: connection,
+    runtimeProfile: {
+      connection,
+      projectionRevision: 1,
+      cursor: { runtimeId, seq: 0 },
+      sessions: [],
+      interactions: [],
+      notifications: [],
+    },
+  });
+}
+
+/** 指定文本出现在多少张 assistant 卡里（userBullets 只截 24 字符，这里扫全文）。 */
+function assistantCardsContaining(snippet: string): number {
+  const state = useAppStore.getState();
+  return composeMessages({
+    events: state.eventsBySession[SID] ?? [],
+    userMessages: state.userMessagesBySession[SID] ?? [],
+  }).filter((message) => message.kind === 'assistant_text' && message.text.includes(snippet))
+    .length;
+}
+
+/**
+ * L 的失败门（对应真实症状一）：
+ *  (a) q1 之前（背景轮回答之后）不得出现任何 assistant 卡 —— 尾句 ghost 骑到 q1 之上；
+ *  (b) a1 的卡必须存在于 q1 与 q2 之间 —— a1 整轮消失（q1、q2 相邻）；
+ *  (c) 尾句文本全局只出现在 1 张 assistant 卡里 —— ghost + 正牌 a2 = 2、或 0（内容丢失）即失败。
+ * mode='observe' 只记录不抛错（用于穷尽变体时的观察运行），默认硬断言。
+ */
+function assertLFailureGates(
+  label: string,
+  mode: 'assert' | 'observe' = 'assert',
+): void {
+  const failures: string[] = [];
+  const check = (ok: boolean, message: string): void => {
+    if (ok) return;
+    if (mode === 'observe') failures.push(message);
+    else assert.fail(message);
+  };
+  const transcript = userBullets();
+  console.log(`\n[L/${label}] composed transcript:`);
+  for (const line of transcript) console.log(`  ${line}`);
+  const q1Index = transcript.indexOf(`user:${L_Q1_TEXT.slice(0, 24)}`);
+  const q2Index = transcript.indexOf(`user:${L_Q2_TEXT.slice(0, 24)}`);
+  const a0Index = transcript.indexOf(`assistant:${L_BG_A.slice(0, 24)}`);
+  const a1Index = transcript.indexOf(`assistant:${L_A1_TEXT.slice(0, 24)}`);
+  const a2HeadIndex = transcript.indexOf(`assistant:${L_A2_HEAD.slice(0, 24)}`);
+  const tailPrefix = L_A2_TAIL_1.slice(0, 24);
+  const tailBullets = transcript.filter(
+    (line) => line.startsWith('assistant:') && line.includes(tailPrefix),
+  );
+  console.log(
+    `[L/${label}] indexes: q1=${q1Index} q2=${q2Index} a0=${a0Index} a1=${a1Index} ` +
+      `a2Head=${a2HeadIndex} tailBullets=${JSON.stringify(tailBullets)} ` +
+      `tailCardCount=${assistantCardsContaining(L_A2_TAIL_1)}`,
+  );
+  check(q1Index >= 0, `[L/${label}] q1 可见:\n${transcript.join('\n')}`);
+  check(q2Index > q1Index, `[L/${label}] q2 在 q1 之后:\n${transcript.join('\n')}`);
+  const afterA0 = a0Index >= 0 ? transcript.slice(a0Index + 1, q1Index) : [];
+  const strayAssistants = afterA0.filter((line) => line.startsWith('assistant:'));
+  check(
+    strayAssistants.length === 0,
+    `[L/${label}] 失败门(a)：q1 之前出现异常 assistant 卡（尾句 ghost 骑到 q1 之上）:\n${transcript.join('\n')}`,
+  );
+  check(
+    a1Index > q1Index && a1Index < q2Index,
+    `[L/${label}] 失败门(b)：a1 卡不在 q1 与 q2 之间（a1 整轮消失）(a1=${a1Index}, q1=${q1Index}, q2=${q2Index}):\n${transcript.join('\n')}`,
+  );
+  const tailCardCount = assistantCardsContaining(L_A2_TAIL_1);
+  check(
+    tailCardCount === 1,
+    `[L/${label}] 失败门(c)：尾句文本出现在 ${tailCardCount} 张 assistant 卡中（应为 1，ghost+正牌=2 或丢失=0）:\n${transcript.join('\n')}`,
+  );
+  check(
+    a2HeadIndex > q2Index,
+    `[L/${label}] a2 主体在 q2 之下 (a2Head=${a2HeadIndex}, q2=${q2Index}):\n${transcript.join('\n')}`,
+  );
+  if (failures.length > 0) {
+    console.log(`[L/${label}] OBSERVED gate failures (${failures.length}):`);
+    for (const failure of failures) console.log(`  - ${failure.split('\n')[0]}`);
+  }
+}
+
+/**
+ * L 专用的精确文本流式：不用 streamLiveTurn（它会在回答前拼固定前缀，导致 live 文本
+ * ≠ canonical 持久化文本，certified 合并走 fail-open，属于 harness 失真）。生产里
+ * canonical 就是流式 delta 原样落盘，这里保证逐字一致。
+ */
+function streamLTurn(input: {
+  readonly content: string;
+  readonly sentAt: number;
+  readonly runId: string;
+  readonly epoch: string;
+  readonly turnId: string;
+  readonly thinking: string;
+  readonly answerText: string;
+}): void {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, input.content, input.sentAt);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, input.runId);
+  let seq = 0;
+  const origin = () => ({
+    runtimeId: L_RUNTIME_ID,
+    runId: input.runId,
+    journalEpoch: input.epoch,
+    seq: (seq += 1),
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: input.turnId,
+    runtimeEvent: origin(),
+  });
+  store.appendEvent({
+    kind: 'queued_user_prompt_started',
+    sessionId: SID,
+    queueMode: 'after-turn',
+    content: input.content,
+    turnId: input.turnId,
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: input.thinking,
+    turnId: input.turnId,
+    runtimeEvent: origin(),
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: input.answerText,
+    turnId: input.turnId,
+    runtimeEvent: origin(),
+  });
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: input.turnId,
+    runtimeEvent: origin(),
+  });
+}
+
+/** L 的公共编排：rev-0 恢复 → live q1 + certified rev-1 → live q2 + 迟到尾 delta → 待快照。 */
+async function runLCoreFlow(options: LVariantOptions = {}): Promise<void> {
+  await seedSession();
+  revisionByCall = ['rev-0', 'rev-1', 'rev-2'];
+  callIndex = 0;
+  installWindowL(options);
+  // 步骤 2：装 rev-0（只有 turn_8860 背景轮，canonical 停在 q1 之前）
+  await restoreNewestSessionHistory(SID, 'code');
+
+  // 步骤 3：live q1（run-x）→ terminal certified 读 rev-1
+  streamLTurn({
+    content: L_Q1_TEXT,
+    sentAt: options.canonicalClockAheadMs === undefined ? REAL_T.q1 + 800 : Date.now() - 65_000,
+    runId: L_RUN_1,
+    epoch: 'epoch-run-x',
+    turnId: L_TURN_1,
+    thinking: L_A1_THINKING,
+    answerText: L_A1_TEXT,
+  });
+  await reconcileTerminalSessionHistory({
+    sessionId: SID,
+    runtimeId: L_RUNTIME_ID,
+    runId: L_RUN_1,
+    phase: 'completed',
+    cursorSeq: 99,
+    transcriptRevision: 'transcript-run-x',
+    turnId: L_TURN_1,
+  });
+  dumpUserMessages('L core after q1 certified rev-1');
+  console.log(
+    'L core events after q1 certified rev-1:',
+    JSON.stringify(
+      (useAppStore.getState().eventsBySession[SID] ?? []).map((event) =>
+        event.kind === 'text_delta'
+          ? `text:${event.text.slice(0, 12)}(seq${event.runtimeEvent?.seq})`
+          : event.kind,
+      ),
+    ),
+  );
+
+  // 步骤 4：live q2（run-y）→ session_complete 之后追加两个迟到尾 delta。
+  // appendSessionEvent 不跨 terminal 合并 → 独立松散段（生产 journal 里 turnId 正确）。
+  streamLTurn({
+    content: L_Q2_TEXT,
+    sentAt: options.canonicalClockAheadMs === undefined ? REAL_T.q2 + 1_200 : Date.now() - 5_000,
+    runId: L_RUN_2,
+    epoch: L_EPOCH_2,
+    turnId: L_TURN_2,
+    thinking: L_A2_THINKING,
+    answerText: L_A2_HEAD,
+  });
+  const store = useAppStore.getState();
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: L_A2_TAIL_1,
+    turnId: L_TURN_2,
+    providerRequestId: 'req-l-run-y',
+    runtimeEvent: { runtimeId: L_RUNTIME_ID, runId: L_RUN_2, journalEpoch: L_EPOCH_2, seq: 5 },
+  });
+  store.appendEvent({
+    kind: 'text_delta',
+    sessionId: SID,
+    text: L_A2_TAIL_2,
+    turnId: L_TURN_2,
+    providerRequestId: 'req-l-run-y',
+    runtimeEvent: { runtimeId: L_RUNTIME_ID, runId: L_RUN_2, journalEpoch: L_EPOCH_2, seq: 6 },
+  });
+}
+
+/** 步骤 5：注入权威 live 快照（allowEqualHydration，重水合入口）。 */
+function pushLSnapshot(projection: SpaceSessionLiveProjectionT): boolean {
+  seedRuntimeAuthority(L_RUNTIME_ID);
+  return useAppStore.getState().replaceSessionLiveProjection(projection, {
+    allowEqualHydration: true,
+  });
+}
+
+function lBaseProjection(cursorSeq = 7): SpaceSessionLiveProjectionT {
+  return {
+    sessionId: SID,
+    projectionRevision: 1,
+    cursor: { runtimeId: L_RUNTIME_ID, seq: cursorSeq, sessionId: SID, journalEpoch: L_EPOCH_2 },
+    transcriptRevision: 'transcript-run-y',
+    queuedRuns: [],
+    queuedInputs: [],
+    interactions: [],
+    activeTools: [],
+    todos: [],
+  };
+}
+
+test('L. 真实时序：terminal 后迟到尾 delta + 快照重水合 → a2 尾句 ghost 骑到 q1 之上且 a1 被吞（失败门）', { skip: 'FEATURE_275 失败门：20260816 session 实测 RED（主配方暴露 closed live 残件重复渲染；变体 B 复现 canonical a1/a2 骑到 q1 之上，变体 C/D 复现尾句丢失/ghost 复制）。P1 排序单一化 + P2 结算即退役落地后移除 skip 转绿。' }, async () => {
+  // ---------- 主配方 ----------
+  // 步骤 5（主配方）：activeRun=undefined、lastTerminalRun=run-y；cursor 覆盖到尾 delta；
+  // assistantDraft/合成段 startedAt = a2 canonical 完成时间（复现 ghost 显示 canonical 时间戳）。
+  await runLCoreFlow();
+  pushLSnapshot({
+    ...lBaseProjection(),
+    lastTerminalRun: {
+      runId: L_RUN_2,
+      sessionId: SID,
+      turnId: L_TURN_2,
+      phase: 'completed',
+      startedAt: Date.parse('2026-08-16T01:10:20.000Z'),
+      completedAt: REAL_T.run2Terminal,
+    },
+    assistantDraft: { text: L_A2_FULL, startedAt: Date.parse('2026-08-16T01:10:38.680Z') },
+    outputSegment: {
+      retained: [
+        {
+          responseId: 'resp-l-run-y',
+          providerRequestId: 'req-l-run-y',
+          mode: 'replace',
+          startedAtSeq: 3,
+          assistantText: L_A2_FULL,
+          thinkingText: '',
+          assistantTextStartOffset: 0,
+          thinkingTextStartOffset: 0,
+        },
+      ],
+    },
+  });
+  dumpUserMessages('L main after snapshot hydration');
+  console.log(
+    'L main events after snapshot:',
+    JSON.stringify(
+      (useAppStore.getState().eventsBySession[SID] ?? []).map((event) =>
+        event.kind === 'text_delta'
+          ? `text:${event.text.slice(0, 12)}(seq${event.runtimeEvent?.seq})`
+          : event.kind,
+      ),
+    ),
+  );
+
+  // 步骤 6：terminal certified 读 rev-2（canonical 含 q2/a2 完整行）
+  await reconcileTerminalSessionHistory({
+    sessionId: SID,
+    runtimeId: L_RUNTIME_ID,
+    runId: L_RUN_2,
+    phase: 'completed',
+    cursorSeq: 7,
+    transcriptRevision: 'transcript-run-y',
+    turnId: L_TURN_2,
+    startedAt: Date.parse('2026-08-16T01:10:20.000Z'),
+    completedAt: REAL_T.run2Terminal,
+  });
+  dumpUserMessages('L main after certified rev-2');
+  assertLFailureGates('main');
+  deactivateSessionHistoryPaging(SID);
+  resetSessionHistoryPagingLifecycle();
+
+  // ---------- 变体 B：快照 queuedInputs 携带已投递 interrupt，踩 B1 ----------
+  // B1 事实：reconcileRuntimeDeliveredInputs 的 boundary 按 deliverySeq 定位在流中部，
+  // 但 owner 行 append 到 users 末尾且 sentAt 改写为服务器 deliveredAt（早于 q1 canonical）。
+  {
+    await runLCoreFlow();
+    pushLSnapshot({
+      ...lBaseProjection(),
+      activeRun: {
+        runId: L_RUN_2,
+        sessionId: SID,
+        turnId: L_TURN_2,
+        phase: 'running',
+        startedAt: Date.parse('2026-08-16T01:10:20.000Z'),
+      },
+      lastTerminalRun: {
+        runId: L_RUN_2,
+        sessionId: SID,
+        turnId: L_TURN_2,
+        phase: 'completed',
+        startedAt: Date.parse('2026-08-16T01:10:20.000Z'),
+        completedAt: REAL_T.run2Terminal,
+      },
+      queuedInputs: [
+        {
+          inputId: 'input-l-interrupt',
+          sessionId: SID,
+          delivery: 'interrupt',
+          state: 'delivered',
+          createdAt: REAL_T.q1 - 3_600_000,
+          deliveredAt: REAL_T.q1 - 60_000, // 早于 q1 canonical sentAt 的服务器时间
+          runId: L_RUN_2,
+          deliverySeq: 3, // 落在 T1 段中部的 seq 数值
+          entryId: 'entry_l_interrupt',
+          contentPreview: '插播：先只看第二条线',
+          turnId: L_TURN_2,
+        },
+      ],
+    });
+    dumpUserMessages('L variant B after snapshot with delivered interrupt');
+    await reconcileTerminalSessionHistory({
+      sessionId: SID,
+      runtimeId: L_RUNTIME_ID,
+      runId: L_RUN_2,
+      phase: 'completed',
+      cursorSeq: 7,
+      transcriptRevision: 'transcript-run-y',
+      turnId: L_TURN_2,
+    });
+    dumpUserMessages('L variant B after certified rev-2');
+    assertLFailureGates('variantB');
+    deactivateSessionHistoryPaging(SID);
+    resetSessionHistoryPagingLifecycle();
+  }
+
+  // ---------- 变体 C：服务钟超前 + canonical 滞后，踩 stabilize 误搬移 ----------
+  // L3621-3626 的 turn.sentAt < canonical.sentAt 时间比较：canonical（服务钟）超前本地墙钟、
+  // rev-2 又不含 q2 行时，已闭合的 live q2 轮被判为"错位"整体搬到 turn_8860 之前。
+  {
+    await runLCoreFlow({ canonicalClockAheadMs: 600_000, rev2OmitQ2: true });
+    pushLSnapshot({
+      ...lBaseProjection(),
+      lastTerminalRun: {
+        runId: L_RUN_2,
+        sessionId: SID,
+        turnId: L_TURN_2,
+        phase: 'completed',
+        startedAt: Date.now() - 30_000,
+        completedAt: Date.now() - 20_000,
+      },
+    });
+    dumpUserMessages('L variant C after snapshot (server clock ahead)');
+    // canonical 滞后：读不到 q2 行 → 证据不带 turnId（fail-open 结清）
+    await reconcileTerminalSessionHistory({
+      sessionId: SID,
+      runtimeId: L_RUNTIME_ID,
+      runId: L_RUN_2,
+      phase: 'completed',
+      cursorSeq: 7,
+      transcriptRevision: 'transcript-run-y',
+    });
+    dumpUserMessages('L variant C after certified rev-2 (no q2 rows)');
+    assertLFailureGates('variantC');
+    deactivateSessionHistoryPaging(SID);
+    resetSessionHistoryPagingLifecycle();
+  }
+
+  // ---------- 变体 D：cursor 只覆盖一半尾 delta → 合成/原文并存 ----------
+  {
+    await runLCoreFlow();
+    pushLSnapshot({
+      ...lBaseProjection(6),
+      cursor: { runtimeId: L_RUNTIME_ID, seq: 6, sessionId: SID, journalEpoch: L_EPOCH_2 },
+      activeRun: {
+        runId: L_RUN_2,
+        sessionId: SID,
+        turnId: L_TURN_2,
+        phase: 'running',
+        startedAt: Date.parse('2026-08-16T01:10:20.000Z'),
+      },
+      assistantDraft: { text: L_A2_FULL, startedAt: Date.parse('2026-08-16T01:10:38.680Z') },
+      outputSegment: {
+        retained: [
+          {
+            responseId: 'resp-l-run-y',
+            providerRequestId: 'req-l-run-y',
+            mode: 'replace',
+            startedAtSeq: 3,
+            assistantText: L_A2_FULL,
+            thinkingText: '',
+            assistantTextStartOffset: 0,
+            thinkingTextStartOffset: 0,
+          },
+        ],
+      },
+    });
+    dumpUserMessages('L variant D after partial-coverage snapshot');
+    console.log(
+      'L variant D events after snapshot:',
+      JSON.stringify(
+        (useAppStore.getState().eventsBySession[SID] ?? []).map((event) =>
+          event.kind === 'text_delta'
+            ? `text:${event.text.slice(0, 12)}(seq${event.runtimeEvent?.seq})`
+            : event.kind,
+        ),
+      ),
+    );
+    await reconcileTerminalSessionHistory({
+      sessionId: SID,
+      runtimeId: L_RUNTIME_ID,
+      runId: L_RUN_2,
+      phase: 'completed',
+      cursorSeq: 6,
+      transcriptRevision: 'transcript-run-y',
+      turnId: L_TURN_2,
+    });
+    dumpUserMessages('L variant D after certified rev-2');
+    assertLFailureGates('variantD');
+    deactivateSessionHistoryPaging(SID);
+    resetSessionHistoryPagingLifecycle();
+  }
+});
+
+// ============================================================================
+// M：多段 tool 轮快照重水合（真实症状二）
+// ============================================================================
+
+const M_TURN_5 = 'turn_m50000005';
+const M_RUN_5 = 'run-5';
+const M_EPOCH_5 = 'epoch-run-5';
+
+const M_Q1_TEXT = '先把发布会的整体节奏排一下';
+const M_A1_TEXT = '整体节奏已经排好：开场 5 分钟，主体三段各 15 分钟，收尾 10 分钟，含一次中场互动。';
+const M_Q2_TEXT = '主体第一段展开讲讲';
+const M_A2_TEXT = '主体第一段围绕产品起源展开：从最初的原型讲起，中间插入创始人决策的关键节点，结尾落到今天的版本。';
+const M_Q3_TEXT = '第二段呢';
+const M_A3_TEXT = '第二段聚焦技术架构：先讲清楚分层设计，再用一组对比数据说明性能取舍，最后演示压测结果。';
+const M_Q4_TEXT = '第三段收个尾';
+const M_A4_TEXT = '第三段收尾用客户案例：挑两个代表性客户，讲落地前后的量化差异，再带出下个版本的路线图。';
+
+const M_Q5_TEXT = '把发布会脚本按五段结构完整写出来，每段之间插一次素材检查';
+const M_SEGMENTS = [
+  '【第一段·开场】用 30 秒短视频把观众拉回产品诞生的那个夜晚，抛出今天要回答的三个问题。',
+  '【第二段·起源】从第一版原型的三次推翻讲起，用时间线呈现关键决策点与背后的取舍逻辑。',
+  '【第三段·架构】分层拆解当前的架构设计，用压测对比数据说明每一次性能取舍的代价与收益。',
+  '【第四段·案例】两个代表性客户的落地故事：落地前的痛点量化，落地后的效率提升数据。',
+  '【第五段·路线图】把下个版本的三个关键能力放进同一条时间线，回扣开场提出的三个问题。',
+];
+const M_TOOLS = ['bash', 'edit', 'write', 'todo_update'] as const;
+
+function buildMEarlierTurnItems(): SessionHistoryItem[] {
+  const items: SessionHistoryItem[] = [];
+  const turns: readonly {
+    readonly turnId: string;
+    readonly rows: readonly { readonly kind: 'user' | 'assistant'; readonly text: string }[];
+  }[] = [
+    {
+      turnId: 'turn_m50000001',
+      rows: [
+        { kind: 'user', text: M_Q1_TEXT },
+        { kind: 'assistant', text: M_A1_TEXT },
+      ],
+    },
+    {
+      turnId: 'turn_m50000002',
+      rows: [
+        { kind: 'user', text: M_Q2_TEXT },
+        { kind: 'assistant', text: M_A2_TEXT },
+      ],
+    },
+    {
+      turnId: 'turn_m50000003',
+      rows: [
+        { kind: 'user', text: M_Q3_TEXT },
+        { kind: 'assistant', text: M_A3_TEXT },
+      ],
+    },
+    {
+      turnId: 'turn_m50000004',
+      rows: [
+        { kind: 'user', text: M_Q4_TEXT },
+        { kind: 'assistant', text: M_A4_TEXT },
+      ],
+    },
+  ];
+  let index = 0;
+  for (const turn of turns) {
+    for (const row of turn.rows) {
+      items.push(
+        row.kind === 'user'
+          ? {
+              kind: 'user',
+              content: row.text,
+              sentAt: REAL_T.bgDone + index * 60_000,
+              entryId: `entry_m${index}`,
+              canonicalIndex: index,
+              turnId: turn.turnId,
+              turnUserOrdinal: 0,
+            }
+          : {
+              kind: 'assistant',
+              text: row.text,
+              sentAt: REAL_T.bgDone + index * 60_000 + 30_000,
+              entryId: `entry_m${index}`,
+              canonicalIndex: index,
+              turnId: turn.turnId,
+            },
+      );
+      index += 1;
+    }
+  }
+  return items;
+}
+
+/** canonical 里 query5 轮：5 条 assistant item + 4 条 tool_call item，交错排列。 */
+function buildMTurn5Items(): SessionHistoryItem[] {
+  const items: SessionHistoryItem[] = [
+    {
+      kind: 'user',
+      content: M_Q5_TEXT,
+      sentAt: REAL_T.bgDone + 8 * 60_000,
+      entryId: 'entry_m_q5',
+      canonicalIndex: 8,
+      turnId: M_TURN_5,
+      turnUserOrdinal: 0,
+    },
+  ];
+  let index = 9;
+  for (let segment = 0; segment < M_SEGMENTS.length; segment++) {
+    items.push({
+      kind: 'assistant',
+      text: M_SEGMENTS[segment]!,
+      thinking: `Compose segment ${segment + 1} of the launch script…`,
+      sentAt: REAL_T.bgDone + index * 30_000,
+      entryId: `entry_m_seg${segment + 1}`,
+      canonicalIndex: index,
+      turnId: M_TURN_5,
+    });
+    index += 1;
+    if (segment < M_TOOLS.length) {
+      items.push({
+        kind: 'tool_call',
+        toolId: `call_m_tool_${segment + 1}`,
+        toolName: M_TOOLS[segment]!,
+        input: { target: `segment-${segment + 1}` },
+        result: 'ok',
+        entryId: `entry_m_tool${segment + 1}`,
+        canonicalIndex: index,
+        turnId: M_TURN_5,
+      });
+      index += 1;
+    }
+  }
+  return items;
+}
+
+function installWindowM(): void {
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      kodaxSpace: {
+        invoke: mockHistoryInvoke(() => {
+          const revision = windowRevisionForCall();
+          const items =
+            revision === 'rev-0'
+              ? buildMEarlierTurnItems()
+              : [...buildMEarlierTurnItems(), ...buildMTurn5Items()];
+          return pageResponse(items, revision);
+        }),
+      },
+    },
+  });
+}
+
+/** M 的事件序：session_start → thinking → 4×[text(段i,独立 providerRequestId)+tool_start+tool_result] → text(段5) → complete。 */
+function streamMultiSegmentToolTurn(): void {
+  const store = useAppStore.getState();
+  const messageId = store.appendUserMessage(SID, M_Q5_TEXT, REAL_T.bgDone + 7 * 60_000);
+  assert.ok(messageId);
+  store.bindUserMessageRuntimeRun(SID, messageId, M_RUN_5);
+  let seq = 0;
+  const origin = () => ({
+    runtimeId: L_RUNTIME_ID,
+    runId: M_RUN_5,
+    journalEpoch: M_EPOCH_5,
+    seq: (seq += 1),
+  });
+  store.appendEvent({
+    kind: 'session_start',
+    sessionId: SID,
+    provider: 'mock',
+    turnId: M_TURN_5,
+    runtimeEvent: origin(),
+  });
+  store.appendEvent({
+    kind: 'queued_user_prompt_started',
+    sessionId: SID,
+    queueMode: 'after-turn',
+    content: M_Q5_TEXT,
+    turnId: M_TURN_5,
+  });
+  store.appendEvent({
+    kind: 'thinking_delta',
+    sessionId: SID,
+    text: 'Five-segment structure: opening, origin, architecture, cases, roadmap…',
+    turnId: M_TURN_5,
+    runtimeEvent: origin(),
+  });
+  for (let segment = 0; segment < M_SEGMENTS.length; segment++) {
+    store.appendEvent({
+      kind: 'text_delta',
+      sessionId: SID,
+      text: M_SEGMENTS[segment]!,
+      turnId: M_TURN_5,
+      providerRequestId: `req-m-seg${segment + 1}`,
+      runtimeEvent: origin(),
+    });
+    if (segment < M_TOOLS.length) {
+      store.appendEvent({
+        kind: 'tool_start',
+        sessionId: SID,
+        toolId: `call_m_tool_${segment + 1}`,
+        toolName: M_TOOLS[segment]!,
+        input: { target: `segment-${segment + 1}` },
+        turnId: M_TURN_5,
+        runtimeEvent: origin(),
+      });
+      store.appendEvent({
+        kind: 'tool_result',
+        sessionId: SID,
+        toolId: `call_m_tool_${segment + 1}`,
+        toolName: M_TOOLS[segment]!,
+        content: 'ok',
+        turnId: M_TURN_5,
+        runtimeEvent: origin(),
+      });
+    }
+  }
+  store.appendEvent({
+    kind: 'session_complete',
+    sessionId: SID,
+    turnId: M_TURN_5,
+    runtimeEvent: origin(),
+  });
+}
+
+/**
+ * M 的失败门（对应真实症状二）：
+ *  (a) query5 之前不得出现任何携带正文段的 assistant 卡；
+ *  (b) tool 卡计数 == 4（芯片不得消失/重复）；
+ *  (c) query5 之下的 assistant 段卡计数 == 5（不得合并成 1 张大卡）。
+ * mode='observe' 只记录不抛错（用于穷尽变体时的观察运行），默认硬断言。
+ */
+function assertMFailureGates(
+  label: string,
+  mode: 'assert' | 'observe' = 'assert',
+): void {
+  const failures: string[] = [];
+  const check = (ok: boolean, message: string): void => {
+    if (ok) return;
+    if (mode === 'observe') failures.push(message);
+    else assert.fail(message);
+  };
+  const transcript = userBullets();
+  console.log(`\n[M/${label}] composed transcript:`);
+  for (const line of transcript) console.log(`  ${line}`);
+  const q5Index = transcript.indexOf(`user:${M_Q5_TEXT.slice(0, 24)}`);
+  check(q5Index >= 0, `[M/${label}] query5 可见:\n${transcript.join('\n')}`);
+  if (q5Index === -1) {
+    if (failures.length > 0) {
+      console.log(`[M/${label}] OBSERVED gate failures (${failures.length})`);
+    }
+    return;
+  }
+  const seg1Prefix = M_SEGMENTS[0]!.slice(0, 24);
+  const ghostsBeforeQ5 = transcript
+    .slice(0, q5Index)
+    .filter((line) => line.startsWith('assistant:') && line.includes(seg1Prefix));
+  check(
+    ghostsBeforeQ5.length === 0,
+    `[M/${label}] 失败门(a)：query5 之前出现携带正文段的 assistant 卡（合并大卡骑到 query5 之上）:\n${transcript.join('\n')}`,
+  );
+  const toolCount = transcript.filter((line) => line.startsWith('tool:')).length;
+  check(
+    toolCount === M_TOOLS.length,
+    `[M/${label}] 失败门(b)：tool 芯片数量为 ${toolCount}（应为 ${M_TOOLS.length}）:\n${transcript.join('\n')}`,
+  );
+  const segmentCards = M_SEGMENTS.map((segment) =>
+    transcript.indexOf(`assistant:${segment.slice(0, 24)}`),
+  );
+  const cardsAfterQ5 = segmentCards.filter((index) => index > q5Index).length;
+  check(
+    cardsAfterQ5 === M_SEGMENTS.length,
+    `[M/${label}] 失败门(c)：query5 之下的 assistant 段卡为 ${cardsAfterQ5}/${M_SEGMENTS.length}（合并成大卡即 <5）:\n${transcript.join('\n')}`,
+  );
+  console.log(
+    `[M/${label}] gates: q5=${q5Index} toolCount=${toolCount} segmentCardIndexes=${JSON.stringify(segmentCards)}`,
+  );
+  if (failures.length > 0) {
+    console.log(`[M/${label}] OBSERVED gate failures (${failures.length}):`);
+    for (const failure of failures) console.log(`  - ${failure.split('\n')[0]}`);
+  }
+}
+
+test('M. 多段 tool 轮快照重水合 → 整轮文本合并大卡骑到 query5 之上且芯片消失（失败门）', { skip: 'FEATURE_275 失败门：20260816 session 实测 RED（快照覆盖删除无条件清 delta、合成补发被 activeRun 门跳过、fold 不清孤儿 live 段 → 芯片 8≠4 且正文丢失）。P2 结算即退役落地后移除 skip 转绿。' }, async () => {
+  // 步骤 1-2：起步页含 query1..answer4（全部 canonical），恢复 rev-0
+  await seedSession();
+  revisionByCall = ['rev-0', 'rev-1'];
+  callIndex = 0;
+  installWindowM();
+  await restoreNewestSessionHistory(SID, 'code');
+  dumpUserMessages('M after restore rev-0');
+
+  // 步骤 3：手工事件序流 query5 轮（5 段 text + 4 个 tool）
+  streamMultiSegmentToolTurn();
+  dumpUserMessages('M after streaming query5 turn');
+
+  // 步骤 4：快照重水合 —— lastTerminalRun=run-5；retained=5 段；cursor 覆盖全部（纯文本合成重建）
+  seedRuntimeAuthority(L_RUNTIME_ID);
+  const lastSeq = 3 + M_SEGMENTS.length * 3;
+  const projection: SpaceSessionLiveProjectionT = {
+    sessionId: SID,
+    projectionRevision: 1,
+    cursor: { runtimeId: L_RUNTIME_ID, seq: lastSeq, sessionId: SID, journalEpoch: M_EPOCH_5 },
+    transcriptRevision: 'transcript-run-5',
+    lastTerminalRun: {
+      runId: M_RUN_5,
+      sessionId: SID,
+      turnId: M_TURN_5,
+      phase: 'completed',
+      startedAt: REAL_T.bgDone + 7 * 60_000,
+      completedAt: REAL_T.bgDone + 9 * 60_000,
+    },
+    queuedRuns: [],
+    queuedInputs: [],
+    interactions: [],
+    activeTools: [],
+    todos: [],
+    outputSegment: {
+      retained: M_SEGMENTS.map((text, segment) => ({
+        responseId: 'resp-m-run-5',
+        providerRequestId: `req-m-seg${segment + 1}`,
+        mode: 'replace' as const,
+        startedAtSeq: 4 + segment * 3,
+        assistantText: text,
+        thinkingText: '',
+        assistantTextStartOffset: 0,
+        thinkingTextStartOffset: 0,
+      })),
+    },
+  };
+  const accepted = useAppStore.getState().replaceSessionLiveProjection(projection, {
+    allowEqualHydration: true,
+  });
+  console.log(`M snapshot accepted=${accepted}`);
+  dumpUserMessages('M after snapshot hydration');
+  console.log(
+    'M events after snapshot:',
+    JSON.stringify(
+      (useAppStore.getState().eventsBySession[SID] ?? []).map((event) =>
+        event.kind === 'text_delta'
+          ? `text[${event.providerRequestId ?? '-'}]:${event.text.slice(0, 12)}(seq${event.runtimeEvent?.seq})`
+          : event.kind === 'tool_start'
+            ? `tool_start:${event.toolId}`
+            : event.kind,
+      ),
+    ),
+  );
+
+  // 步骤 5：terminal 认证读（rev-1 页含 query5 + 5 条 assistant item + 4 条 tool_call item）
+  await reconcileTerminalSessionHistory({
+    sessionId: SID,
+    runtimeId: L_RUNTIME_ID,
+    runId: M_RUN_5,
+    phase: 'completed',
+    cursorSeq: lastSeq,
+    transcriptRevision: 'transcript-run-5',
+    turnId: M_TURN_5,
+  });
+  dumpUserMessages('M after certified rev-1');
+  assertMFailureGates('main');
+  deactivateSessionHistoryPaging(SID);
+  resetSessionHistoryPagingLifecycle();
+
+  // ---------- M 变体 1：activeRun 在场 → 驱动 hydrateOutputSegments 纯文本合成重建 ----------
+  // 主配方里 activeRun=undefined 时 L860 的门跳过合成、只做覆盖删除（文本丢失、孤儿芯片）。
+  // 此变体补上 activeRun，观察合成路径能否把 5 段重建回 query5 之下、芯片是否保留。
+  {
+    await seedSession();
+    revisionByCall = ['rev-0', 'rev-1'];
+    callIndex = 0;
+    installWindowM();
+    await restoreNewestSessionHistory(SID, 'code');
+    streamMultiSegmentToolTurn();
+    seedRuntimeAuthority(L_RUNTIME_ID);
+    const synthesis: SpaceSessionLiveProjectionT = {
+      ...projection,
+      sessionId: SID,
+      activeRun: {
+        runId: M_RUN_5,
+        sessionId: SID,
+        turnId: M_TURN_5,
+        phase: 'running',
+        startedAt: REAL_T.bgDone + 7 * 60_000,
+      },
+    };
+    useAppStore.getState().replaceSessionLiveProjection(synthesis, { allowEqualHydration: true });
+    dumpUserMessages('M variant synthesis activeRun after snapshot');
+    console.log(
+      'M variant synthesis events after snapshot:',
+      JSON.stringify(
+        (useAppStore.getState().eventsBySession[SID] ?? []).map((event) =>
+          event.kind === 'text_delta'
+            ? `text[${event.providerRequestId ?? '-'}]:${event.text.slice(0, 12)}(seq${event.runtimeEvent?.seq})`
+            : event.kind === 'tool_start'
+              ? `tool_start:${event.toolId}`
+              : event.kind,
+        ),
+      ),
+    );
+    await reconcileTerminalSessionHistory({
+      sessionId: SID,
+      runtimeId: L_RUNTIME_ID,
+      runId: M_RUN_5,
+      phase: 'completed',
+      cursorSeq: lastSeq,
+      transcriptRevision: 'transcript-run-5',
+      turnId: M_TURN_5,
+    });
+    dumpUserMessages('M variant synthesis activeRun after certified rev-1');
+    assertMFailureGates('synthesisActiveRun');
+    deactivateSessionHistoryPaging(SID);
+    resetSessionHistoryPagingLifecycle();
+  }
+
+  // ---------- M 变体 2：retained 段 startedAtSeq 错位（全部挤到第 1 段之前） ----------
+  // 同样带 activeRun 驱动合成，但 startedAtSeq 交错 —— 观察合成插入点漂移是否把 5 段
+  // 合并成一张大卡、或把正文搬到 query5 之上（生产症状二的直接形态）。
+  {
+    await seedSession();
+    revisionByCall = ['rev-0', 'rev-1'];
+    callIndex = 0;
+    installWindowM();
+    await restoreNewestSessionHistory(SID, 'code');
+    streamMultiSegmentToolTurn();
+    seedRuntimeAuthority(L_RUNTIME_ID);
+    const misaligned: SpaceSessionLiveProjectionT = {
+      ...projection,
+      sessionId: SID,
+      activeRun: {
+        runId: M_RUN_5,
+        sessionId: SID,
+        turnId: M_TURN_5,
+        phase: 'running',
+        startedAt: REAL_T.bgDone + 7 * 60_000,
+      },
+      outputSegment: {
+        retained: M_SEGMENTS.map((text, segment) => ({
+          responseId: 'resp-m-run-5',
+          providerRequestId: `req-m-seg${segment + 1}`,
+          mode: 'replace' as const,
+          // 错位：除第 1 段外全部挤到 startedAtSeq=3（thinking 之后、第 1 段之前）
+          startedAtSeq: segment === 0 ? 4 : 3,
+          assistantText: text,
+          thinkingText: '',
+          assistantTextStartOffset: 0,
+          thinkingTextStartOffset: 0,
+        })),
+      },
+    };
+    useAppStore.getState().replaceSessionLiveProjection(misaligned, { allowEqualHydration: true });
+    dumpUserMessages('M variant misaligned startedAtSeq after snapshot');
+    console.log(
+      'M variant misaligned events after snapshot:',
+      JSON.stringify(
+        (useAppStore.getState().eventsBySession[SID] ?? []).map((event) =>
+          event.kind === 'text_delta'
+            ? `text[${event.providerRequestId ?? '-'}]:${event.text.slice(0, 12)}(seq${event.runtimeEvent?.seq})`
+            : event.kind === 'tool_start'
+              ? `tool_start:${event.toolId}`
+              : event.kind,
+        ),
+      ),
+    );
+    await reconcileTerminalSessionHistory({
+      sessionId: SID,
+      runtimeId: L_RUNTIME_ID,
+      runId: M_RUN_5,
+      phase: 'completed',
+      cursorSeq: lastSeq,
+      transcriptRevision: 'transcript-run-5',
+      turnId: M_TURN_5,
+    });
+    dumpUserMessages('M variant misaligned startedAtSeq after certified rev-1');
+    assertMFailureGates('misalignedStartedAtSeq');
+    deactivateSessionHistoryPaging(SID);
+    resetSessionHistoryPagingLifecycle();
+  }
 });
