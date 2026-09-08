@@ -6,7 +6,7 @@
 
 > 当前发布精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。
 >
-> 当前源码候选为 Space `0.1.46-alpha.8`，精确锁定 KodaX `0.7.96-beta.3`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
+> 当前源码候选为 Space `0.1.46-alpha.9`，精确锁定 KodaX `0.7.96-beta.4`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
 > Windows 既有安装首次迁移可能需要用户在 Settings → Runtime 明确执行一次 Sandbox Setup；
 > 普通启动、Refresh 和工具调用不会隐式提升权限。正式发布版的 0.7.95 说明保留为历史事实。
 >
@@ -276,7 +276,7 @@ Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 n
 
 beta.3 的安装包同时携带 SDK 内置的 Windows WFP 探针端口分配修复。Space 直接复制该运行库及其依赖，构建时跳过安装脚本也不会丢失修复；Windows native protocol/setup generation 和公开能力版本均不变。
 
-当前源码候选继续接入 KodaX 0.7.96-beta.3 的凭据安全
+当前源码候选继续接入 KodaX 0.7.96-beta.4 的凭据安全
 `RuntimeFailureDetail`。真实 Run 失败时，错误条优先显示 SDK 固定且有界的
 `safeMessage`；展开“Runtime 失败详情”可以查看稳定 KodaX 错误码、失败阶段、
 Run/Request ID、HTTP 状态、上游短错误码、建议等待时间和上下文容量数据（仅在
@@ -478,6 +478,8 @@ Workflow 只在显式 Workflow 强信号、`/workflow`、命名 Workflow 或 SDK
 Compact 只缩减下一次模型请求使用的活动上下文，不等于删除完整历史。0.7.77 保留 compaction v3 的 durable-before-evict 语义：精确历史先写入 lineage/sidecar，再发布精简快照；精确 checkpoint/恢复指引、first-kept pointer 和压缩后附件位于同一活动 lineage，命令式手动压缩也会先从精确 flat Session history 对齐 lineage，旧的无后缀 checkpoint 仍能恢复。Space 通过有界 page/chunk/search 读取，历史搜索结果绑定具体 revision。旧版已经丢弃且从未保存的字节无法凭空恢复。
 
 v0.1.46-alpha.8 的手动 `/compact` 会立即显示命令，等待回显及已在途的失败补写完成后再开始压缩，以避免同一会话的读写锁冲突。自动压缩仍由 Runtime 管理。beta.3 修复了凭据连接被替代后旧连接不退出的问题，Space 可通过现有重连流程恢复；回显持久化失败仍会显示原有提示。`Request timed out` 表示 Provider 请求超时，不能据此判断上下文超容或确定是网关故障，应结合端点状态排查。
+
+v0.1.46-alpha.9 起使用 KodaX 0.7.96-beta.4：手动与自动压缩共用同一条摘要思考策略（与主 turn 的推理强度相互独立，默认在支持的模型上关闭摘要思考）；成功的压缩会记录有界的摘要请求指标与持久化提交耗时，Space 只在上下文量规的最近压缩信息中显示摘要请求次数——map/reduce 展开为多次摘要调用时可见，单次调用不显示。
 
 底部“上下文窗口”显示压缩影响的当前主 Agent 活动输入；“会话 Token 用量”是已经发生的根/子 Agent Provider 调用累计值，不会因 Compact 回退。两者的完整区别见[上下文窗口与会话 Token 用量](#52-上下文窗口与会话-token-用量)。
 

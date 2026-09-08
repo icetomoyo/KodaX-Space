@@ -91,6 +91,9 @@ export interface SessionCompactionOutcome {
   readonly strategy?: 'full_prefix' | 'map_reduce';
   readonly effectiveTriggerTokens?: number;
   readonly reason?: string;
+  /** KodaX 0.7.96-beta.4: physical summary call count and durable commit duration. */
+  readonly summaryRequestCount?: number;
+  readonly commitMs?: number;
 }
 
 /** Exact Runtime Run whose canonical history read started after its terminal evidence. */
@@ -4156,6 +4159,10 @@ function tokenInfoFromCompaction(
         ? { effectiveTriggerTokens: event.effectiveTriggerTokens }
         : {}),
       ...(event.reason ? { reason: event.reason } : {}),
+      ...(event.summaryRequestCount !== undefined
+        ? { summaryRequestCount: event.summaryRequestCount }
+        : {}),
+      ...(event.commitMs !== undefined ? { commitMs: event.commitMs } : {}),
     },
   };
 }

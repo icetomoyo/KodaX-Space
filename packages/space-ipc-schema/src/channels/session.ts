@@ -1326,6 +1326,10 @@ export const sessionEventChannel = {
       rawTailTokens: z.number().int().nonnegative().max(10_000_000).optional(),
       summaryTokens: z.number().int().nonnegative().max(10_000_000).optional(),
       queryLedgerTokens: z.number().int().nonnegative().max(10_000_000).optional(),
+      /** KodaX 0.7.96-beta.4: physical summary calls (count only; no per-request detail). */
+      summaryRequestCount: z.number().int().positive().max(1_000).optional(),
+      /** Durable history commit duration; excludes summary generation. */
+      commitMs: z.number().int().nonnegative().max(86_400_000).optional(),
       beforeRevision: z.number().int().nonnegative().optional(),
       afterRevision: z.number().int().nonnegative().optional(),
       reason: z.string().max(2_000).optional(),

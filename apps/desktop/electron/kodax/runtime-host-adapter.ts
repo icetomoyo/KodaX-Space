@@ -1148,6 +1148,11 @@ export function projectRuntimeContextSessionEvent(
       ...(typeof payload?.queryLedgerTokens === 'number'
         ? { queryLedgerTokens: payload.queryLedgerTokens }
         : {}),
+      // KodaX 0.7.96-beta.4 bounded summary metrics: only the count crosses the IPC boundary.
+      ...(Array.isArray(payload?.summaryRequests) && payload.summaryRequests.length > 0
+        ? { summaryRequestCount: payload.summaryRequests.length }
+        : {}),
+      ...(typeof payload?.commitMs === 'number' ? { commitMs: payload.commitMs } : {}),
       ...(typeof payload?.beforeRevision === 'number'
         ? { beforeRevision: payload.beforeRevision }
         : {}),

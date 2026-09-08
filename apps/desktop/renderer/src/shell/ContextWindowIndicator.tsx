@@ -210,6 +210,11 @@ export function ContextWindowIndicator({
     lastCompaction?.elapsedMs !== undefined
       ? `${(lastCompaction.elapsedMs / 1_000).toFixed(1)}s`
       : null;
+  // map/reduce 展开时一次压缩含多次物理摘要调用；full_prefix 恒为 1，不值得占位。
+  const compactionSummaryRequests =
+    lastCompaction?.summaryRequestCount !== undefined && lastCompaction.summaryRequestCount > 1
+      ? t('contextWindow.compactionSummaryRequests', { count: lastCompaction.summaryRequestCount })
+      : null;
   const isEstimate = isEstimatedContextInput(
     inputReading.source,
     tokenInfo?.source,
@@ -608,10 +613,12 @@ export function ContextWindowIndicator({
                   : t('contextWindow.lastCompactionUnchanged', {
                       tokens: formatTokens(lastCompaction.tokensAfter),
                     })}
-                {(compactionSourceLabel || compactionDuration) && (
+                {(compactionSourceLabel || compactionDuration || compactionSummaryRequests) && (
                   <span className="text-fg-muted">
                     {' · '}
-                    {[compactionSourceLabel, compactionDuration].filter(Boolean).join(' · ')}
+                    {[compactionSourceLabel, compactionDuration, compactionSummaryRequests]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </span>
                 )}
               </div>
