@@ -16,6 +16,35 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ---
 
+## [0.1.46-alpha.9] - 2026-09-08
+
+### Fixed
+
+- **Composer clears at submit during slash commands (v0.1.45 regression)** — `/compact` and
+  other slash commands now clear the input box at submit time instead of after the command
+  finishes, so the command text no longer lingers across the whole compaction. Attachment
+  cleanup uses a submit-time snapshot, so images or file refs attached while a slow command
+  runs belong to the next submission and are not wiped.
+- **Compacting spinner stays centered in the context gauge** — the liquid gauge's
+  `display:block` rule overrode Tailwind flex centering and pinned the spinner to the top-left;
+  the spinner now uses an absolutely positioned wrapper consistent with the gauge's
+  fill/surface/wave layers.
+
+### Changed
+
+- **KodaX 0.7.96-beta.4 integration** — Root/Desktop manifests and the lockfile pin the exact
+  published prerelease. Manual and automatic compaction share one `compaction.reasoning` summary
+  policy, independent of the main turn's effort: the Runtime persists it through shared Session
+  settings, and Space keeps the SDK default without adding a new control. `provider-capabilities.json`
+  is byte-identical to beta.3 and public capability versions are unchanged.
+- **Bounded compaction summary telemetry** — successful compactions now surface the physical
+  summary-request count and the durable commit duration through Space's `compact_stats`
+  contract (Runtime `context.compaction.finished` events and the embedded manual-compact path).
+  The context gauge shows the request count when map/reduce fans out into multiple summary
+  calls; per-request provider/model/timing detail stays SDK-owned and never crosses IPC.
+
+---
+
 ## [0.1.46-alpha.8] - 2026-09-08
 
 ### Fixed
