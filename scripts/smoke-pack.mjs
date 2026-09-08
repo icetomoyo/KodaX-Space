@@ -754,7 +754,7 @@ async function checkAsarContents(asarPath) {
     : [];
   await verifyPackagedKodaxNativeArtifacts(unpackedDir);
   const asrtAsarPrefix = '/node_modules/@anthropic-ai/sandbox-runtime/';
-  if (normalized.some((file) => file.startsWith(asrtAsarPrefix))) {
+  if (normalized.some((file) => file.includes(asrtAsarPrefix))) {
     fail(
       '@anthropic-ai/sandbox-runtime leaked into app.asar. Its platform helpers must be ' +
         'resolved from physical resources/node_modules paths.',
@@ -803,6 +803,20 @@ async function checkAsarContents(asarPath) {
     ok(`ASRT ${helperArch} seccomp helper is executable`);
   }
   ok('ASRT and its runtime dependency chain are physical filesystem resources');
+  const asrtProbeRelative = 'dist/sandbox/windows-sandbox-utils.js';
+  const sdkAsrt = path.join(
+    rootDir,
+    'node_modules/@kodax-ai/kodax/node_modules/@anthropic-ai/sandbox-runtime',
+  );
+  const physicalAsrt = path.join(resourceNodeModulesDir, '@anthropic-ai/sandbox-runtime');
+  if (
+    !readFileSync(path.join(physicalAsrt, asrtProbeRelative)).equals(
+      readFileSync(path.join(sdkAsrt, asrtProbeRelative)),
+    )
+  ) {
+    fail('Packaged ASRT WFP probe differs from the exact SDK-bundled repair.');
+  }
+  ok('physical ASRT WFP probe matches the SDK-bundled repair');
   const hasKeyringNativeUnpacked = unpackedFiles.some(
     (f) => /\/node_modules\/@napi-rs\/keyring-[^/]+\/.+\.node$/.test(f) && nativePattern.test(f),
   );

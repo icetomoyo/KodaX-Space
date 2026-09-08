@@ -1150,13 +1150,15 @@ export function BottomBar(): JSX.Element {
     setBusy(true);
     setBusySlashName(name);
     setErr(null);
-    if (immediateEcho) {
-      appendUserMessage(sessionId, commandEcho);
-    }
-    if (optimisticWorkflow) {
-      appendWorkflowNotice(sessionId, `[workflow] ${pendingWorkflowMessage}`);
-    }
     try {
+      if (immediateEcho) {
+        const echoPersisted = appendUserMessage(sessionId, commandEcho);
+        // The compact preflight reads this same Session; wait until its echo releases the writer.
+        if (name === 'compact') await echoPersisted;
+      }
+      if (optimisticWorkflow) {
+        appendWorkflowNotice(sessionId, `[workflow] ${pendingWorkflowMessage}`);
+      }
       const result = await invokeComposerIpc(
         'slash.exec',
         {

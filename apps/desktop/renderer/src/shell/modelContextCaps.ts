@@ -12,7 +12,7 @@
 
 type CapRule = { match: RegExp; cap: number };
 
-// 数值与 SDK 0.7.96-beta.2 provider-capabilities.json 对齐（2026-09-07 复核）。
+// 数值与 SDK 0.7.96-beta.3 provider-capabilities.json 对齐（2026-09-08 复核）。
 // **过报(over-claim)是危险方向**——会让用户误以为"还有大把空间"却提前压缩；这里逐条按 SDK 真值订正。
 // 顺序敏感：更具体的规则必须在通配前面（first-match wins）。
 const RULES: readonly CapRule[] = [

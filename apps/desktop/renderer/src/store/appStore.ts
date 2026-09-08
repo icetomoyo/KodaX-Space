@@ -1032,7 +1032,7 @@ interface AppState {
     sessionId: string,
     content: string,
     options?: number | { readonly sentAt?: number; readonly variant?: 'echo' | 'output' },
-  ): void;
+  ): Promise<void>;
   appendQueuedUserMessage(
     sessionId: string,
     input: {
@@ -5232,7 +5232,7 @@ const localNoticePersistenceFailures = new Set<string>();
 const failedLocalNoticeAppends = new Map<string, Map<string, LocalNoticeMessage>>();
 const failedLocalNoticeAppendNeedsReconcile = new Set<string>();
 const failedLocalNoticeReplaces = new Set<string>();
-const localNoticeRetryInFlight = new Set<string>();
+const localNoticeRetryInFlight = new Map<string, Promise<void>>();
 let localNoticePersistenceFailureToastId: string | null = null;
 const MAX_FAILED_LOCAL_NOTICE_BYTES = 8 * 1024 * 1024;
 
@@ -5300,7 +5300,8 @@ async function retryFailedLocalNoticeAppends(
   sessionId: string,
   bridge: LocalNoticeIpcBridge,
 ): Promise<void> {
-  if (localNoticeRetryInFlight.has(sessionId)) return;
+  const inFlight = localNoticeRetryInFlight.get(sessionId);
+  if (inFlight) return inFlight;
   const pending = failedLocalNoticeAppends.get(sessionId);
   if (!pending || pending.size === 0) {
     if (
@@ -5312,8 +5313,7 @@ async function retryFailedLocalNoticeAppends(
     return;
   }
 
-  localNoticeRetryInFlight.add(sessionId);
-  try {
+  const retry = (async () => {
     // The main-side store dedupes by notice id, so replaying the exact failed payload is
     // idempotent even if an IPC acknowledgement was lost after the durable write.
     for (const [noticeId, notice] of [...pending.entries()]) {
@@ -5339,21 +5339,30 @@ async function retryFailedLocalNoticeAppends(
     ) {
       clearLocalNoticePersistenceFailure(sessionId);
     }
+  })();
+  localNoticeRetryInFlight.set(sessionId, retry);
+  try {
+    await retry;
   } finally {
     localNoticeRetryInFlight.delete(sessionId);
   }
 }
 
-function persistLocalNoticeAppend(sessionId: string, notice: LocalNoticeMessage): void {
+async function persistLocalNoticeAppend(
+  sessionId: string,
+  notice: LocalNoticeMessage,
+): Promise<void> {
   const bridge = getLocalNoticeBridge();
   if (!bridge) return;
-  void bridge
+  await bridge
     .invoke('session.localNotice.append', { sessionId, notice })
-    .then((result) => {
+    .then(async (result) => {
       if (!result.ok) recordLocalNoticeAppendFailure(sessionId, notice);
-      else void retryFailedLocalNoticeAppends(sessionId, bridge);
+      else await retryFailedLocalNoticeAppends(sessionId, bridge);
     })
     .catch(() => recordLocalNoticeAppendFailure(sessionId, notice));
+  // A rejected echo can itself have raced the older retry's writer.
+  await localNoticeRetryInFlight.get(sessionId);
 }
 
 function persistLocalNoticeReplace(
@@ -6689,7 +6698,9 @@ export const useAppStore = create<AppState>((set) => ({
         },
       };
     });
-    if (persistedNotice !== null) persistLocalNoticeAppend(sessionId, persistedNotice);
+    return persistedNotice !== null
+      ? persistLocalNoticeAppend(sessionId, persistedNotice)
+      : Promise.resolve();
   },
 
   appendQueuedUserMessage: (sessionId, input) => {

@@ -14,6 +14,25 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.46-alpha.8] - 2026-09-08
+
+### Fixed
+
+- **Compaction echo ordering (Issue 210)** — Manual `/compact` now waits for its local echo and
+  outstanding notice retries to finish persistence before the Session preflight reads history.
+  The command remains visible immediately; Session identity and permission checks remain in place.
+- **KodaX 0.7.96-beta.3 integration** — Root/Desktop and the lockfile pin the published SDK. Its
+  superseded credential-connection fix enables Space's existing disconnect/reconnect recovery.
+  Public capability versions are unchanged. Provider timeout causes remain unclassified.
+- **Packaged Windows sandbox repair** — Physical ASRT resources and their dependencies now come from
+  the SDK's bundled dependency tree, preserving beta.3's WFP probe port-allocation fix even after
+  an `--ignore-scripts` install. Packaging smoke rejects nested ASRT code inside ASAR and compares
+  the physical WFP probe byte-for-byte against the locked SDK copy.
+
+---
+
 ## [0.1.46-alpha.7] - 2026-09-07
 
 ### Changed

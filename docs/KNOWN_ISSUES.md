@@ -1,6 +1,6 @@
 # Known Issues
 
-Last Updated: 2026-09-05
+Last Updated: 2026-09-08
 
 > Historical issue details are preserved as investigation evidence. Resolved items older than 30 days move to [ISSUES_ARCHIVED.md](ISSUES_ARCHIVED.md) without losing their investigation record. The latest published Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45) artifact uses exact npm Registry KodaX 0.7.95 and requires `conversationHistory:2`, `runtimeExitSettlement:2`, and `sandboxRuntime:5`. Start from the [documentation hub](README.md) for current behavior and status.
 
@@ -204,8 +204,55 @@ Last Updated: 2026-09-05
 | 206 | High     | Resolved in source  | Canonical convergence was purely event-driven: one missed renderer push left the painted transcript stale until a manual reload even though canonical history was complete and healthy                    | <= v0.1.46-alpha.4 transcript convergence                    | 2026-09-04 |
 | 207 | High     | Resolved in source  | A replayed queued-prompt boundary could mint a ghost duplicate of the already-canonicalized user query, painted below its own answer until a manual reload                                                | <= v0.1.46-alpha queued-prompt boundary promotion             | 2026-09-05 |
 | 209 | High     | Resolved in source  | The KodaX daemon never consulted the scoped credential broker for compaction summarizer requests, so keychain-only Providers still failed `/compact` and managed compaction after the Issue 199 client fix | KodaX 0.7.96-alpha.3 scoped credential runtime (Issue 199)    | 2026-09-07 |
+| 210 | High | Resolved in v0.1.46-alpha.8 | Manual compact preflight races its own echo write; beta.3 SDK recovery and bundled sandbox need Space integration | <= v0.1.46-alpha.7 | 2026-09-08 |
 
 ## Issue Details
+
+## Issue 210: Manual compact preflight races its echo write; integrate beta.3 recovery and sandbox fixes
+
+- Priority: High
+- Status: Resolved in v0.1.46-alpha.8 (real Provider timeout remains unclassified)
+- Introduced: <= v0.1.46-alpha.7
+- Fixed: Space v0.1.46-alpha.8 with KodaX 0.7.96-beta.3
+- Created: 2026-09-08
+- Resolved: 2026-09-08
+
+### Problem and evidence
+
+After Issue 209 fixed keychain lookup, manual `/compact` could still fail with `data_changed` at
+`assertCoderSession → sessions.load`: the renderer fired the command echo's durable append without
+awaiting it. That preflight read is outside the SDK's Session mutation queue. SDK serialization of
+`appendNotice` and `compact` therefore did not protect Space's earlier read. Outstanding failed-notice
+retries can hold the same writer too.
+
+`Credential broker transport is unavailable` was a separate failure: another client reusing the
+same instance identity replaced its reverse bridge while the old RPC connection remained usable.
+Beta.3 retires the old connection, so Space's existing connection-state subscription can reconnect
+and resume its scoped credentials. It does not make a stale SDK Runtime object reconnect itself.
+
+`Request timed out` only establishes a Provider request-path timeout; the available evidence cannot
+separate connection failure, queue delay and response waiting. This upgrade does not classify that
+failure as context overflow or retry the compaction automatically.
+
+### Resolution and integration scope
+
+- Await manual command echo persistence, including a retry already in flight, before `slash.exec`.
+  Immediate UI feedback and Runtime identity/permission validation remain intact.
+- Pin the published SDK beta.3 in both manifests and the lockfile; retain the existing public
+  capability versions and daemon-based credential APIs.
+- Copy physical ASRT and its dependencies from the SDK's bundled tree. Exclude nested ASRT from
+  ASAR and verify the WFP probe bytes against that exact SDK copy. A top-level registry ASRT copy
+  would omit beta.3's SDK-owned patch.
+- SDK strict type fixes, A2A unknown/waiting-agent/recovering state mapping, and embedded credential
+  errors require no new Space interface. The post-release SDK linked-directory build fix is not part
+  of this npm artifact.
+
+### Verification
+
+Deterministic regressions cover delayed echo acknowledgement, an already-running notice retry,
+and the physical sandbox dependency source. Both write-order regressions fail before the fix.
+Full verification results and manual steps are recorded in
+`docs/test-guides/ISSUE_210_v0.1.46_REGRESSION_GUIDE.md`.
 
 ## Issue 209: The KodaX daemon never consulted the scoped credential broker for compaction summarizer requests, so keychain-only Providers still failed `/compact` and managed compaction after the Issue 199 client fix
 
