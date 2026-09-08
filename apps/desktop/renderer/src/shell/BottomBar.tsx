@@ -2007,27 +2007,32 @@ export function BottomBar(): JSX.Element {
         setBusy(false);
       }
       if (!sid) return; // err is already set
+      // 提交即清空（与普通消息发送同一契约）：命令文本已捕获在 promptAtSend/effectivePrompt，
+      // 后续路由不依赖输入框内容。清空不能等 slash.exec 返回——/compact 要等整段压缩完成才
+      // 返回，等返回再清空会让命令文本在整个压缩期间残留（v0.1.45 回归）。
+      setPrompt('');
+      draftRef.current = '';
+      const imagesAtSubmit = pendingImages;
+      const fileRefsAtSubmit = pendingFileRefs;
       const shouldSendThroughSession =
         legacySkillName !== null || (await execSlashOrSkill(sid, token, args));
       if (!shouldSendThroughSession) {
-        setPrompt('');
-        if (pendingImages.length > 0) {
-          for (const ownerSessionId of new Set(pendingImages.map((image) => image.sessionId))) {
-            void invokeComposerIpc('clipboard.cleanupSession', {
-              sessionId: ownerSessionId,
-            }).then((result) => {
-              if (!result.ok) {
-                setImageErr(
-                  `${result.error?.code ?? 'ERR_UNKNOWN'}: ${
-                    result.error?.message ?? 'draft cleanup failed'
-                  }`,
-                );
-              }
-            });
-          }
+        for (const ownerSessionId of new Set(imagesAtSubmit.map((image) => image.sessionId))) {
+          void invokeComposerIpc('clipboard.cleanupSession', {
+            sessionId: ownerSessionId,
+          }).then((result) => {
+            if (!result.ok) {
+              setImageErr(
+                `${result.error?.code ?? 'ERR_UNKNOWN'}: ${
+                  result.error?.message ?? 'draft cleanup failed'
+                }`,
+              );
+            }
+          });
         }
-        setPendingImages([]);
-        setPendingFileRefs([]);
+        // 快照守卫：慢命令执行期间新附的图片/文件引用属于下一次提交，不能误清。
+        setPendingImages((prev) => (prev === imagesAtSubmit ? [] : prev));
+        setPendingFileRefs((prev) => (prev === fileRefsAtSubmit ? [] : prev));
         setImageErr(null);
         return;
       }

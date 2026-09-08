@@ -872,6 +872,12 @@ class KodaXHost {
     // Runtime-backed sessions emit their own revisioned lifecycle. The compatibility events below
     // are retained only for embedded/legacy sessions, which do not have a daemon observation.
     if (!usesRuntime) pushToRenderer('session.event', { kind: 'compact_start', sessionId });
+    // Test-only hold (e2e): keep the compaction in-flight so the compacting UI state and the
+    // composer-clear timing become deterministic. Never set outside the e2e fixtures.
+    const compactTestHoldMs = Number.parseInt(process.env.SPACE_TEST_COMPACT_DELAY_MS ?? '', 10);
+    if (Number.isInteger(compactTestHoldMs) && compactTestHoldMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, compactTestHoldMs));
+    }
     try {
       const compactInput = {
         provider: s.provider,
