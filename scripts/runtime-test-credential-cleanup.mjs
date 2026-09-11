@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const SERVICE_NAME = 'kodax-space';
+const SERVICE_NAME = 'kodax-space-test-runtime';
 const SECRET_ACCOUNT_RE =
   /^runtime_client_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ALLOWED_PROFILE_PREFIXES = ['kodax-test-', 'kodax-space-boot-smoke-'];
@@ -42,7 +42,7 @@ async function readTestSecretAccount(profileDir) {
 }
 
 /**
- * Remove only the OS-keychain item named by an isolated test profile.
+ * Remove only the test-Runtime keychain item named by an isolated test profile.
  *
  * Production profiles are rejected by path, and provider credentials are
  * rejected by the runtime-client account regex. This must run before the test

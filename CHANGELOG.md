@@ -23,6 +23,9 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
+- Packaged boot checks retain restart-stable Runtime client credentials in an
+  isolated test keyring namespace while Provider test credentials stay in memory.
+  Test teardown removes only the owning profile's Runtime credential.
 - Preserve readable history when the SDK reports `identity_repair_invalid`, and
   retain structured `local_execution` failures without suggesting provider setup
   or automatic retry for local execution errors.

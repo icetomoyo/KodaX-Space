@@ -124,6 +124,12 @@ let backendStatus: 'unknown' | 'keychain' | 'memory' = 'unknown';
 
 async function detectBackend(): Promise<'keychain' | 'memory'> {
   if (backendStatus !== 'unknown') return backendStatus;
+  // 测试模式锁 memory:OS keychain 全局共享,KODAX_TEST_ONBOARDING 只隔离文件路径
+  // (见 data-paths.ts)。不锁的话单测/e2e 的 setKey/deleteKey 会写穿真实凭据库。
+  if (process.env.KODAX_TEST_ONBOARDING) {
+    backendStatus = 'memory';
+    return backendStatus;
+  }
   if (process.platform === 'darwin' && (await loadMacosVault())) {
     backendStatus = 'keychain';
     return backendStatus;

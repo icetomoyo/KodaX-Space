@@ -32,7 +32,7 @@ test('runtime test credential cleanup deletes only the account owned by an isola
   });
 
   assert.deepEqual(result, { cleaned: true, account: TEST_ACCOUNT });
-  assert.deepEqual(calls, [{ service: 'kodax-space', account: TEST_ACCOUNT }]);
+  assert.deepEqual(calls, [{ service: 'kodax-space-test-runtime', account: TEST_ACCOUNT }]);
 });
 
 test('runtime test credential cleanup rejects production paths and non-runtime accounts', async (t) => {

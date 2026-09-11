@@ -94,6 +94,24 @@ function identityBytes(identity: StableRuntimeClientIdentity): Buffer {
 }
 
 function defaultSecretStore(): RuntimeClientSecretStore {
+  if (process.env.KODAX_TEST_ONBOARDING) {
+    // Real Runtime tests need a restart-stable secret, while Provider test
+    // credentials remain in memory. The profile owns this separate keyring
+    // entry; runtime-test-credential-cleanup removes it before profile deletion.
+    const service = 'kodax-space-test-runtime';
+    const keyring = async () => {
+      const moduleId = '@napi-rs/keyring/keytar.js';
+      return (await import(moduleId)) as typeof import('@napi-rs/keyring/keytar.js');
+    };
+    return {
+      async read(account) {
+        return (await (await keyring()).getPassword(service, account)) ?? undefined;
+      },
+      async write(account, secret) {
+        await (await keyring()).setPassword(service, account, secret);
+      },
+    };
+  }
   return {
     async read(account) {
       const keychain = await import('../../providers/keychain.js');

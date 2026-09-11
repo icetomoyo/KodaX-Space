@@ -57,3 +57,10 @@ beta.8 仍要求显式确认旧身份，不会自动识别历史分支的对应�
 - 原工作区打包的依赖 smoke 通过，但启动检查被已有、未纳入本次提交的 keychain 测试隔离改动阻断：`KODAX_TEST_ONBOARDING` 强制 memory 后端，而真实 Runtime client identity 要求持久 keychain。该文件保持原样；另导出暂存源码副本重建，隔离这项无关改动的影响。
 - 暂存源码副本生成 Windows Setup 与 Portable 成功；包的启动检查通过（renderer 5528ms、含 20s 人为等待的 Runtime 28638ms），两次完整退出与 Session 历史恢复通过。
 - 深层副本路径下的沙箱账号 capability setup 连续失败；将同一份产物复制到工作区 `out-beta8-verified/` 后，全部依赖、原生沙箱和 SDK Worker smoke 通过。此结果证明较短路径可用；SDK 的具体路径限制仍待定位，不能宣称任意安装路径均已通过。未绕过沙箱检查或修改包内代码。
+
+## 后续修复：当前工作区的打包启动检查
+
+- 用户在当前工作区执行 `npm run build`，包的 renderer 已就绪，但真实 Runtime 因 `OS keychain is required for the Runtime client secret` 初始化失败。回归测试在 `RuntimeClientIdentityStore.openInstance` 公共入口复现相同错误。
+- 保留 `KODAX_TEST_ONBOARDING` 下 Provider 的内存隔离；测试 Runtime 改用独立原生凭据 service `kodax-space-test-runtime`。生产凭据路径不变，不将 Runtime secret 写入普通文件或仅留内存。
+- 重新创建 identity store 后，身份和 secret 保持一致，清空 Provider 内存不影响 Runtime；测试结束按隔离 profile 中的精确 Runtime account 清理测试 service。清理仍拒绝生产路径和 Provider account。
+- 本次当前工作区验证：`npm test` 3351 通过、5 个已有跳过、0 失败；类型检查及 lint 通过；Standards / Spec 独立审查均无 findings。`npm run build` 完整通过，包内依赖和 SDK Worker 检查、boot smoke（renderer 6824ms，含 20s 人为等待的 Runtime 30038ms）、两次完整退出与 Session 历史恢复全部通过。
