@@ -16,6 +16,37 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ---
 
+## [0.1.46-alpha.10] - 2026-09-11
+
+### Changed
+
+- **KodaX 0.7.96-beta.6 integration** — Root/Desktop manifests and the lockfile pin the exact
+  published prerelease (beta.5 + beta.6 retained). Every public capability version is unchanged:
+  the SDK startup gate still requires `sandboxRuntime:11`, `runtimeAutoModeGuardrail:5`,
+  `sharedSessionSettings:2`, and `effectiveConfig:1`, with `providerCredentialBroker:2` verified
+  at daemon admission and after connection.
+- **DeepSeek moves to the official Anthropic-compatible wire (beta.5)** — the built-in `deepseek`
+  alias now speaks `api.deepseek.com/anthropic`; the SDK default model is `deepseek-flash`
+  (DeepSeek-V4.1-Flash, 1M context, 384,000 max output tokens, native image input,
+  `deepseek-v4-anthropic` reasoning preset), text-only `deepseek-v4-pro` stays selectable via
+  `/model`, and the vision-only `deepseek-v4-flash-vision-exp` experiment leaves the SDK catalog.
+  Space's provider catalog override follows the SDK truth: the DeepSeek protocol metadata becomes
+  `anthropic` and the disaster-fallback default model becomes `deepseek-flash`.
+- **Windows sandbox setup generation 11 (beta.5, Issue 333)** — profile and SSH dependency ACL
+  exclusions now match Codex semantics on read and write roots; generation-10 SSH ACE cleanup is
+  setup-only and preserves the old SID/nonce/roots across interrupted retries. Wire protocol 10,
+  public capability versions, and Space's doctor/setup host boundary are unchanged.
+- **Prompt-cache diagnostics mirror the provider wire (beta.6)** — diagnostic hashes now describe
+  the messages actually sent: retained orphan `tool_use` calls are answered with the shared
+  interrupted-tool marker inside their pairing scope, real non-adjacent answers are hoisted, and
+  foreign or duplicate results are dropped. SDK-internal; no Space surface changes.
+- **Restored-session replay repair (beta.5)** — replayed histories no longer 400 on strict
+  endpoints: orphaned `tool_use` calls are answered with the explicit interrupted-tool marker
+  instead of being dropped, and typed `AbortError` cancellation takes precedence over provider
+  message matching. No Space control path changes.
+
+---
+
 ## [0.1.46-alpha.9] - 2026-09-08
 
 ### Fixed
