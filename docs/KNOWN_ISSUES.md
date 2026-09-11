@@ -365,7 +365,7 @@ never reclaims orphaned closed-live segments — producing doubled tool chips,
 lost bodies, and tail-fragment ghosts carrying canonical timestamps.
 Ctrl+R rebuilds cold from canonical rows alone, which is why it always heals.
 
-### Resolution (Space source fixed; SDK identity integration pending)
+### Resolution (Space source fixed; confirmed SDK aliases integrated, broader guarantees pending)
 
 FEATURE_275 now separates canonical page and live tail sources and renders explicit
 input/output owners. L/M and the refresh-equivalence gates run without skips or an
@@ -373,11 +373,17 @@ allowlisted difference. The 2026-09-11 follow-up replaces Run-wide retirement wi
 covered-input retirement and guards replay, snapshot sidecars, paging, fork/rewind,
 and delayed attachment updates. See the correction in `docs/features/v0.1.46.md`.
 
-The new Session `20260911_100157_8gbfe22d504b2f` also has an SDK identity break:
+The new Session `20260911_100157_8gbfe22d504b2f` also had an SDK identity break:
 delivery references `entry_fdb4f2769c49`, but the resolved canonical query is
-`entry_c49fccdba757` with no audit alias for that delivery entry. Unknown conflicting
-identities remain visible by design. Keep the issue open until the SDK preserves
-this lineage and the original Session passes live/reload integration validation.
+`entry_c49fccdba757` without its delivery alias. SDK beta.8 now applies an explicit
+confirmation record already registered by the SDK task for that Session; the
+published package resolves the original delivery exactly once. Space consumes
+these aliases and keeps invalid-repair diagnostics readable. A real SDK/storage
+and Space projector/store/composer regression covers repaired reload and old
+delivery replay. Unknown conflicting identities remain visible by design.
+Keep the broader issue open: beta.8 does not automatically infer unconfirmed
+legacy mappings, and bounded renderer receipts still cannot prove arbitrary
+ancient replay coverage after their evidence expires.
 
 ### Files Changed
 

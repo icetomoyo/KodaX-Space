@@ -723,6 +723,7 @@ const conversationHistoryIssueCodeSchema = z.enum([
   'lineage_path_incomplete',
   'lineage_unavailable',
   'logical_identity_conflict',
+  'identity_repair_invalid',
 ]);
 
 const conversationHistoryDiagnosticSchema = z.object({

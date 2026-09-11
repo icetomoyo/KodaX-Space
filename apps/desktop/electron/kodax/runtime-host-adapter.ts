@@ -24,7 +24,6 @@ import type {
   RuntimeOwnerState,
   RuntimeRewindSessionInput,
   RuntimeRunHandle,
-  RuntimeRunFailureKind,
   RuntimeRunResult,
   RuntimeRunStopReceipt,
   RuntimeRunStatus,
@@ -95,6 +94,7 @@ import { areLearningMutationsEnabled } from './learning-policy.js';
 import {
   canonProjectRoot,
   sessionEventChannel,
+  spaceRuntimeRunFailureKindSchema,
   workflowProcessSnapshotSchema,
   workflowRunSchema,
   type AgentActorTreeSnapshotT,
@@ -1649,9 +1649,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeExitSettlement === 2 ? [] : ['runtimeExitSettlement v2']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
-    ...((capabilities?.runtimeAutoModeGuardrail ?? 0) >= 5
-      ? []
-      : ['runtimeAutoModeGuardrail v5']),
+    ...((capabilities?.runtimeAutoModeGuardrail ?? 0) >= 5 ? [] : ['runtimeAutoModeGuardrail v5']),
     ...((capabilities?.sandboxRuntime ?? 0) >= 11 ? [] : ['sandboxRuntime v11']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
     ...((capabilities?.sharedSessionSettings ?? 0) >= 2 ? [] : ['sharedSessionSettings v2']),
@@ -1903,25 +1901,9 @@ function isRuntimeDaemonDisconnectFailure(error: unknown): error is {
   );
 }
 
-function runtimeFailureKind(value: unknown): RuntimeRunFailureKind | undefined {
-  switch (value) {
-    case 'auth':
-    case 'rate_limit':
-    case 'network':
-    case 'not_found':
-    case 'unknown_provider':
-    case 'request':
-    case 'upstream':
-    case 'cancelled':
-    case 'provider_aborted':
-    case 'invalid_response':
-    case 'runtime_cleanup':
-    case 'context_capacity':
-    case 'provider':
-      return value;
-    default:
-      return undefined;
-  }
+function runtimeFailureKind(value: unknown) {
+  const parsed = spaceRuntimeRunFailureKindSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function isReconnectableInitializationFailure(error: unknown): boolean {

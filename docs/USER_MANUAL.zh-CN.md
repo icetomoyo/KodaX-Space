@@ -6,9 +6,10 @@
 
 > 当前发布精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。
 >
-> 当前源码候选为 Space `0.1.46-alpha.10`，精确锁定 KodaX `0.7.96-beta.6`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
+> 当前源码候选为 Space `0.1.46-alpha.10`，精确锁定 KodaX `0.7.96-beta.8`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
 > Windows 既有安装首次迁移可能需要用户在 Settings → Runtime 明确执行一次 Sandbox Setup；
 > 普通启动、Refresh 和工具调用不会隐式提升权限。正式发布版的 0.7.95 说明保留为历史事实。
+> beta.8 能在重新读取历史时应用已经明确确认的旧消息身份修复记录。未经确认的历史身份不会自动合并；本次 Space 未增加确认入口。SDK 报告修复记录无效时，仍显示可读历史和部分可用提示。
 >
 > 已发布产品基线：KodaX Space [`v0.1.45`](https://github.com/icetomoyo/KodaX-Space/releases/tag/v0.1.45)（package `0.1.45`）/ npm 正式发布的精确 KodaX `0.7.95`。ask_user 与 guardrail 授权以对话流内的聚焦提问卡呈现：全部待答卡并存可答，composer 上方有带计数与定位闪光的召回停靠条，队首卡支持 1-9/Enter/Esc 键盘操作，对话历史保持可滚动。
 >

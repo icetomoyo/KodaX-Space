@@ -14,8 +14,18 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Changed
+
+- **KodaX 0.7.96-beta.8 integration** — Root and Desktop now pin the exact published
+  SDK package. Space consumes confirmed legacy input aliases after history reload;
+  the SDK preserves their audit records across saves and restart. Unconfirmed old
+  identities are not automatically inferred or merged by the client.
+
 ### Fixed
 
+- Preserve readable history when the SDK reports `identity_repair_invalid`, and
+  retain structured `local_execution` failures without suggesting provider setup
+  or automatic retry for local execution errors.
 - **FEATURE_275 transcript ownership** — Canonical history pages and the live tail now feed a
   derived view with explicit input/output ownership. Settling one input no longer deletes other
   inputs in the same Run. Exact retirement receipts reject known journal replay and snapshot

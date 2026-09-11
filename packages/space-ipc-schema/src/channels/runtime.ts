@@ -191,6 +191,7 @@ export const spaceRuntimeRunFailureKindSchema = z.enum([
   'provider_aborted',
   'invalid_response',
   'runtime_cleanup',
+  'local_execution',
   'context_capacity',
   'provider',
 ]);
@@ -203,6 +204,7 @@ export const spaceRuntimeFailureStageSchema = z.enum([
   'response_stream',
   'runtime_control',
   'runtime_settlement',
+  'local_execution',
 ]);
 
 export const spaceRuntimeProviderErrorCodeSchema = z.enum([
@@ -224,6 +226,7 @@ export const spaceRuntimeProviderErrorCodeSchema = z.enum([
   'response_stream_error',
   'cancelled',
   'runtime_settlement_failed',
+  'local_execution_error',
   'context_capacity_exceeded',
   'provider_error',
 ]);

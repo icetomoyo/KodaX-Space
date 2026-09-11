@@ -119,6 +119,21 @@ test('session.history reports SDK conversation confidence without exposing raw e
   );
 });
 
+test('session.history keeps readable history when SDK rejects an invalid identity repair', () => {
+  const result = sessionHistoryChannel.output.parse({
+    ...historyEnvelope,
+    items: [{ kind: 'user', content: 'unmerged query' }],
+    conversation: {
+      status: 'partial',
+      sourceRevision: 'sha256:repair-source',
+      issues: [{ code: 'identity_repair_invalid', occurrenceCount: 1, entryCount: 1 }],
+    },
+  });
+  assert.deepEqual(result.items, [{ kind: 'user', content: 'unmerged query' }]);
+  assert.equal(result.conversation?.status, 'partial');
+  assert.equal(result.conversation?.issues[0]?.code, 'identity_repair_invalid');
+});
+
 test('session image previews are bounded capability URLs in send acknowledgements and history', () => {
   const token = 'a'.repeat(32);
   const attachment = {

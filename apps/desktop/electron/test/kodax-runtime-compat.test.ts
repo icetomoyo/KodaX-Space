@@ -9,7 +9,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.96-beta.6';
+const EXPECTED_KODAX_VERSION = '0.7.96-beta.8';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -1502,7 +1502,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
 });
 
 test(`KodaX ${EXPECTED_KODAX_VERSION} exposes the required Auto[LLM] Runtime capabilities`, async () => {
-  const { KODAX_RUNTIME_SDK_CAPABILITIES } = await import("@kodax-ai/kodax/runtime");
+  const { KODAX_RUNTIME_SDK_CAPABILITIES } = await import('@kodax-ai/kodax/runtime');
   assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.runtimeAutoModeGuardrail, 5);
   assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sharedSessionSettings, 2);
   assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime, 11);

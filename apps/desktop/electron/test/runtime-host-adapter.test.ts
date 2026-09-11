@@ -11069,7 +11069,7 @@ test('legacy daemon failure text cannot cross the credential-safe IPC boundary',
   await adapter.close();
 });
 
-test('daemon cancelled and interrupted terminals preserve structured Runtime diagnostics', async () => {
+test('daemon failed, cancelled and interrupted terminals preserve structured Runtime diagnostics', async () => {
   const pushed: unknown[] = [];
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -11080,6 +11080,17 @@ test('daemon cancelled and interrupted terminals preserve structured Runtime dia
   const bridgeRuntimeEvent = bindTestRuntimeEventBridge(adapter);
 
   const cases = [
+    {
+      type: 'run.failed',
+      failureDetail: {
+        failureKind: 'local_execution',
+        stage: 'local_execution',
+        providerErrorCode: 'local_execution_error',
+        safeMessage: 'Local SDK execution failed.',
+        requestId: 'request_local',
+      },
+      expected: { category: 'unknown', retriable: false, action: undefined },
+    },
     {
       type: 'run.cancelled',
       failureDetail: {
@@ -11114,7 +11125,8 @@ test('daemon cancelled and interrupted terminals preserve structured Runtime dia
       payload: {
         runId: `run_${type}`,
         sessionId: 's_1',
-        phase: type === 'run.cancelled' ? 'cancelled' : 'interrupted',
+        phase:
+          type === 'run.failed' ? 'failed' : type === 'run.cancelled' ? 'cancelled' : 'interrupted',
         startedAt: '2026-08-28T00:00:00.000Z',
         provider: 'mock',
         failureDetail,
@@ -11165,6 +11177,7 @@ test('daemon failureKind drives credential-safe recovery actions', async () => {
     ['provider_aborted', 'unknown', false, undefined],
     ['invalid_response', 'bad_request', false, 'open_provider_settings'],
     ['context_capacity', 'bad_request', false, 'change_model'],
+    ['local_execution', 'unknown', false, undefined],
   ] as const;
 
   cases.forEach(([failureKind], index) => {
