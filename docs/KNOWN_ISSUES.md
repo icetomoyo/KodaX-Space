@@ -365,16 +365,19 @@ never reclaims orphaned closed-live segments — producing doubled tool chips,
 lost bodies, and tail-fragment ghosts carrying canonical timestamps.
 Ctrl+R rebuilds cold from canonical rows alone, which is why it always heals.
 
-### Resolution (in progress)
+### Resolution (Space source fixed; SDK identity integration pending)
 
-Tracked as FEATURE_275 (`docs/features/v0.1.46.md`, mechanism baseline
-section). Two deterministic failing-gate cases (L and M) are committed
-skipped in `transcript-order-real-lineage-repro.test.ts`: case L variant B
-reproduces "canonical answers painted above the previous query" exactly;
-case M reproduces doubled chips + lost body. P1 (compose sortKey
-unification) kills the position half; P2 (settle-and-retire + shadow
-reclaim) kills the content half. The gates flip green as those land before
-v0.1.46 final.
+FEATURE_275 now separates canonical page and live tail sources and renders explicit
+input/output owners. L/M and the refresh-equivalence gates run without skips or an
+allowlisted difference. The 2026-09-11 follow-up replaces Run-wide retirement with
+covered-input retirement and guards replay, snapshot sidecars, paging, fork/rewind,
+and delayed attachment updates. See the correction in `docs/features/v0.1.46.md`.
+
+The new Session `20260911_100157_8gbfe22d504b2f` also has an SDK identity break:
+delivery references `entry_fdb4f2769c49`, but the resolved canonical query is
+`entry_c49fccdba757` with no audit alias for that delivery entry. Unknown conflicting
+identities remain visible by design. Keep the issue open until the SDK preserves
+this lineage and the original Session passes live/reload integration validation.
 
 ### Files Changed
 

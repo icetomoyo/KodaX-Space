@@ -14,6 +14,17 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Fixed
+
+- **FEATURE_275 transcript ownership** — Canonical history pages and the live tail now feed a
+  derived view with explicit input/output ownership. Settling one input no longer deletes other
+  inputs in the same Run. Exact retirement receipts reject known journal replay and snapshot
+  sidecars without treating a larger cursor as proof that unknown inputs were seen. Receipts and
+  overlapping newest pages remain bounded; expired evidence falls back to preserving content.
+  History eviction, delayed
+  attachment updates, fork, and rewind preserve the source distinction. Delivery/canonical entry
+  identity conflicts still require an authoritative SDK alias and are never merged by text or time.
+
 ---
 
 ## [0.1.46-alpha.10] - 2026-09-11

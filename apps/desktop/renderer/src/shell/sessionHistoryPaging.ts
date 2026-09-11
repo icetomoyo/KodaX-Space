@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react';
 import type { SessionEvent, SessionHistoryItem } from '@kodax-space/space-ipc-schema';
 import {
   registerSessionViewLifecycleReset,
+  invalidateSessionCanonicalTranscriptPage,
   useAppStore,
   type SettledRuntimeHistoryRun,
 } from '../store/appStore.js';
@@ -171,9 +172,7 @@ interface ObservedRuntimeTerminal {
   readonly turnId?: string;
 }
 
-function captureObservedRuntimeTerminals(
-  sessionId: string,
-): Map<string, ObservedRuntimeTerminal> {
+function captureObservedRuntimeTerminals(sessionId: string): Map<string, ObservedRuntimeTerminal> {
   const state = useAppStore.getState();
   const observed = new Map<string, ObservedRuntimeTerminal>();
   for (const event of state.eventsBySession[sessionId] ?? []) {
@@ -634,6 +633,8 @@ function applyHistoryResult(
       readonly hasNewer?: boolean;
       readonly outcome?: 'ready' | 'data_changed' | 'runtime_unavailable';
       readonly sourceRevision?: string;
+      readonly revision?: string;
+      readonly nextCursor?: string;
     };
   };
   const nextItems =
@@ -645,6 +646,8 @@ function applyHistoryResult(
   const session = store.sessions.find((candidate) => candidate.sessionId === sessionId);
   store.prependSessionHistory(sessionId, nextItems, session?.createdAt ?? Date.now(), {
     replaceLoadedWindow: true,
+    revision: result.page?.revision,
+    cursor: result.page?.nextCursor,
     // A prepend retains the newest canonical page already resident in nextItems, so the live
     // projection still belongs at its bottom. Only a true replacement browsing window excludes it.
     includeLiveProjection: result.page?.windowMode === 'prepend' || result.page?.hasNewer !== true,
@@ -771,9 +774,7 @@ async function requestHistory(
   // 票 6：watermark 必须在 fetch 之前采样 —— capture 时已在本地下水的 terminal，其 Run 的
   // journal 贡献先于本次读取 snapshot，读取即该 Run 的 exact post-terminal read。
   const observedTerminalsAtCapture = captureObservedRuntimeTerminals(sessionId);
-  const scopedRunIds = new Set(
-    (terminalHistoryRequestScope?.runs ?? []).map((run) => run.runId),
-  );
+  const scopedRunIds = new Set((terminalHistoryRequestScope?.runs ?? []).map((run) => run.runId));
 
   const pending = (async () => {
     const bridge = window.kodaxSpace;
@@ -841,6 +842,7 @@ async function requestHistory(
     }
     let page = result.page;
     if (page?.outcome === 'data_changed') {
+      invalidateSessionCanonicalTranscriptPage(sessionId);
       loadedEpochs.delete(sessionId);
       publish(sessionId, {
         ...(retainReadyProjection && previous.phase === 'ready' ? previous : IDLE_HISTORY_STATE),

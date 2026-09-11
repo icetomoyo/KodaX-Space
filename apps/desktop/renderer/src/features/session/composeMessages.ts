@@ -147,6 +147,9 @@ function compareUserSlotOrder(
 ): number {
   const a = left.message;
   const b = right.message;
+  if (a.projectionOrder !== undefined && b.projectionOrder !== undefined) {
+    return a.projectionOrder - b.projectionOrder;
+  }
   if (a.canonicalIndex !== undefined && b.canonicalIndex !== undefined) {
     return a.canonicalIndex - b.canonicalIndex || left.index - right.index;
   }
@@ -373,6 +376,16 @@ function routeRuntimeOwnedEvents(
     | undefined;
 
   for (const event of events) {
+    if (
+      'transcriptOwnerId' in event &&
+      typeof event.transcriptOwnerId === 'string' &&
+      userMessages.some((user) => user.id === event.transcriptOwnerId)
+    ) {
+      const owned = eventsByUserId.get(event.transcriptOwnerId) ?? [];
+      owned.push(event);
+      eventsByUserId.set(event.transcriptOwnerId, owned);
+      continue;
+    }
     // Delivery markers remain in the positional stream because they split multiple user
     // segments inside one Runtime Run. Other uniquely owned modern events can be detached from
     // a foreign segment, then merged back by their original event index.

@@ -62,7 +62,7 @@ function assertClosedTranscriptStructure(sessionId: string): void {
     (message) => message.historyNoAssistantSegment !== true,
   );
   const segments: SessionEvent[][] = [];
-  for (let cursor = 0; cursor < events.length;) {
+  for (let cursor = 0; cursor < events.length; ) {
     const end = testSegmentEnd(events, cursor);
     assert.ok(end > cursor, 'every event segment must advance the cursor');
     segments.push(events.slice(cursor, end));
@@ -2462,7 +2462,7 @@ test('a conflicting open live entry remains visible beside a canonical user-only
   );
 });
 
-test('history-first delivered interrupt folds only after its exact live projection closes', () => {
+test('history-first delivery keeps one canonical query while an empty live projection opens', () => {
   const store = useAppStore.getState();
   store.prependSessionHistory(
     SID,
@@ -2492,7 +2492,7 @@ test('history-first delivered interrupt folds only after its exact live projecti
     (useAppStore.getState().userMessagesBySession[SID] ?? []).filter(
       (message) => message.content === 'history first',
     ).length,
-    2,
+    1,
   );
   store.appendEvent({ kind: 'text_delta', sessionId: SID, text: 'live answer' });
   store.appendEvent({ kind: 'session_complete', sessionId: SID });
@@ -3511,8 +3511,8 @@ test('history-first queued promotion keeps a live segment owner without renderin
         message.turnId === 'turn-queued' &&
         message.hiddenProjectionDuplicate === true,
     ),
-    true,
-    'the hidden live owner keeps subsequent events paired until terminal reconciliation',
+    false,
+    'the separate live tail keeps ownership without hidden rows in the display projection',
   );
 
   store.appendEvent({
@@ -4446,7 +4446,7 @@ test('history eviction preserves an open divergent live owner before terminal', 
   );
 });
 
-test('an unhidden live owner restores its original time after the hidden baseline is refreshed', () => {
+test('an overlaid live owner keeps its original timestamp after an identity ACK and history eviction', () => {
   const store = useAppStore.getState();
   const originalSentAt = 25_000;
   const messageId = store.appendUserMessage(SID, 'temporarily hidden query', originalSentAt);
@@ -4492,7 +4492,7 @@ test('an unhidden live owner restores its original time after the hidden baselin
     (useAppStore.getState().userMessagesBySession[SID] ?? []).find(
       (message) => message.id === messageId,
     )?.hiddenProjectionDuplicate,
-    true,
+    undefined,
   );
 
   // A later identity acknowledgement refreshes the independent baseline while the UI-only

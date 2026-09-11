@@ -11,6 +11,18 @@
 //   - 异步进行中标志（busy）—— 同上
 
 import { create } from 'zustand';
+import {
+  retireTranscriptUnits,
+  isRetiredTranscriptEvent,
+  type TranscriptRetirement,
+} from './transcriptRetirement.js';
+import {
+  transcriptUnits,
+  renderTranscriptUnits,
+  transcriptUserIdentity,
+  type TranscriptPlane,
+  type TranscriptUnit,
+} from './transcriptPlanes.js';
 import type {
   Project,
   ProviderInfo,
@@ -67,7 +79,7 @@ import {
 } from './runtimeProjectionState.js';
 import {
   filterEffectiveOutputSegmentEvents,
-  hydrateSessionEventsFromLiveSnapshot,
+  hydrateSessionEventsFromLiveSnapshot as hydrateRuntimeSnapshotEvents,
   projectionTextSuffix,
   runtimeDeltasShareSnapshotSide,
 } from './runtimeSnapshotHydration.js';
@@ -75,7 +87,13 @@ import {
   mergeRuntimeActivityIntoSessions,
   mergeRuntimeSettingsIntoSessions,
 } from './runtimeSessionSettings.js';
-import { selectTranscriptProjectionMergeStrategy } from './transcriptProjection.js';
+import type {
+  UserImageAttachment,
+  UserMessage,
+  QueuedUserMessage,
+  SendOperationReservation,
+} from './transcriptTypes.js';
+export type { UserImageAttachment, UserMessage, QueuedUserMessage } from './transcriptTypes.js';
 import { pushToast, useToastStore } from './toastStore.js';
 import { translateMessage } from '../i18n/I18nProvider.js';
 import { isCancelledSessionError } from '../features/session/sessionError.js';
@@ -192,137 +210,14 @@ const DEFAULT_RECENTS_FILTER: RecentsFilter = {
   sortBy: 'recency',
 };
 
-/**
- * 用户在 renderer 端发出的 prompt 记录。
- * Main 端不会把用户 prompt 通过 push channel 回放——它是 invoke 的入参，单向。
- * Renderer 自己保留一份，与 session.event push 流共同构成完整对话。
- */
-export type UserImageAttachment =
-  | {
-      readonly id: string;
-      readonly kind: 'image';
-      readonly mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
-      readonly label?: string;
-      readonly bytes?: number;
-      readonly status: 'available';
-      /**
-       * History uses short-lived app:// capabilities; the optimistic live row uses the
-       * already-normalized data URL until session.send replaces it with the capability.
-       */
-      readonly thumbnailUrl: string;
-      readonly previewUrl: string;
-    }
-  | {
-      readonly id: string;
-      readonly kind: 'image';
-      readonly mediaType?: 'image/png' | 'image/jpeg' | 'image/webp';
-      readonly label?: string;
-      readonly bytes?: number;
-      readonly status: 'missing' | 'unsupported';
-    };
-
-export interface UserMessage {
-  /** 唯一 id：sessionId + 单调 counter 拼接，保 React key 稳定。*/
-  readonly id: string;
-  readonly content: string;
-  readonly sentAt: number;
-  readonly attachments?: readonly UserImageAttachment[];
-  /** Stable canonical boundary identity supplied by KodaX Runtime/history. */
-  readonly turnId?: string;
-  readonly turnUserOrdinal?: number;
-  /** Renderer-only admission identity captured from run.started before turnId exists. */
-  readonly runtimeRunId?: string;
-  /** Composer send-operation identity; deterministically claims this optimistic message
-   *  when a live run projection arrives with the same originOperationId (lost-ACK recovery). */
-  readonly operationId?: string;
-  readonly operationReservation?: SendOperationReservation;
-  readonly sendAdmissionSettled?: true;
-  readonly canonicalIndex?: number;
-  /** Absolute visible turn index before bounded history-window truncation. */
-  readonly historyTurnIndex?: number;
-  /** Exact persisted turn-end boundary used instead of a page-local turn index. */
-  readonly historyBoundary?: {
-    readonly boundaryId: string;
-    readonly sourceRevision: string;
-  };
-  /** Canonical persisted transcript provenance (history-only, never used as a React key). */
-  readonly entryId?: string;
-  readonly auditEntryIds?: readonly string[];
-  readonly parentId?: string | null;
-  readonly logicalId?: string;
-  readonly sourceEntryId?: string;
-  readonly authoritativeEntryId?: string;
-  /** Internal idempotency identity for a Runtime-delivered queued prompt. */
-  readonly deliveryQueueId?: string;
-  readonly deliveryQueueMode?: QueuedUserMessage['queueMode'];
-  /** Interrupt deliveries require an exact canonical entry reference before live/history folding. */
-  readonly deliveredInterrupt?: true;
-  /** Stable renderer-local identity retained when a queued bubble is promoted before its ACK. */
-  readonly sourceQueuedLocalId?: string;
-  readonly historyNoAssistantSegment?: boolean;
-  /** Internal provenance used only to reconcile the session.history/live-stream boundary. */
-  readonly restoredFromHistory?: true;
-  /**
-   * A complete durable projection is already visible for this canonical boundary, but the live
-   * projection still needs a segment owner until its terminal arrives. Consume its events without
-   * rendering a second user/assistant copy; terminal reconciliation removes this placeholder.
-   */
-  readonly hiddenProjectionDuplicate?: true;
-  /** Original live ordering key while hiddenProjectionDuplicate temporarily follows its owner. */
-  readonly hiddenProjectionOriginalSentAt?: number;
-  /**
-   * Internal alignment anchor for assistant/tool-leading history and history/live segment gaps.
-   * It keeps positional event owners aligned without presenting a fabricated empty user bubble.
-   */
-  readonly hiddenHistoryAnchor?: boolean;
-  /**
-   * The newest bounded history page began inside this Runtime turn, before its canonical user
-   * entry. The anchor may reconcile with a unique live owner for the same authoritative turnId;
-   * it must remain ambiguous when one Runtime turn contains multiple live user prompts.
-   */
-  readonly leadingPartialHistory?: true;
-  /**
-   * Runtime supplied a canonical turnId but could not prove this user's ordinal within that turn.
-   * A unique semantic live owner may supply only that missing ordinal; canonical content and
-   * mutation boundary remain authoritative.
-   */
-  readonly omittedHistoryUserOrdinal?: true;
-}
-
 /** Renderer-only ownership marker for events reconstructed from a replaceable history window. */
 const restoredHistoryEvents = new WeakSet<object>();
 
-interface HistoryLiveBaseline {
+interface LiveTranscriptTail {
   userMessages: readonly UserMessage[];
   events: readonly SessionEvent[];
-  /** Live owners already proven to have one exact durable canonical counterpart. */
-  readonly durableCanonicalizedUserIds: Set<string>;
-  /** Canonical index namespace for canonicalIndexByUserId. */
-  canonicalSourceRevision?: string;
-  /** Live owners that were once proven to occupy an exact canonical transcript index. */
-  canonicalIndexByUserId: Map<string, number>;
-  /**
-   * FEATURE_275 票 5 结算即退役：owners whose shadow turn was physically reclaimed from this
-   * baseline after a certified canonical merge. A tombstoned id must never re-enter the live
-   * baseline — its content already lives in the canonical page, so re-admission can only ever
-   * resurrect a duplicate (rehydration / window rebuild replay the same row).
-   */
-  readonly retiredCanonicalizedUserIds: Set<string>;
-}
-
-interface CanonicalizedLiveOwner {
-  readonly messageId: string;
-  readonly canonicalIndex: number;
-  /** Runtime run of the settled live turn — the retirement removal key (events of one Run are
-   * causally contiguous). Present only on certified owners. */
-  readonly runtimeRunId?: string;
-  readonly turnId?: string;
-  /**
-   * FEATURE_275 票 5: set only when the fold merged under certified canonical authority
-   * (decideTurnProjectionAuthority === 'canonical'). Certification authorizes physical shadow
-   * reclamation; compatibility folds keep today's fail-open coexistence.
-   */
-  readonly certified?: true;
+  coverage?: Map<string, number>;
+  retirement?: TranscriptRetirement;
 }
 
 /**
@@ -331,8 +226,43 @@ interface CanonicalizedLiveOwner {
  * newest history page was stale becomes input to the next rebuild and is rendered twice once the
  * durable page catches up.
  */
-const historyLiveBaselines = new Map<string, HistoryLiveBaseline>();
-const MAX_HISTORY_LIVE_BASELINES = 32;
+const liveTailBySession = new Map<string, LiveTranscriptTail>();
+interface CanonicalTranscriptPage extends TranscriptPlane {
+  readonly windowSize: number;
+  readonly dataChanged: boolean;
+  readonly revision?: string;
+  readonly cursor?: string;
+  readonly authority?: CertifiedCanonicalTranscriptAuthority;
+  readonly includeLiveProjection: boolean;
+  readonly sourceRevision?: string;
+}
+const canonicalPageBySession = new Map<string, CanonicalTranscriptPage>();
+const projectedViewBySession = new Map<string, TranscriptPlane>();
+
+/** Immutable loaded-page contract. Subscribe through the store projection, then read this page;
+ * undefined means paging evicted it. A data_changed reply invalidates the cursor
+ * in sessionHistoryPaging; it never installs unverified rows here. */
+export function sessionCanonicalTranscriptPage(
+  sessionId: string,
+):
+  | Pick<
+      CanonicalTranscriptPage,
+      'userMessages' | 'events' | 'revision' | 'sourceRevision' | 'cursor' | 'dataChanged'
+    >
+  | undefined {
+  return canonicalPageBySession.get(sessionId);
+}
+
+export function invalidateSessionCanonicalTranscriptPage(sessionId: string): void {
+  const page = canonicalPageBySession.get(sessionId);
+  if (page)
+    canonicalPageBySession.set(sessionId, {
+      ...page,
+      cursor: undefined,
+      dataChanged: true,
+      authority: undefined,
+    });
+}
 const sessionViewLifecycleResetHandlers = new Set<() => void>();
 
 /**
@@ -346,7 +276,9 @@ export function registerSessionViewLifecycleReset(handler: () => void): () => vo
 }
 
 function resetSessionViewLifecycles(): void {
-  historyLiveBaselines.clear();
+  liveTailBySession.clear();
+  canonicalPageBySession.clear();
+  projectedViewBySession.clear();
   for (const reset of sessionViewLifecycleResetHandlers) {
     try {
       reset();
@@ -357,14 +289,10 @@ function resetSessionViewLifecycles(): void {
   }
 }
 
-function rememberHistoryLiveBaseline(sessionId: string, baseline: HistoryLiveBaseline): void {
-  historyLiveBaselines.delete(sessionId);
-  historyLiveBaselines.set(sessionId, baseline);
-  while (historyLiveBaselines.size > MAX_HISTORY_LIVE_BASELINES) {
-    const oldest = historyLiveBaselines.keys().next().value;
-    if (oldest === undefined) break;
-    historyLiveBaselines.delete(oldest);
-  }
+function rememberLiveTranscriptTail(sessionId: string, baseline: LiveTranscriptTail): void {
+  // sessionHistoryPaging owns the 32-page cache eviction. Never evict an unresolved tail
+  // independently: it may contain the only copy of a response.
+  liveTailBySession.set(sessionId, baseline);
 }
 
 function rememberHistoryLiveEvent(
@@ -372,9 +300,81 @@ function rememberHistoryLiveEvent(
   event: SessionEvent,
   snapshotCursor?: RuntimeSnapshotEventBarrier,
 ): void {
-  const baseline = historyLiveBaselines.get(sessionId);
+  const baseline = liveTailBySession.get(sessionId);
   if (!baseline) return;
+  if (isCompactionNotice(event)) {
+    baseline.events = baseline.events.filter(
+      (candidate) =>
+        !isCompactionNotice(candidate) ||
+        !(
+          (event.provisionalId !== undefined && candidate.provisionalId === event.provisionalId) ||
+          (event.entryId !== undefined && candidate.entryId === event.entryId)
+        ),
+    );
+  }
   baseline.events = appendSessionEvent(baseline.events, event, snapshotCursor);
+}
+
+function updateTranscriptOwner(
+  sessionId: string,
+  owner: UserMessage,
+  patch: Partial<UserMessage>,
+): void {
+  const update = (user: UserMessage): UserMessage =>
+    transcriptUserIdentity(user, owner) === 'match' ? { ...user, ...patch, id: user.id } : user;
+  const tail = liveTailBySession.get(sessionId);
+  if (tail) tail.userMessages = tail.userMessages.map(update);
+  const page = canonicalPageBySession.get(sessionId);
+  if (page)
+    canonicalPageBySession.set(sessionId, { ...page, userMessages: page.userMessages.map(update) });
+}
+
+function runtimeOwnerMetadata(user: UserMessage): Partial<UserMessage> {
+  return Object.fromEntries(
+    Object.entries({
+      runtimeRunId: user.runtimeRunId,
+      operationId: user.operationId,
+      operationReservation: user.operationReservation,
+      sendAdmissionSettled: user.sendAdmissionSettled,
+      deliveryQueueId: user.deliveryQueueId,
+      deliveryQueueMode: user.deliveryQueueMode,
+      sourceQueuedLocalId: user.sourceQueuedLocalId,
+      deliveredInterrupt: user.deliveredInterrupt,
+    }).filter(([, value]) => value !== undefined),
+  );
+}
+
+function snapshotInitialOwnerRetired(
+  projection: SpaceSessionLiveProjectionT,
+  runId: string,
+): boolean {
+  const tail = liveTailBySession.get(projection.sessionId);
+  if (!tail || tail.userMessages.some((user) => user.runtimeRunId === runId)) return false;
+  const turnId = knownProjectionRunTurnId(projection, runId);
+  return (
+    tail.retirement?.receipts.some(
+      (receipt) =>
+        receipt.runtimeId === projection.cursor.runtimeId &&
+        receipt.journalEpoch === projection.cursor.journalEpoch &&
+        receipt.runId === runId &&
+        receipt.turnId === turnId &&
+        receipt.turnUserOrdinal === 0,
+    ) ?? false
+  );
+}
+
+function hydrateSessionEventsFromLiveSnapshot(
+  events: readonly SessionEvent[],
+  projection: SpaceSessionLiveProjectionT | undefined,
+): readonly SessionEvent[] {
+  if (!projection) return events;
+  const hydrated = hydrateRuntimeSnapshotEvents(events, projection);
+  const tail = liveTailBySession.get(projection.sessionId);
+  return tail
+    ? hydrated.filter(
+        (event) => events.includes(event) || !isRetiredTranscriptEvent(tail.retirement, event),
+      )
+    : hydrated;
 }
 
 function liveBaselineUser(message: UserMessage): UserMessage {
@@ -395,7 +395,7 @@ function liveBaselineUser(message: UserMessage): UserMessage {
 }
 
 function rememberHistoryLiveUsers(sessionId: string, users: readonly UserMessage[]): void {
-  const baseline = historyLiveBaselines.get(sessionId);
+  const baseline = liveTailBySession.get(sessionId);
   if (!baseline) return;
   const byId = new Map(
     baseline.userMessages.map((message) => {
@@ -404,12 +404,8 @@ function rememberHistoryLiveUsers(sessionId: string, users: readonly UserMessage
     }),
   );
   for (const message of users) {
-    // FEATURE_275 票 5: a tombstoned owner was physically reclaimed into the canonical page;
-    // re-remembering it would resurrect a settled duplicate.
-    if (
-      message.restoredFromHistory !== true &&
-      !baseline.retiredCanonicalizedUserIds.has(message.id)
-    ) {
+    // Only live owners enter the tail; canonical rows are read from the installed page.
+    if (message.restoredFromHistory !== true) {
       byId.set(message.id, liveBaselineUser(message));
     }
   }
@@ -417,15 +413,8 @@ function rememberHistoryLiveUsers(sessionId: string, users: readonly UserMessage
 }
 
 function rememberOpenedHistoryLiveOwner(sessionId: string, message: UserMessage): void {
-  const baseline = historyLiveBaselines.get(sessionId);
+  const baseline = liveTailBySession.get(sessionId);
   if (!baseline) return;
-  // FEATURE_275 票 5: tombstoned owners stay retired across promotion/re-open replays.
-  if (
-    baseline.retiredCanonicalizedUserIds.has(message.id) ||
-    baseline.retiredCanonicalizedUserIds.has(`${message.id}:runtime`)
-  ) {
-    return;
-  }
   const {
     restoredFromHistory: _restored,
     canonicalIndex: _canonicalIndex,
@@ -458,141 +447,16 @@ function rememberOpenedHistoryLiveOwner(sessionId: string, message: UserMessage)
 }
 
 function forgetHistoryLiveUsers(sessionId: string, messageIds: readonly string[]): void {
-  const baseline = historyLiveBaselines.get(sessionId);
+  const baseline = liveTailBySession.get(sessionId);
   if (!baseline || messageIds.length === 0) return;
   const forgotten = new Set(messageIds);
   baseline.userMessages = baseline.userMessages.filter((message) => !forgotten.has(message.id));
-  for (const messageId of forgotten) {
-    baseline.canonicalIndexByUserId.delete(messageId);
-    baseline.durableCanonicalizedUserIds.delete(messageId);
-  }
 }
 
-/**
- * FEATURE_275 票 5 结算即退役：从影子缓存中物理删除一个已结算 live 轮（user 行 + 该 Run 的
- * 全部事件）。删除按运行身份（runtimeEvent.runId / 无 origin 事件的 turnId）而非轮快照范围：
- * 影子缓存内多个 live 轮相邻时，段切分会在 prompt 边界处把 session_start 与其后续事件拆进
- * 不同段，位置范围回收会留下错位残件。一个 settled Run 的事件在因果上连续且不可能再增长，
- * 按身份整块清除既精确又不会误伤其它轮。
- */
-function retireSettledTurnFromBaseline(
-  baseline: HistoryLiveBaseline,
-  owner: CanonicalizedLiveOwner,
-): void {
-  const runId = owner.runtimeRunId;
-  const turnId = owner.turnId;
-  baseline.userMessages = baseline.userMessages.filter((message) => message.id !== owner.messageId);
-  if (runId === undefined && turnId === undefined) return;
-  baseline.events = baseline.events.filter((event) => {
-    const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
-    if (origin !== undefined) return origin.runId !== runId;
-    if ('turnId' in event) return event.turnId !== turnId;
-    return true;
-  });
-}
-
-function rememberCanonicalizedHistoryLiveOwners(
-  sessionId: string,
-  owners: readonly CanonicalizedLiveOwner[],
-): void {
-  const baseline = historyLiveBaselines.get(sessionId);
-  if (!baseline || owners.length === 0) return;
-  const baselineIds = new Set(baseline.userMessages.map((message) => message.id));
-  const settledOwners: CanonicalizedLiveOwner[] = [];
-  for (const owner of owners) {
-    if (!baselineIds.has(owner.messageId)) continue;
-    baseline.canonicalIndexByUserId.set(owner.messageId, owner.canonicalIndex);
-    baseline.durableCanonicalizedUserIds.add(owner.messageId);
-    if (owner.certified === true) settledOwners.push(owner);
-  }
-  // FEATURE_275 票 5 结算即退役：certified canonical 权威成立 = 该 live 轮的持久层副本已在
-  // canonical 页中逐条在场（身份 + settled Run 证据），影子行/事件在此物理删除并记墓碑。
-  // 稳态 buffer 不再依赖下一次 fold 的 fail-closed 隐藏；墓碑防止窗口重建 / 重水合把同一行
-  // 再次送回缓冲（只会以重复形态复活，不可能携带新内容 —— settled Run 已终结）。
-  // 兼容性 fold（无 certified 权威）保持 fail-open coexist，一律不删。
-  for (const owner of settledOwners) {
-    retireSettledTurnFromBaseline(baseline, owner);
-    baseline.retiredCanonicalizedUserIds.add(owner.messageId);
-  }
-}
-
-function pruneCanonicalizedHistoryLivePrefix(
-  baseline: HistoryLiveBaseline,
-  firstRetainedCanonicalIndex: number | undefined,
-  prefixOmitted: boolean,
-): void {
-  if (!prefixOmitted || firstRetainedCanonicalIndex === undefined) return;
-  const prunedIds = new Set(
-    [...baseline.canonicalIndexByUserId.entries()].flatMap(([messageId, canonicalIndex]) =>
-      canonicalIndex < firstRetainedCanonicalIndex ? [messageId] : [],
-    ),
-  );
-  pruneHistoryLiveOwners(baseline, prunedIds);
-}
-
-function pruneHistoryLiveOwners(
-  baseline: HistoryLiveBaseline,
-  prunedIds: ReadonlySet<string>,
-): void {
-  if (prunedIds.size === 0) return;
-
-  const turns = transcriptTurnSnapshots(baseline.userMessages, baseline.events);
-  const prunedUserIndexes = new Set<number>();
-  const prunedEventIndexes = new Set<number>();
-  for (const turn of turns) {
-    if (!prunedIds.has(turn.messageId)) continue;
-    prunedUserIndexes.add(turn.userIndex);
-    for (let index = turn.eventStart; index < turn.eventEnd; index++) {
-      prunedEventIndexes.add(index);
-    }
-  }
-  baseline.userMessages = baseline.userMessages.filter((_, index) => !prunedUserIndexes.has(index));
-  baseline.events = baseline.events.filter((_, index) => !prunedEventIndexes.has(index));
-  for (const messageId of prunedIds) {
-    baseline.canonicalIndexByUserId.delete(messageId);
-    baseline.durableCanonicalizedUserIds.delete(messageId);
-  }
-}
-
-function canonicalLiveTurnRelation(
-  canonicalTurns: readonly TranscriptTurnSnapshot[],
-  live: TranscriptTurnSnapshot,
-): 'present' | 'conflict' | 'absent' {
-  return canonicalTurns.reduce<'present' | 'conflict' | 'absent'>((relation, canonical) => {
-    if (relation !== 'absent') return relation;
-    const entryRelation = userEntryIdentityRelation(canonical, live);
-    if (entryRelation === 'match') return 'present';
-    if (strongTurnIdentityMatches(canonical, live)) {
-      return entryRelation === 'conflict' ? 'conflict' : 'present';
-    }
-    return 'absent';
-  }, 'absent');
-}
-
-function pruneDurablyCanonicalizedHistoryLivePrefix(
-  baseline: HistoryLiveBaseline,
-  canonicalUsers: readonly UserMessage[],
-  canonicalEvents: readonly SessionEvent[],
-  prefixOmitted: boolean,
-  authoritativeNewest: boolean,
-): void {
-  if (!prefixOmitted || !authoritativeNewest || baseline.durableCanonicalizedUserIds.size === 0) {
-    return;
-  }
-  const canonicalTurns = transcriptTurnSnapshots(canonicalUsers, canonicalEvents);
-  const prunedIds = new Set(
-    transcriptTurnSnapshots(baseline.userMessages, baseline.events).flatMap((live) =>
-      baseline.durableCanonicalizedUserIds.has(live.messageId) &&
-      canonicalLiveTurnRelation(canonicalTurns, live) === 'absent'
-        ? [live.messageId]
-        : [],
-    ),
-  );
-  pruneHistoryLiveOwners(baseline, prunedIds);
-}
-
-function clearHistoryLiveBaseline(sessionId: string): void {
-  historyLiveBaselines.delete(sessionId);
+function clearLiveTranscriptTail(sessionId: string): void {
+  liveTailBySession.delete(sessionId);
+  canonicalPageBySession.delete(sessionId);
+  projectedViewBySession.delete(sessionId);
 }
 
 export interface LocalNoticeMessage {
@@ -615,22 +479,6 @@ export interface WorkflowNoticeMessage {
   readonly key?: string;
 }
 
-export interface QueuedUserMessage {
-  readonly id: string;
-  readonly queueId?: string;
-  /** Exact session.send operation identity, available before the queue ACK returns. */
-  readonly operationId?: string;
-  readonly operationReservation?: SendOperationReservation;
-  readonly sendAdmissionSettled?: true;
-  readonly content: string;
-  readonly matchContent: string;
-  readonly attachments?: readonly UserImageAttachment[];
-  readonly queueMode: 'interrupt' | 'after-turn';
-  readonly status: 'pending-ack' | 'queued' | 'failed';
-  readonly failureReason?: Extract<SessionEvent, { kind: 'queued_user_prompt_failed' }>['reason'];
-  readonly sentAt: number;
-}
-
 export type LocalSendOperationMessage =
   | { readonly kind: 'user'; readonly id: string }
   | { readonly kind: 'queued'; readonly id: string }
@@ -648,10 +496,6 @@ interface ReserveSendOperationInput {
   readonly queued: boolean;
   readonly sentAt?: number;
   readonly attachments?: readonly UserImageAttachment[];
-}
-
-interface SendOperationReservation {
-  readonly requestGeneration: number;
 }
 
 interface RuntimeSnapshotEventBarrier extends SpaceRuntimeCursorT {
@@ -1049,6 +893,8 @@ interface AppState {
       readonly includeLiveProjection?: boolean;
       /** Canonical index namespace for conservative live-baseline pruning. */
       readonly sourceRevision?: string;
+      readonly revision?: string;
+      readonly cursor?: string;
       /** This resolved replacement is the authoritative newest canonical window. */
       readonly authoritativeNewest?: boolean;
       /** Runs proven durable by this exact post-terminal history read. */
@@ -1528,6 +1374,8 @@ function runtimeJournalEventWasApplied(
 ): boolean {
   const incoming = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
   if (incoming?.journalEpoch === undefined) return false;
+  const isDelivery =
+    event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started';
 
   for (let index = events.length - 1; index >= 0; index--) {
     const candidate = events[index]!;
@@ -1540,6 +1388,9 @@ function runtimeJournalEventWasApplied(
     ) {
       continue;
     }
+    // The renderer does not receive every journal entry. A larger cursor cannot prove
+    // that a first-seen input was already applied, even inside the same Run.
+    if (isDelivery && existing.seq !== incoming.seq) continue;
     if (existing.seq > incoming.seq) return true;
     if (existing.seq < incoming.seq) return false;
     if (candidate.kind !== event.kind) continue;
@@ -1735,7 +1586,6 @@ function stableUserMessageSemantic(message: Pick<UserMessage, 'content' | 'attac
 interface ReconciledTranscriptBuffers {
   readonly userMessages: readonly UserMessage[];
   readonly events: readonly SessionEvent[];
-  readonly canonicalizedLiveOwners?: readonly CanonicalizedLiveOwner[];
 }
 
 function transcriptTurnSnapshots(
@@ -1746,11 +1596,24 @@ function transcriptTurnSnapshots(
   let eventCursor = 0;
   for (let userIndex = 0; userIndex < userMessages.length; userIndex++) {
     const message = userMessages[userIndex]!;
-    const eventStart = eventCursor;
+    const ownedStart = events.findIndex(
+      (event) => 'transcriptOwnerId' in event && event.transcriptOwnerId === message.id,
+    );
+    const eventStart = ownedStart >= 0 ? ownedStart : eventCursor;
+    let ownedEnd = eventStart;
+    if (ownedStart >= 0)
+      while (ownedEnd < events.length) {
+        const ownedEvent = events[ownedEnd]!;
+        if (!('transcriptOwnerId' in ownedEvent) || ownedEvent.transcriptOwnerId !== message.id)
+          break;
+        ownedEnd++;
+      }
     const eventEnd =
-      message.historyNoAssistantSegment === true
-        ? eventCursor
-        : transcriptSegmentEnd(events, eventCursor);
+      ownedStart >= 0
+        ? ownedEnd
+        : message.historyNoAssistantSegment === true
+          ? eventCursor
+          : transcriptSegmentEnd(events, eventCursor);
     const semantic = transcriptSegmentSemantic(events.slice(eventStart, eventEnd));
     turns.push({
       messageId: message.id,
@@ -1814,7 +1677,12 @@ function transcriptTurnSnapshots(
 }
 
 type CanonicalTranscriptRecordKind =
-  'user' | 'assistant' | 'tool' | 'sidecar' | 'lineage' | 'workflow';
+  | 'user'
+  | 'assistant'
+  | 'tool'
+  | 'sidecar'
+  | 'lineage'
+  | 'workflow';
 
 interface CanonicalTranscriptRecord {
   readonly kind: CanonicalTranscriptRecordKind;
@@ -2572,25 +2440,6 @@ function uniqueLeadingHistoryOwnerResolution(
   return matchingCanonicalOwners === 1 ? { kind: 'enrich_canonical_owner' } : undefined;
 }
 
-function exactRestoredTurnIdentityMatches(
-  left: TranscriptTurnSnapshot,
-  right: TranscriptTurnSnapshot,
-): boolean {
-  if (!left.restoredFromHistory || !right.restoredFromHistory) return false;
-  if (left.canonicalIndex !== undefined || right.canonicalIndex !== undefined) {
-    return (
-      left.canonicalIndex !== undefined &&
-      right.canonicalIndex !== undefined &&
-      left.canonicalIndex === right.canonicalIndex
-    );
-  }
-  // Legacy full-history readers lacked canonical indexes. Their Runtime turn + visible ordinal is
-  // still the strongest persisted identity available and preserves idempotency for an identical
-  // replay. Paged Runtime rows always carry canonicalIndex, so ambiguous cross-page ordinals never
-  // enter this compatibility branch.
-  return strongTurnIdentityMatches(left, right);
-}
-
 function projectedEventText(
   events: readonly SessionEvent[],
   kind: 'text_delta' | 'thinking_delta',
@@ -2706,7 +2555,7 @@ function dedupePersistedCompactionBoundaries(events: readonly SessionEvent[]): S
           // Keep the first durable/canonical position while enriching it with the live
           // provisional identity. A later exact delivery must also retire its now-proven
           // placeholder, even when history restored the same physical entry first.
-          out[exactSlot] = { ...exact, ...event };
+          out[exactSlot] = { ...exact, ...event, displayId: exact.displayId ?? exact.entryId };
           if (provisionalSlot !== undefined && provisionalSlot !== exactSlot) {
             const provisional = out[provisionalSlot];
             if (isCompactionNotice(provisional!) && provisional.entryId === undefined) {
@@ -2911,27 +2760,6 @@ function mergeIdentityProvenTurnProjections(
   return terminals.length > 0 ? [...body, ...terminals] : body;
 }
 
-function preserveRelocatedSegmentClosure(
-  events: readonly SessionEvent[],
-  turn: TranscriptTurnSnapshot,
-): SessionEvent[] {
-  if (events.length === 0 || events.some(isTranscriptTerminal)) return [...events];
-  const sessionId = events[0]?.sessionId;
-  if (!sessionId) return [...events];
-  // A closed live segment can be delimited only by the following prompt marker. Folding relocates
-  // the segment to its durable owner and leaves that marker with the next owner, so reproduce the
-  // lost structural boundary explicitly. This renderer-only terminal is the same delimiter used
-  // by session.history reconstruction; it does not claim that a separate Runtime run completed.
-  return [
-    ...events,
-    {
-      kind: 'session_complete',
-      sessionId,
-      ...(turn.turnId !== undefined ? { turnId: turn.turnId } : {}),
-    },
-  ];
-}
-
 function liveTurnCanFold(
   turn: TranscriptTurnSnapshot,
   exactEntryIdentity = false,
@@ -2945,7 +2773,8 @@ function liveTurnCanFold(
   // FEATURE_275 票 6: prompt boundaries split multi-turn live backlogs so the positional
   // segment can own the PREVIOUS run's terminal (票 4 段错位分支). The run's own terminal
   // anywhere in the buffer — same Run + turnId consistent — proves closure identity-scoped.
-  const observed = turn.runtimeRunId !== undefined ? runTerminals?.get(turn.runtimeRunId) : undefined;
+  const observed =
+    turn.runtimeRunId !== undefined ? runTerminals?.get(turn.runtimeRunId) : undefined;
   if (
     observed !== undefined &&
     (observed.turnId === undefined || turn.turnId === undefined || observed.turnId === turn.turnId)
@@ -2970,41 +2799,6 @@ function transcriptContentSequence(turn: TranscriptTurnSnapshot): readonly strin
       item.startsWith('text:') ||
       item.startsWith('tool-start:') ||
       item.startsWith('tool-result:'),
-  );
-}
-
-function durableProjectionCoversMergedContent(
-  durable: TranscriptTurnSnapshot,
-  mergedEvents: readonly SessionEvent[],
-): boolean {
-  const durableSequence = transcriptContentSequence(durable);
-  const mergedSequence = transcriptSegmentSemantic(mergedEvents).visibleSequence.filter(
-    (item) =>
-      item.startsWith('thinking:') ||
-      item.startsWith('text:') ||
-      item.startsWith('tool-start:') ||
-      item.startsWith('tool-result:'),
-  );
-  return (
-    durableSequence.length === mergedSequence.length &&
-    durableSequence.every((item, index) => item === mergedSequence[index])
-  );
-}
-
-function openLiveProjectionCoversDurablePrefix(
-  durable: TranscriptTurnSnapshot,
-  live: TranscriptTurnSnapshot,
-): boolean {
-  if (live.closed) return false;
-  const durableSequence = transcriptContentSequence(durable);
-  const liveSequence = transcriptContentSequence(live);
-  if (contentProjectionIsPrefix(durableSequence, liveSequence)) return true;
-  // A notice can split one text stream into two visible runs even though the other projection stores
-  // the same prefix as one assistant entry. Matching the same-kind content stream remains exact;
-  // notice positions are reconciled separately by content offset.
-  return contentProjectionIsPrefix(
-    collapseAdjacentTextContent(durableSequence),
-    collapseAdjacentTextContent(liveSequence),
   );
 }
 
@@ -3047,23 +2841,6 @@ function collapseAdjacentTextContent(sequence: readonly string[]): string[] {
     }
   }
   return collapsed.map((item) => item.parts.join(''));
-}
-
-function durableProjectionCoversOpenLiveContent(
-  durable: TranscriptTurnSnapshot,
-  live: TranscriptTurnSnapshot,
-): boolean {
-  let durableIndex = 0;
-  return live.visibleSequence.every((item, liveIndex) => {
-    const finalCumulativeText =
-      liveIndex === live.visibleSequence.length - 1 &&
-      (item.startsWith('thinking:') || item.startsWith('text:'));
-    while (durableIndex < durable.visibleSequence.length) {
-      const candidate = durable.visibleSequence[durableIndex++]!;
-      if (finalCumulativeText ? candidate.startsWith(item) : candidate === item) return true;
-    }
-    return false;
-  });
 }
 
 interface TranscriptContentRun {
@@ -3287,14 +3064,6 @@ function unmatchedDurableProjectionExtras(
 interface CausalProjectionMatch {
   readonly durableExtras: readonly AnchoredProjectionEvent[];
 }
-
-type OpenLiveAdoption =
-  | { readonly kind: 'replace' | 'merge' }
-  | {
-      readonly kind: 'causal_merge';
-      readonly liveEvents: readonly SessionEvent[];
-      readonly match: CausalProjectionMatch;
-    };
 
 interface ClosedCausalAdoption {
   readonly liveEvents: readonly SessionEvent[];
@@ -3724,664 +3493,444 @@ function mergeOpenLiveTurnProjections(
   return merged;
 }
 
-function stabilizeAmbiguousLeadingHistoryOrder(
-  userMessages: readonly UserMessage[],
-  events: readonly SessionEvent[],
-): ReconciledTranscriptBuffers {
-  const turns = transcriptTurnSnapshots(userMessages, events);
-  const durable = turns.find(
-    (turn) =>
-      turn.restoredFromHistory &&
-      turn.leadingPartialHistory &&
-      turn.turnId !== undefined &&
-      turn.turnUserOrdinal === undefined,
-  );
-  if (!durable) return { userMessages, events };
-  const liveTurns = turns.filter(
-    (turn) =>
-      !turn.restoredFromHistory && hasStrongTurnIdentity(turn) && turn.turnId === durable.turnId,
-  );
-  const liveOwners = liveTurns.filter((turn) => turn.turnUserOrdinal === 0);
-  if (liveOwners.length !== 1 || liveTurns.length === 0) return { userMessages, events };
-  if (
-    liveTurns.some(
-      (turn) => turn.userIndex <= durable.userIndex || turn.eventStart < durable.eventStart,
-    )
-  ) {
-    return { userMessages, events };
-  }
-  const crossingCanonicalTurns = turns.filter(
-    (turn) =>
-      turn.restoredFromHistory &&
-      !turn.leadingPartialHistory &&
-      turn.userIndex > durable.userIndex &&
-      liveTurns.some((live) => turn.userIndex < live.userIndex),
-  );
-  const retainedSameTurnOrdinal = crossingCanonicalTurns.reduce<number | undefined>(
-    (lowest, turn) => {
-      if (
-        !hasStrongTurnIdentity(turn) ||
-        turn.turnId !== durable.turnId ||
-        turn.turnUserOrdinal === 0
-      ) {
-        return lowest;
-      }
-      return lowest === undefined ? turn.turnUserOrdinal : Math.min(lowest, turn.turnUserOrdinal);
-    },
-    undefined,
-  );
-  const exactSuffixOwner = liveOwners[0];
-  const exactSuffixOwnerResolution =
-    exactSuffixOwner === undefined
-      ? undefined
-      : uniqueLeadingHistoryOwnerResolution(durable, exactSuffixOwner, turns, events);
-  const exactSuffixCanPromote =
-    (exactSuffixOwnerResolution?.kind === 'promote_live_owner' ||
-      exactSuffixOwnerResolution?.kind === 'promote_open_live_owner') &&
-    (liveTurns.length === 1 ||
-      crossingCanonicalTurns.every((turn) => turn.turnId === durable.turnId));
-  const earlierLivePrefix =
-    exactSuffixOwner === undefined
-      ? []
-      : turns.filter(
-          (turn) =>
-            !turn.restoredFromHistory &&
-            turn.userIndex > durable.userIndex &&
-            turn.userIndex < exactSuffixOwner.userIndex,
-        );
-  const exactSuffixCanFoldInPlace = exactSuffixCanPromote && earlierLivePrefix.length === 0;
-  if (exactSuffixCanFoldInPlace) {
-    return { userMessages, events };
-  }
-  const relocationTargets = exactSuffixCanPromote
-    ? earlierLivePrefix
-    : retainedSameTurnOrdinal !== undefined
-      ? liveTurns.filter(
-          (turn) =>
-            turn.turnUserOrdinal !== undefined && turn.turnUserOrdinal < retainedSameTurnOrdinal,
-        )
-      : crossingCanonicalTurns.some((turn) => turn.turnId !== durable.turnId)
-        ? liveTurns
-        : [];
-  const lastRelocationTarget = relocationTargets.at(-1);
-  const relocatedLiveTurns =
-    lastRelocationTarget === undefined
-      ? []
-      : turns.filter(
-          (turn) =>
-            !turn.restoredFromHistory &&
-            turn.userIndex > durable.userIndex &&
-            turn.userIndex <= lastRelocationTarget.userIndex,
-        );
-  return (
-    relocateLiveTurnsBeforeDurableAnchor(userMessages, events, durable, relocatedLiveTurns) ?? {
-      userMessages,
-      events,
-    }
-  );
-}
-
-/**
- * User owners and event segments are parallel positional buffers. Moving only the matching live
- * owner across a retained canonical turn would strand any earlier live turn on the other side;
- * composeMessages then sorts owners by sentAt while events stay put and pairs every later answer
- * with the wrong query. Relocation therefore moves the complete live turn block (owner rows plus
- * event segments) before the durable anchor as one unit, clamping each relocated sentAt below
- * the anchor so the owner order matches the new segment order. When the matching suffix is
- * exact, the caller leaves that owner after the durable anchor so the normal fold can remove
- * the duplicate projection in the same reconciliation pass.
- */
-function relocateLiveTurnsBeforeDurableAnchor(
-  userMessages: readonly UserMessage[],
-  events: readonly SessionEvent[],
-  durable: TranscriptTurnSnapshot,
-  relocatedLiveTurns: readonly TranscriptTurnSnapshot[],
-): ReconciledTranscriptBuffers | undefined {
-  if (relocatedLiveTurns.length === 0) return undefined;
-  const liveUserIndexes = new Set(relocatedLiveTurns.map((turn) => turn.userIndex));
-  const liveEventIndexes = new Set<number>();
-  for (const turn of relocatedLiveTurns) {
-    for (let index = turn.eventStart; index < turn.eventEnd; index++) liveEventIndexes.add(index);
-  }
-  const durableMessage = userMessages[durable.userIndex]!;
-  let previousSentAt = Number.NEGATIVE_INFINITY;
-  const liveMessages = relocatedLiveTurns.map((turn, index) => {
-    const message = userMessages[turn.userIndex]!;
-    const latestSentAt = durableMessage.sentAt - (relocatedLiveTurns.length - index);
-    const sentAt = Math.min(Math.max(message.sentAt, previousSentAt + 1), latestSentAt);
-    previousSentAt = sentAt;
-    return sentAt === message.sentAt ? message : { ...message, sentAt };
-  });
-  const liveEvents = relocatedLiveTurns.flatMap((turn, index) => {
-    const segment = events.slice(turn.eventStart, turn.eventEnd);
-    return index === relocatedLiveTurns.length - 1
-      ? preserveRelocatedSegmentClosure(segment, turn)
-      : segment;
-  });
-  const remainingUsers = userMessages.filter((_, index) => !liveUserIndexes.has(index));
-  const remainingEvents = events.filter((_, index) => !liveEventIndexes.has(index));
+function unitSnapshot(unit: TranscriptUnit, closed: boolean): TranscriptTurnSnapshot {
+  const snapshot = transcriptTurnSnapshots([unit.user], [])[0]!;
+  const semantic = transcriptSegmentSemantic(unit.events);
   return {
-    userMessages: [
-      ...remainingUsers.slice(0, durable.userIndex),
-      ...liveMessages,
-      ...remainingUsers.slice(durable.userIndex),
-    ],
-    events: [
-      ...remainingEvents.slice(0, durable.eventStart),
-      ...liveEvents,
-      ...remainingEvents.slice(durable.eventStart),
-    ],
+    ...snapshot,
+    ...semantic,
+    eventEnd: unit.events.length,
+    closed: semantic.terminal || closed,
   };
 }
 
-/**
- * A canonical page that begins with a complete user row never triggers
- * stabilizeAmbiguousLeadingHistoryOrder, yet its reconstructed segments are still prepended ahead
- * of live turns the page's window omitted (bounded pages start mid-conversation). compose
- * pairs segments positionally, so an unmatched live turn sitting behind the page head loses its
- * own query bubble at the bottom. Relocation requires evidence (FEATURE_275 ticket 3, B2):
- * identity (an unmatched live turn above the loaded live copy of a canonical page turn — the
- * page's cut into the live timeline) always; the old `turn.sentAt < canonical.sentAt` clock
- * comparison ONLY on a truncated page, whose omitted region can contain older live turns. On an
- * untruncated page the point-in-time read is complete, so a closed live turn missing from it
- * completed after the read: there the raw cross-plane clock comparison — every local live turn
- * looks "older" than server-stamped page rows when the server clock runs ahead — dragged NEWER
- * live turns above older canonical rows, the inversion the mechanism baseline B2 pins.
- * A live turn matched by a canonical row stays behind its durable copy so the fold keeps its
- * durable-before-duplicate premise, and each re-loaded page re-derives the placement, so older
- * pagination anchors cannot resurrect the inversion. Live turns without turnId keep today's
- * behavior (no identity basis for a safe move).
- */
-function stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
-  userMessages: readonly UserMessage[],
-  events: readonly SessionEvent[],
-): ReconciledTranscriptBuffers {
-  const turns = transcriptTurnSnapshots(userMessages, events);
-  if (turns.length < 2) return { userMessages, events };
-  const canonicalTurnIds = new Set(
-    turns.flatMap((turn) =>
-      turn.restoredFromHistory && turn.turnId !== undefined && turn.canonicalIndex !== undefined
-        ? [turn.turnId]
-        : [],
-    ),
-  );
-  if (canonicalTurnIds.size === 0) return { userMessages, events };
-  // FEATURE_275 票 3 (B2) relocation evidence, two branches:
-  //  (a) identity — where the page cuts into the live timeline: the LATEST loaded live copy of
-  //      a canonical turn. Only unmatched turns ABOVE that copy provably predate the page head;
-  //      a turn at or below it is newer than everything the page covers and keeps its position.
-  //  (b) wall clock — allowed only on a TRUNCATED (bounded) page, whose omitted region can
-  //      genuinely contain older live turns. On an untruncated page the read is point-in-time
-  //      complete, so a closed live turn missing from it completed after the read was taken:
-  //      trusting `turn.sentAt < canonical.sentAt` there is exactly what dragged NEWER live
-  //      turns above older canonical rows when the server clock ran ahead (mechanism baseline B2).
-  const pageCutUserIndex = turns.reduce(
-    (latest, turn) =>
-      !turn.restoredFromHistory && turn.turnId !== undefined && canonicalTurnIds.has(turn.turnId)
-        ? Math.max(latest, turn.userIndex)
-        : latest,
-    -1,
-  );
-  const pageIsTruncated = events.some(
-    (event) => event.kind === 'history_truncation' && event.scope === 'history',
-  );
-  const misplacedLiveTurns = turns.filter(
-    (turn) =>
-      !turn.restoredFromHistory &&
-      turn.turnId !== undefined &&
-      !canonicalTurnIds.has(turn.turnId) &&
-      turn.terminal &&
-      (turn.userIndex < pageCutUserIndex ||
-        (pageIsTruncated &&
-          turns.some(
-            (canonical) =>
-              canonical.restoredFromHistory &&
-              canonical.userIndex < turn.userIndex &&
-              turn.sentAt < canonical.sentAt,
-          ))),
-  );
-  if (misplacedLiveTurns.length === 0) return { userMessages, events };
-  const lastRelocationTarget = misplacedLiveTurns[misplacedLiveTurns.length - 1]!;
-  const anchor = turns.find(
-    (turn) =>
-      turn.restoredFromHistory &&
-      turn.canonicalIndex !== undefined &&
-      turn.leadingPartialHistory !== true &&
-      turn.sentAt > lastRelocationTarget.sentAt,
-  );
-  if (!anchor || anchor.userIndex >= lastRelocationTarget.userIndex) {
-    return { userMessages, events };
-  }
-  return (
-    relocateLiveTurnsBeforeDurableAnchor(userMessages, events, anchor, misplacedLiveTurns) ?? {
-      userMessages,
-      events,
-    }
-  );
+interface UnitOverlayInput {
+  readonly durable: TranscriptUnit;
+  readonly live: TranscriptUnit;
+  readonly closed: boolean;
+  readonly page: CanonicalTranscriptPage;
+  readonly terminals: ReadonlyMap<string, RuntimeRunTerminalEvidence>;
+  readonly leadingResolution?: LeadingHistoryOwnerResolution;
+}
+interface UnitOverlayFacts {
+  readonly canonical: TranscriptTurnSnapshot;
+  readonly transient: TranscriptTurnSnapshot;
+  readonly certified: boolean;
+  readonly causal?: readonly SessionEvent[];
+  readonly match?: CausalProjectionMatch;
+  readonly openPrefix: boolean;
+}
+interface UnitOverlay {
+  readonly unit: TranscriptUnit;
+  readonly retired: boolean;
 }
 
-interface DuplicateTranscriptTurnPair {
-  readonly durable: TranscriptTurnSnapshot;
-  readonly duplicate: TranscriptTurnSnapshot;
-  readonly projectionAuthority?: 'canonical';
-  readonly ownerResolution?: LeadingHistoryOwnerResolution;
-  readonly openLiveAdoption?: OpenLiveAdoption;
-  readonly closedCausalAdoption?: ClosedCausalAdoption;
-}
-
-function mergeDuplicateTurnProjection(
-  pair: DuplicateTranscriptTurnPair,
-  durableSegment: readonly SessionEvent[],
-  duplicateSegment: readonly SessionEvent[],
-): SessionEvent[] {
-  if (pair.projectionAuthority === 'canonical') {
-    return mergeIdentityProvenTurnProjections(
-      durableSegment,
-      duplicateSegment,
-      userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
-      'canonical',
-    );
-  }
-  const strategy = selectTranscriptProjectionMergeStrategy({
-    hasClosedCausalAdoption: pair.closedCausalAdoption !== undefined,
-    openLiveAdoptionKind: pair.openLiveAdoption?.kind,
-    ownerResolutionKind: pair.ownerResolution?.kind,
-  });
-  if (strategy === 'closed-causal' && pair.closedCausalAdoption) {
-    return mergeClosedCausalProjection(durableSegment, pair.closedCausalAdoption);
-  }
-  if (strategy === 'open-live-causal' && pair.openLiveAdoption?.kind === 'causal_merge') {
-    return mergeOrderedCausalProjection(
-      pair.openLiveAdoption.liveEvents,
-      durableSegment.find(isPromptSegmentBoundary) ??
-        pair.openLiveAdoption.liveEvents.find(isPromptSegmentBoundary),
-      pair.openLiveAdoption.match,
-    );
-  }
-  if (strategy === 'open-live' && pair.openLiveAdoption) {
-    return mergeOpenLiveTurnProjections(pair.durable, durableSegment, duplicateSegment);
+function overlayAdmission(
+  input: UnitOverlayInput,
+  facts: UnitOverlayFacts,
+): 'merge' | 'canonical' | 'coexist' {
+  if (facts.certified) return 'merge';
+  const { canonical, transient, causal, match, openPrefix } = facts;
+  if (transient.closed) {
+    if (causal !== undefined && match === undefined && input.durable.events.length > 0)
+      return 'coexist';
+    return liveTurnCanFold(
+      transient,
+      userEntryIdentityRelation(canonical, transient) === 'match',
+      input.terminals,
+    )
+      ? 'merge'
+      : 'coexist';
   }
   if (
-    strategy === 'promote-open-live-owner' &&
-    pair.ownerResolution?.kind === 'promote_open_live_owner'
+    !input.leadingResolution &&
+    !openPrefix &&
+    match === undefined &&
+    input.durable.events.length > 0
   ) {
-    return mergeOrderedCausalProjection(
-      pair.ownerResolution.liveEvents,
-      durableSegment.find(isPromptSegmentBoundary) ??
-        pair.ownerResolution.liveEvents.find(isPromptSegmentBoundary),
-      pair.ownerResolution.match,
-    );
+    return durableProjectionCoversOpenLiveContent(canonical, transient) ? 'canonical' : 'coexist';
   }
-  if (strategy === 'promote-live-owner') return [...duplicateSegment];
+  return 'merge';
+}
+
+function overlayEvents(input: UnitOverlayInput, facts: UnitOverlayFacts): readonly SessionEvent[] {
+  const { durable, live, leadingResolution } = input;
+  if (facts.certified)
+    return mergeIdentityProvenTurnProjections(durable.events, live.events, true, 'canonical');
+  if (facts.openPrefix)
+    return mergeOpenLiveTurnProjections(facts.canonical, durable.events, live.events);
+  if (facts.causal !== undefined && facts.match !== undefined) {
+    return mergeClosedCausalProjection(durable.events, {
+      liveEvents: facts.causal,
+      match: facts.match,
+    });
+  }
+  if (leadingResolution?.kind === 'promote_live_owner') return live.events;
   return mergeIdentityProvenTurnProjections(
-    durableSegment,
-    duplicateSegment,
-    userEntryIdentityRelation(pair.durable, pair.duplicate) === 'match',
+    durable.events,
+    live.events,
+    userEntryIdentityRelation(facts.canonical, facts.transient) === 'match',
   );
 }
 
-/**
- * Fold duplicate projections only with canonical identity. No content/timestamp heuristic is
- * allowed here: a fast, intentional repeat must remain a distinct turn even when its text and
- * answer are identical. The loop also handles multi-turn history snapshots whose last turn is
- * still in flight; every already-closed identity is folded independently.
- */
-function foldStrongIdentityDuplicateTurns(
-  userMessages: readonly UserMessage[],
-  events: readonly SessionEvent[],
-  authority?: CertifiedCanonicalTranscriptAuthority,
-): ReconciledTranscriptBuffers {
-  const stabilized = stabilizeAmbiguousLeadingHistoryOrder(userMessages, events);
-  let nextUsers = [...stabilized.userMessages];
-  let nextEvents = [...stabilized.events];
-  let didFold = stabilized.userMessages !== userMessages;
-  const canonicalizedLiveOwners: CanonicalizedLiveOwner[] = [];
-  for (;;) {
-    const turns = transcriptTurnSnapshots(nextUsers, nextEvents);
-    // FEATURE_275 票 6: rebuilt per iteration — merges/sweeps splice the buffer, and terminals
-    // survive both, so the index stays in sync with the buffer this iteration decides on.
-    const runTerminals = runtimeRunTerminalIndex(nextEvents);
-    let pair: DuplicateTranscriptTurnPair | undefined;
-
-    for (let duplicateIndex = 0; duplicateIndex < turns.length && !pair; duplicateIndex++) {
-      const duplicate = turns[duplicateIndex]!;
-      if (
-        duplicate.restoredFromHistory
-          ? duplicate.canonicalIndex === undefined && !hasStrongTurnIdentity(duplicate)
-          : duplicate.entryId === undefined && !hasStrongTurnIdentity(duplicate)
-      ) {
-        continue;
-      }
-      const closedLiveEvents =
-        !duplicate.restoredFromHistory && duplicate.closed
-          ? effectiveCausalLiveProjection(
-              nextEvents.slice(duplicate.eventStart, duplicate.eventEnd),
-            )
-          : undefined;
-      for (let durableIndex = 0; durableIndex < duplicateIndex; durableIndex++) {
-        const durable = turns[durableIndex]!;
-        const entryIdentity = userEntryIdentityRelation(durable, duplicate);
-        const exactDeliveryEntryRequired =
-          (durable.deliveredInterrupt || duplicate.deliveredInterrupt) &&
-          (durable.entryId !== undefined || duplicate.entryId !== undefined);
-        if (
-          entryIdentity === 'conflict' ||
-          (exactDeliveryEntryRequired && entryIdentity !== 'match')
-        ) {
-          continue;
-        }
-        const durableMessage = nextUsers[durable.userIndex];
-        const sameRuntimeRun =
-          durable.runtimeRunId === undefined ||
-          duplicate.runtimeRunId === undefined ||
-          durable.runtimeRunId === duplicate.runtimeRunId;
-        const projectionAuthority = decideTurnProjectionAuthority(
-          durable,
-          duplicate,
-          authority,
-          runTerminals,
-        );
-        const certifiedCanonical = projectionAuthority === 'canonical';
-        // The newest canonical page can persist the user boundary before any assistant row.
-        // Its empty durable segment and the exact open live owner are two projections of one turn,
-        // not a complete history copy plus a duplicate. Move the live segment under the canonical
-        // owner now so compose never hides the only draft while the Runtime is still streaming.
-        const canAdoptOpenLive =
-          durable.restoredFromHistory &&
-          !duplicate.restoredFromHistory &&
-          !duplicate.closed &&
-          sameRuntimeRun &&
-          (entryIdentity === 'match' || strongTurnIdentityMatches(durable, duplicate));
-        let openLiveAdoption: OpenLiveAdoption | undefined;
-        if (canAdoptOpenLive) {
-          if (
-            durableMessage?.historyNoAssistantSegment === true &&
-            durable.eventStart === durable.eventEnd
-          ) {
-            openLiveAdoption = { kind: 'replace' };
-          } else if (openLiveProjectionCoversDurablePrefix(durable, duplicate)) {
-            openLiveAdoption = { kind: 'merge' };
-          } else {
-            const durableCandidateSegment = nextEvents.slice(durable.eventStart, durable.eventEnd);
-            const effectiveLiveCandidate = effectiveCausalLiveProjection(
-              nextEvents.slice(duplicate.eventStart, duplicate.eventEnd),
-            );
-            const causalMatch =
-              effectiveLiveCandidate === undefined
-                ? undefined
-                : orderedCausalProjectionMatch(durableCandidateSegment, effectiveLiveCandidate);
-            if (effectiveLiveCandidate !== undefined && causalMatch !== undefined) {
-              openLiveAdoption = {
-                kind: 'causal_merge',
-                liveEvents: effectiveLiveCandidate,
-                match: causalMatch,
-              };
-            }
-          }
-        }
-        const ownerResolution =
-          entryIdentity === 'match' && durable.omittedHistoryUserOrdinal
-            ? { kind: 'enrich_canonical_owner' as const }
-            : uniqueLeadingHistoryOwnerResolution(durable, duplicate, turns, nextEvents);
-        if (
-          !durable.restoredFromHistory ||
-          (duplicate.restoredFromHistory
-            ? !exactRestoredTurnIdentityMatches(durable, duplicate)
-            : entryIdentity !== 'match' &&
-              !strongTurnIdentityMatches(durable, duplicate) &&
-              ownerResolution === undefined) ||
-          (!duplicate.restoredFromHistory &&
-            !certifiedCanonical &&
-            openLiveAdoption === undefined &&
-            ownerResolution?.kind !== 'promote_open_live_owner' &&
-            !liveTurnCanFold(duplicate, entryIdentity === 'match', runTerminals))
-        ) {
-          continue;
-        }
-        const durableCausalSegment = nextEvents.slice(durable.eventStart, durable.eventEnd);
-        const closedCausalMatch =
-          certifiedCanonical || closedLiveEvents === undefined
-            ? undefined
-            : durableCausalSegment.length === 0 &&
-                durableMessage?.historyNoAssistantSegment === true
-              ? { durableExtras: [] }
-              : orderedCausalProjectionMatch(durableCausalSegment, closedLiveEvents);
-        if (
-          !certifiedCanonical &&
-          closedLiveEvents !== undefined &&
-          closedCausalMatch === undefined
-        ) {
-          continue;
-        }
-        const closedCausalAdoption =
-          closedLiveEvents !== undefined && closedCausalMatch !== undefined
-            ? { liveEvents: closedLiveEvents, match: closedCausalMatch }
-            : undefined;
-        pair = {
-          durable,
-          duplicate,
-          ...(certifiedCanonical ? { projectionAuthority: 'canonical' as const } : {}),
-          ...(ownerResolution !== undefined ? { ownerResolution } : {}),
-          ...(openLiveAdoption !== undefined ? { openLiveAdoption } : {}),
-          ...(closedCausalAdoption !== undefined ? { closedCausalAdoption } : {}),
-        };
-        break;
-      }
-    }
-    if (!pair) break;
-
-    const durableSegment = nextEvents.slice(pair.durable.eventStart, pair.durable.eventEnd);
-    const duplicateSegment = nextEvents.slice(pair.duplicate.eventStart, pair.duplicate.eventEnd);
-    // A bounded page can retain only an interior canonical span of the complete live projection.
-    // Causal admission maps that unique span into live order and reanchors canonical-only notices;
-    // closed legacy pages still require an exact visible suffix. Root-present open turns use the
-    // same mapped merge, while unsegmented folds retain the canonical-first compatibility path.
-    const promotesLiveOwner =
-      pair.ownerResolution?.kind === 'promote_live_owner' ||
-      pair.ownerResolution?.kind === 'promote_open_live_owner';
-    const mergedProjection = mergeDuplicateTurnProjection(pair, durableSegment, duplicateSegment);
-    const retainsOpenLiveProjection =
-      pair.openLiveAdoption !== undefined ||
-      pair.ownerResolution?.kind === 'promote_open_live_owner';
-    const mergedSegment = retainsOpenLiveProjection
-      ? mergedProjection.filter((event) => !isTranscriptTerminal(event))
-      : preserveRelocatedSegmentClosure(mergedProjection, pair.duplicate);
-    const duplicateMessage = nextUsers[pair.duplicate.userIndex];
-    if (
-      pair.openLiveAdoption === undefined &&
-      !promotesLiveOwner &&
-      !pair.duplicate.restoredFromHistory &&
-      duplicateMessage !== undefined &&
-      pair.durable.canonicalIndex !== undefined &&
-      (pair.projectionAuthority === 'canonical' ||
-        durableProjectionCoversMergedContent(pair.durable, mergedProjection))
-    ) {
-      canonicalizedLiveOwners.push({
-        messageId: duplicateMessage.id,
-        canonicalIndex: pair.durable.canonicalIndex,
-        // FEATURE_275 票 5 结算即退役：certified canonical 合并授权物理回收影子（见
-        // rememberCanonicalizedHistoryLiveOwners）；兼容性 fold 只登记，不删。
-        ...(pair.projectionAuthority === 'canonical'
-          ? {
-              certified: true as const,
-              runtimeRunId: pair.duplicate.runtimeRunId,
-              turnId: pair.duplicate.turnId,
-            }
-          : {}),
-      });
-    }
-    didFold = true;
-    nextEvents = [
-      ...nextEvents.slice(0, pair.durable.eventStart),
-      ...mergedSegment,
-      ...nextEvents.slice(pair.durable.eventEnd, pair.duplicate.eventStart),
-      ...nextEvents.slice(pair.duplicate.eventEnd),
-    ];
-    // FEATURE_275 票 5 结算即退役：settled Run 的答案已整体归属 canonical 页。段边界可以把
-    // 同一 settled Run 的后续块留在合并轮之外（轮中段的 mid-turn 投递把 live 流切成多段，只有
-    // 首段随轮快照参与合并；该形态下轮快照失去终端、整轮认证被扣住）——这些散块是 canonical
-    // 内容的影子，按 Run 身份清扫出缓冲。触发证据是 settledRuntimeRuns（exact post-terminal
-    // read 的持久层证据），与内容启发式无关；Run 未结算时一律不扫（fail-open）。
-    // 终端事件是结构闭合标记而非内容，保留；清扫只针对内容块（delta / 工具事件）。
-    if (pair.duplicate.runtimeRunId !== undefined) {
-      const retiredRunId = pair.duplicate.runtimeRunId;
-      const runSettled =
-        authority?.settledRuntimeRuns.some((run) => run.runId === retiredRunId) === true;
-      if (runSettled) {
-        const mergedEnd = pair.durable.eventStart + mergedSegment.length;
-        nextEvents = nextEvents.filter((event, index) => {
-          if (index >= pair.durable.eventStart && index < mergedEnd) return true;
-          const origin = 'runtimeEvent' in event ? event.runtimeEvent : undefined;
-          if (origin?.runId !== retiredRunId) return true;
-          return event.kind === 'session_complete' || event.kind === 'session_error';
-        });
-      }
-    }
-
-    const durableMessage = nextUsers[pair.durable.userIndex];
-    nextUsers = nextUsers
-      .filter((_, index) => index !== pair.duplicate.userIndex)
-      .map((message, index) => {
-        if (index !== pair.durable.userIndex) return message;
-        const promoteLiveOwner =
-          promotesLiveOwner && durableMessage?.leadingPartialHistory === true;
-        const enrichCanonicalOwner =
-          pair.ownerResolution?.kind === 'enrich_canonical_owner' &&
-          durableMessage?.omittedHistoryUserOrdinal === true;
-        const baseMessage = promoteLiveOwner && duplicateMessage ? duplicateMessage : message;
-        let rest: Omit<UserMessage, 'historyNoAssistantSegment'>;
-        if (promoteLiveOwner) {
-          const {
-            historyNoAssistantSegment: _emptySegment,
-            hiddenHistoryAnchor: _hiddenAnchor,
-            leadingPartialHistory: _leadingPartial,
-            hiddenProjectionDuplicate: _hiddenDuplicate,
-            hiddenProjectionOriginalSentAt,
-            ...visibleLiveOwner
-          } = baseMessage;
-          rest =
-            hiddenProjectionOriginalSentAt === undefined
-              ? visibleLiveOwner
-              : { ...visibleLiveOwner, sentAt: hiddenProjectionOriginalSentAt };
-        } else if (enrichCanonicalOwner) {
-          const {
-            historyNoAssistantSegment: _emptySegment,
-            omittedHistoryUserOrdinal: _omittedOrdinal,
-            ...canonicalOwner
-          } = baseMessage;
-          rest = canonicalOwner;
-        } else {
-          const { historyNoAssistantSegment: _emptySegment, ...durableOwner } = baseMessage;
-          rest = durableOwner;
-        }
-        const deliveryQueueId = rest.deliveryQueueId ?? duplicateMessage?.deliveryQueueId;
-        const deliveryQueueMode = rest.deliveryQueueMode ?? duplicateMessage?.deliveryQueueMode;
-        const deliveredInterrupt = rest.deliveredInterrupt ?? duplicateMessage?.deliveredInterrupt;
-        const runtimeRunId = rest.runtimeRunId ?? duplicateMessage?.runtimeRunId;
-        // operationId is renderer admission provenance, not part of the SDK history schema. Once
-        // this fold has proven that both rows are the same canonical turn, carry that exact
-        // idempotency owner onto the durable copy so a post-refresh retry cannot append it again.
-        const operationId = rest.operationId ?? duplicateMessage?.operationId;
-        const operationReservation =
-          rest.operationReservation ?? duplicateMessage?.operationReservation;
-        const reconciled = {
-          ...rest,
-          ...(promoteLiveOwner ? { restoredFromHistory: true as const } : {}),
-          ...(enrichCanonicalOwner && duplicateMessage?.turnUserOrdinal !== undefined
-            ? { turnUserOrdinal: duplicateMessage.turnUserOrdinal }
-            : {}),
-          ...(deliveryQueueId !== undefined ? { deliveryQueueId } : {}),
-          ...(deliveryQueueMode !== undefined ? { deliveryQueueMode } : {}),
-          ...(deliveredInterrupt === true ? { deliveredInterrupt: true as const } : {}),
-          ...(runtimeRunId !== undefined ? { runtimeRunId } : {}),
-          ...(operationId !== undefined ? { operationId } : {}),
-          ...(operationReservation !== undefined ? { operationReservation } : {}),
-        };
-        return mergedSegment.length > 0
-          ? reconciled
-          : { ...reconciled, historyNoAssistantSegment: true };
-      });
-  }
-  return didFold
-    ? {
-        userMessages: nextUsers,
-        events: nextEvents,
-        ...(canonicalizedLiveOwners.length > 0 ? { canonicalizedLiveOwners } : {}),
-      }
-    : { userMessages, events };
+function renderUnitOverlay(input: UnitOverlayInput, facts: UnitOverlayFacts): UnitOverlay {
+  const merged = overlayEvents(input, facts);
+  const {
+    historyNoAssistantSegment: _empty,
+    hiddenProjectionDuplicate: _hidden,
+    hiddenProjectionOriginalSentAt: _oldTime,
+    ...user
+  } = input.durable.user;
+  const promoted =
+    input.durable.user.hiddenHistoryAnchor === true ||
+    input.leadingResolution?.kind === 'promote_live_owner' ||
+    input.leadingResolution?.kind === 'promote_open_live_owner';
+  return {
+    retired: facts.certified,
+    unit: {
+      user: {
+        ...input.live.user,
+        ...(promoted ? {} : user),
+        restoredFromHistory: true,
+        ...(merged.length === 0 ? { historyNoAssistantSegment: true } : {}),
+      },
+      events: facts.transient.closed
+        ? merged
+        : merged.filter((event) => !isTranscriptTerminal(event)),
+    },
+  };
 }
 
-function hideOpenStrongIdentityDuplicateProjection(
-  userMessages: readonly UserMessage[],
-  events: readonly SessionEvent[],
-): readonly UserMessage[] {
-  const turns = transcriptTurnSnapshots(userMessages, events);
-  const sentAtByMessageId = new Map<string, number>();
-  for (let liveIndex = 0; liveIndex < turns.length; liveIndex++) {
-    const live = turns[liveIndex]!;
-    if (live.restoredFromHistory || live.closed || !hasStrongTurnIdentity(live)) continue;
-    const durable = turns
-      .slice(0, liveIndex)
-      .reverse()
-      .find((candidate) => {
-        const entryIdentity = userEntryIdentityRelation(candidate, live);
-        const exactDeliveryEntryRequired =
-          (candidate.deliveredInterrupt || live.deliveredInterrupt) &&
-          (candidate.entryId !== undefined || live.entryId !== undefined);
-        const sameRuntimeRun =
-          candidate.runtimeRunId === undefined ||
-          live.runtimeRunId === undefined ||
-          candidate.runtimeRunId === live.runtimeRunId;
-        return (
-          candidate.restoredFromHistory &&
-          candidate.closed &&
-          entryIdentity !== 'conflict' &&
-          (!exactDeliveryEntryRequired || entryIdentity === 'match') &&
-          sameRuntimeRun &&
-          strongTurnIdentityMatches(candidate, live) &&
-          durableProjectionCoversOpenLiveContent(candidate, live)
-        );
-      });
-    if (durable) {
-      sentAtByMessageId.set(live.messageId, Math.max(live.sentAt, durable.sentAt + 1));
+function overlayTranscriptUnit(input: UnitOverlayInput): UnitOverlay | undefined {
+  if (
+    transcriptUserIdentity(input.durable.user, input.live.user) !== 'match' &&
+    !input.leadingResolution
+  )
+    return undefined;
+  const canonical = unitSnapshot(input.durable, true);
+  const transient = unitSnapshot(input.live, input.closed);
+  const causal = effectiveCausalLiveProjection(input.live.events);
+  const facts: UnitOverlayFacts = {
+    canonical,
+    transient,
+    causal,
+    certified:
+      input.durable.user.hiddenHistoryAnchor !== true &&
+      decideTurnProjectionAuthority(canonical, transient, input.page.authority, input.terminals) ===
+        'canonical',
+    match:
+      causal === undefined ? undefined : orderedCausalProjectionMatch(input.durable.events, causal),
+    openPrefix: !transient.closed && openLiveProjectionCoversDurablePrefix(canonical, transient),
+  };
+  const admission = overlayAdmission(input, facts);
+  if (admission === 'coexist') return undefined;
+  if (admission === 'canonical') return { retired: false, unit: input.durable };
+  return renderUnitOverlay(input, facts);
+}
+
+function leadingUnitResolution(
+  durable: TranscriptUnit,
+  live: TranscriptUnit,
+  canonical: readonly TranscriptUnit[],
+  tail: readonly TranscriptUnit[],
+): LeadingHistoryOwnerResolution | undefined {
+  const units = [...canonical, ...tail];
+  let offset = 0;
+  const snapshots = units.map((unit, index) => {
+    const snapshot = unitSnapshot(unit, index >= canonical.length && index < units.length - 1);
+    const turn = { ...snapshot, eventStart: offset, eventEnd: offset + unit.events.length };
+    offset = turn.eventEnd;
+    return turn;
+  });
+  return uniqueLeadingHistoryOwnerResolution(
+    snapshots[units.indexOf(durable)]!,
+    snapshots[units.indexOf(live)]!,
+    snapshots,
+    units.flatMap((unit) => unit.events),
+  );
+}
+
+/** Place a whole input and its output together; wall-clock timestamps never move owners. */
+function unmatchedLiveInsertion(
+  live: readonly TranscriptUnit[],
+  index: number,
+  canonical: readonly TranscriptUnit[],
+  matches: ReadonlyMap<number, number>,
+): number {
+  const user = live[index]!.user;
+  const laterDelivery = canonical.findIndex(
+    (unit) =>
+      user.turnId !== undefined &&
+      unit.user.turnId === user.turnId &&
+      user.turnUserOrdinal !== undefined &&
+      unit.user.turnUserOrdinal !== undefined &&
+      user.turnUserOrdinal < unit.user.turnUserOrdinal,
+  );
+  if (laterDelivery !== -1) return laterDelivery;
+  const partial = canonical.findIndex(
+    (unit) =>
+      unit.user.leadingPartialHistory &&
+      unit.user.turnId !== undefined &&
+      unit.user.turnId === user.turnId,
+  );
+  if (
+    partial !== -1 &&
+    !canonical.some(
+      (unit) =>
+        unit.user.turnId === user.turnId &&
+        unit.user.turnUserOrdinal !== undefined &&
+        user.turnUserOrdinal !== undefined &&
+        unit.user.turnUserOrdinal < user.turnUserOrdinal,
+    ) &&
+    canonical
+      .slice(partial + 1)
+      .some(
+        (unit) =>
+          unit.user.hiddenHistoryAnchor !== true &&
+          (unit.user.turnId !== user.turnId || unit.user.turnUserOrdinal !== undefined),
+      )
+  )
+    return partial;
+  for (let next = index + 1; next < live.length; next++) {
+    const anchor = matches.get(next);
+    if (anchor !== undefined) return anchor;
+  }
+  return canonical.length;
+}
+
+interface MatchedTranscriptUnit extends UnitOverlay {
+  readonly position: number;
+}
+
+function matchTranscriptUnits(
+  page: CanonicalTranscriptPage,
+  canonical: TranscriptUnit[],
+  live: readonly TranscriptUnit[],
+  terminals: ReadonlyMap<string, RuntimeRunTerminalEvidence>,
+): Map<number, MatchedTranscriptUnit> {
+  const matches = new Map<number, MatchedTranscriptUnit>();
+  const claimed = new Set<number>();
+  for (let index = 0; index < live.length; index++) {
+    const unit = live[index]!;
+    const resolutions = canonical.map((candidate) =>
+      leadingUnitResolution(candidate, unit, canonical, live),
+    );
+    const candidates = canonical.flatMap((candidate, position) =>
+      transcriptUserIdentity(candidate.user, unit.user) === 'match' ||
+      resolutions[position] !== undefined
+        ? [position]
+        : [],
+    );
+    if (candidates.length !== 1 || claimed.has(candidates[0]!)) continue;
+    const position = candidates[0]!;
+    const overlay = overlayTranscriptUnit({
+      durable: canonical[position]!,
+      live: unit,
+      closed: index < live.length - 1,
+      page,
+      terminals,
+      leadingResolution: resolutions[position],
+    });
+    if (!overlay) continue;
+    canonical[position] = overlay.unit;
+    matches.set(index, { ...overlay, position });
+    claimed.add(position);
+  }
+  return matches;
+}
+
+function recordCanonicalCoverage(
+  sessionId: string,
+  page: CanonicalTranscriptPage,
+  tail: LiveTranscriptTail,
+  live: readonly TranscriptUnit[],
+  matches: ReadonlyMap<number, MatchedTranscriptUnit>,
+): Set<string> {
+  const retired = new Set<string>();
+  const rawUnits = transcriptUnits(page);
+  let users = page.userMessages;
+  for (const [index, overlay] of matches) {
+    const unit = live[index]!;
+    if (overlay.retired) {
+      retired.add(unit.user.id);
+      users = users.map((user, i) =>
+        i === overlay.position ? { ...runtimeOwnerMetadata(unit.user), ...user } : user,
+      );
+    } else if (
+      unitSnapshot(unit, index < live.length - 1).closed &&
+      page.userMessages[overlay.position]?.canonicalIndex !== undefined &&
+      durableProjectionCoversMergedContent(
+        unitSnapshot(rawUnits[overlay.position]!, true),
+        overlay.unit.events,
+      )
+    ) {
+      tail.coverage ??= new Map();
+      tail.coverage.set(unit.user.id, page.userMessages[overlay.position]!.canonicalIndex!);
     }
   }
-  let changed = false;
-  const reconciled = userMessages.map((message) => {
-    const sentAt = sentAtByMessageId.get(message.id);
-    if (sentAt !== undefined) {
-      if (
-        message.sentAt === sentAt &&
-        message.hiddenProjectionDuplicate === true &&
-        message.hiddenProjectionOriginalSentAt !== undefined
-      ) {
-        return message;
-      }
-      changed = true;
-      return {
-        ...message,
-        sentAt,
-        hiddenProjectionDuplicate: true as const,
-        hiddenProjectionOriginalSentAt: message.hiddenProjectionOriginalSentAt ?? message.sentAt,
-      };
-    }
-    if (
-      message.hiddenProjectionDuplicate !== true &&
-      message.hiddenProjectionOriginalSentAt === undefined
-    ) {
-      return message;
-    }
-    changed = true;
-    const {
-      hiddenProjectionDuplicate: _hidden,
-      hiddenProjectionOriginalSentAt,
-      ...visibleMessage
-    } = message;
-    return hiddenProjectionOriginalSentAt === undefined
-      ? visibleMessage
-      : { ...visibleMessage, sentAt: hiddenProjectionOriginalSentAt };
+  if (users !== page.userMessages)
+    canonicalPageBySession.set(sessionId, { ...page, userMessages: users });
+  return retired;
+}
+
+function assembleTranscriptUnits(
+  canonical: readonly TranscriptUnit[],
+  live: readonly TranscriptUnit[],
+  matches: ReadonlyMap<number, MatchedTranscriptUnit>,
+): TranscriptUnit[] {
+  const positions = new Map([...matches].map(([index, match]) => [index, match.position]));
+  const insertions = new Map<number, TranscriptUnit[]>();
+  for (let index = 0; index < live.length; index++) {
+    if (matches.has(index)) continue;
+    const position = unmatchedLiveInsertion(live, index, canonical, positions);
+    const bucket = insertions.get(position) ?? [];
+    bucket.push(live[index]!);
+    insertions.set(position, bucket);
+  }
+  const units = canonical.flatMap((unit, index) => [...(insertions.get(index) ?? []), unit]);
+  units.push(...(insertions.get(canonical.length) ?? []));
+  return units;
+}
+
+function retireMatchedTranscriptUnits(
+  tail: LiveTranscriptTail,
+  live: readonly TranscriptUnit[],
+  retired: ReadonlySet<string>,
+  capacity: number,
+): void {
+  if (retired.size === 0) return;
+  const retained = live.filter((unit) => !retired.has(unit.user.id));
+  tail.retirement ??= { receipts: [], capacity };
+  tail.retirement.capacity = Math.max(tail.retirement.capacity, capacity);
+  retireTranscriptUnits(
+    tail.retirement,
+    live.filter((unit) => retired.has(unit.user.id)),
+  );
+  tail.userMessages = retained.map((unit) => unit.user);
+  tail.events = retained.flatMap((unit) => unit.events);
+  for (const id of retired) tail.coverage?.delete(id);
+}
+
+function projectSessionTranscript(
+  sessionId: string,
+  page: CanonicalTranscriptPage,
+): TranscriptPlane {
+  const canonical = transcriptUnits(page);
+  const tail = liveTailBySession.get(sessionId);
+  if (!page.includeLiveProjection || !tail) return renderTranscriptUnits(canonical);
+  const live = transcriptUnits(tail);
+  if (canonical.length === 0 && live.length === 0) return { userMessages: [], events: tail.events };
+  const matches = matchTranscriptUnits(page, canonical, live, runtimeRunTerminalIndex(tail.events));
+  const retired = recordCanonicalCoverage(sessionId, page, tail, live, matches);
+  const units = assembleTranscriptUnits(canonical, live, matches);
+  retireMatchedTranscriptUnits(tail, live, retired, page.windowSize);
+  const rendered = renderTranscriptUnits(units);
+  return {
+    ...rendered,
+    events: dedupePersistedCompactionBoundaries([
+      ...rendered.events,
+      ...(live.length === 0 ? tail.events : []),
+    ]),
+  };
+}
+
+function prependCanonicalPage(
+  incoming: TranscriptPlane,
+  previous?: TranscriptPlane,
+): TranscriptPlane {
+  if (!previous) return incoming;
+  const next = transcriptUnits(incoming);
+  const kept = transcriptUnits(previous).filter(
+    (unit) =>
+      !next.some((candidate) => transcriptUserIdentity(candidate.user, unit.user) === 'match'),
+  );
+  return {
+    userMessages: [...next, ...kept].map((unit) => unit.user),
+    events: [...next, ...kept].flatMap((unit) => unit.events),
+  };
+}
+
+function boundCanonicalPage(
+  retained: TranscriptPlane,
+  incoming: TranscriptPlane,
+  limit: number,
+): TranscriptPlane {
+  const units = transcriptUnits(retained);
+  let size = retained.userMessages.length + retained.events.length;
+  while (units.length > 1 && size > limit) {
+    const removed = units.shift()!;
+    size -= 1 + removed.events.length;
+  }
+  if (size > limit) return incoming;
+  return {
+    userMessages: units.map((unit) => unit.user),
+    events: units.flatMap((unit) => unit.events),
+  };
+}
+
+function retainSelectedTranscriptSources(
+  sessionId: string,
+  selected: readonly UserMessage[],
+): void {
+  const retain = (plane: TranscriptPlane): TranscriptPlane => {
+    const units = transcriptUnits(plane).filter((unit) =>
+      selected.some((user) => transcriptUserIdentity(user, unit.user) === 'match'),
+    );
+    return {
+      userMessages: units.map((unit) => unit.user),
+      events: units.flatMap((unit) => unit.events),
+    };
+  };
+  const page = canonicalPageBySession.get(sessionId);
+  const tail = liveTailBySession.get(sessionId);
+  if (page)
+    canonicalPageBySession.set(sessionId, { ...page, ...retain(page), authority: undefined });
+  if (tail) liveTailBySession.set(sessionId, retain(tail));
+}
+
+function releaseCoveredLiveUnits(tail: LiveTranscriptTail, canonicalFloor = Infinity): void {
+  if (!tail.coverage?.size) return;
+  tail.retirement ??= { receipts: [], capacity: tail.coverage.size };
+  const previous = transcriptUnits(tail);
+  const units = previous.filter((unit) => {
+    const coverage = tail.coverage?.get(unit.user.id);
+    if (coverage === undefined || coverage >= canonicalFloor) return true;
+    tail.coverage?.delete(unit.user.id);
+    return false;
   });
-  return changed ? reconciled : userMessages;
+  retireTranscriptUnits(
+    tail.retirement,
+    previous.filter((unit) => !units.includes(unit)),
+  );
+  tail.userMessages = units.map((unit) => unit.user);
+  tail.events = units.flatMap((unit) => unit.events);
+}
+
+function projectTranscriptUpdate(state: AppState, update: Partial<AppState>): Partial<AppState> {
+  if (update === state) return state;
+  let users = update.userMessagesBySession ?? state.userMessagesBySession;
+  let events = update.eventsBySession ?? state.eventsBySession;
+  let artifacts = update.transientArtifactsBySession ?? state.transientArtifactsBySession;
+  for (const [sessionId, page] of canonicalPageBySession) {
+    if (
+      users[sessionId] === state.userMessagesBySession[sessionId] &&
+      events[sessionId] === state.eventsBySession[sessionId]
+    )
+      continue;
+    const view = projectSessionTranscript(sessionId, page);
+    projectedViewBySession.set(sessionId, view);
+    users = { ...users, [sessionId]: view.userMessages };
+    events = { ...events, [sessionId]: view.events };
+    artifacts = { ...artifacts, [sessionId]: collectTransientArtifactsFromEvents(view.events) };
+  }
+  return {
+    ...update,
+    ...(users !== state.userMessagesBySession ? { userMessagesBySession: users } : {}),
+    ...(events !== state.eventsBySession ? { eventsBySession: events } : {}),
+    ...(artifacts !== state.transientArtifactsBySession
+      ? { transientArtifactsBySession: artifacts }
+      : {}),
+  };
 }
 
 function stableJson(value: unknown): string {
@@ -5421,18 +4970,24 @@ function reconcileSnapshotInitialTurnOwners(
 ): readonly UserMessage[] {
   if (projection === undefined) return userMessages;
   let reconciled = userMessages;
-  if (target !== 'active' && projection.lastTerminalRun !== undefined) {
+  if (
+    target !== 'active' &&
+    projection.lastTerminalRun !== undefined &&
+    !snapshotInitialOwnerRetired(projection, projection.lastTerminalRun.runId)
+  ) {
     reconciled = reconcileProjectionRunInitialTurnOwner(
       sessionId,
       reconciled,
       events,
       projection.lastTerminalRun,
       false,
+      projection.cursor,
     );
   }
   if (
     target !== 'terminal' &&
     projection.activeRun !== undefined &&
+    !snapshotInitialOwnerRetired(projection, projection.activeRun.runId) &&
     (target === 'active' || projection.activeRun.runId !== projection.lastTerminalRun?.runId)
   ) {
     reconciled = reconcileProjectionRunInitialTurnOwner(
@@ -5441,6 +4996,7 @@ function reconcileSnapshotInitialTurnOwners(
       events,
       projection.activeRun,
       true,
+      projection.cursor,
     );
   }
   return reconciled;
@@ -5454,8 +5010,38 @@ function reconcileProjectionRunInitialTurnOwner(
     SpaceSessionLiveProjectionT['activeRun'] | SpaceSessionLiveProjectionT['lastTerminalRun']
   >,
   openRestoredOwner: boolean,
+  cursor: SpaceRuntimeCursorT,
 ): readonly UserMessage[] {
   if (run?.turnId === undefined) return userMessages;
+  const tail = liveTailBySession.get(sessionId);
+  if (
+    tail?.retirement?.receipts.some(
+      (receipt) =>
+        receipt.runId === run.runId &&
+        receipt.turnId === run.turnId &&
+        receipt.turnUserOrdinal === 0 &&
+        receipt.runtimeId === cursor.runtimeId &&
+        receipt.journalEpoch === cursor.journalEpoch,
+    )
+  ) {
+    return userMessages;
+  }
+  if (!userMessages.some((user) => user.turnId === run.turnId && user.turnUserOrdinal === 0)) {
+    const page = canonicalPageBySession.get(sessionId);
+    if (page?.includeLiveProjection) {
+      const openedPage = openExactRestoredInitialTurn(page.userMessages, run.turnId, run.runId);
+      if (openedPage !== page.userMessages) {
+        const owner = openedPage.find(
+          (user) => user.turnId === run.turnId && user.turnUserOrdinal === 0,
+        )!;
+        rememberOpenedHistoryLiveOwner(sessionId, owner);
+        const liveOwner = liveTailBySession
+          .get(sessionId)
+          ?.userMessages.find((user) => user.turnId === run.turnId && user.turnUserOrdinal === 0);
+        if (liveOwner) userMessages = [...userMessages, liveOwner];
+      }
+    }
+  }
   const opened = openRestoredOwner
     ? openExactRestoredInitialTurn(userMessages, run.turnId, run.runId)
     : userMessages;
@@ -5944,6 +5530,7 @@ function reconcileRuntimeStartedAfterTurnInputs(
   let nextUsers = [...currentUsers];
   let nextQueued = [...currentQueued];
   for (const run of runs) {
+    if (snapshotInitialOwnerRetired(projection, run.runId)) continue;
     const matches = nextQueued.filter(
       (entry) =>
         entry.queueMode === 'after-turn' &&
@@ -6206,6 +5793,15 @@ function reconcileRuntimeDeliveredInputs(
   let nextQueued = [...queuedMessages];
   for (const input of projection.queuedInputs) {
     const activeRun = projection.activeRun;
+    const tail = liveTailBySession.get(projection.sessionId);
+    if (
+      tail &&
+      isRetiredTranscriptEvent(
+        tail.retirement,
+        createDeliveredInputBoundary(projection, input, input.contentPreview ?? ''),
+      )
+    )
+      continue;
     if (
       input.delivery !== 'interrupt' ||
       input.state !== 'delivered' ||
@@ -6344,9 +5940,11 @@ function hydrateProjectedSidecarMessages(
   );
   if (sidecars.length === 0) return events as SessionEvent[];
   const next = [...events];
+  const tail = liveTailBySession.get(projection.sessionId);
   const matchedHistoryIndexes = new Set<number>();
   for (const item of sidecars) {
     const projected = toProjectedSidecarEvent(projection, item);
+    if (isRetiredTranscriptEvent(tail?.retirement, projected)) continue;
     if (next.some((event) => projectedSidecarMatches(event, projected))) continue;
     const historyIndex = next.findIndex(
       (event, index) =>
@@ -6532,1915 +6130,1907 @@ function failQueuedUserMessageForPrompt(
 const initialMascotMode = readPersistedMascotMode();
 const initialRuntimeProjectionState = createRuntimeProjectionState();
 
-export const useAppStore = create<AppState>((set) => ({
-  projects: [],
-  licenseStatus: null,
-  currentProjectPath: lsGet(LS_KEY_PROJECT),
-  expandedProjects: readPersistedExpandedProjects(),
-  sessions: [],
-  deletingSessionIds: new Set<string>(),
-  removingSessionIds: new Set<string>(),
-  currentSessionId: null,
-  eventsBySession: {},
-  errorSeenAtBySession: {},
-  errorSeenRunIdBySession: {},
-  errorSeenRunIdsBySession: readPersistedErrorSeenRunIds(),
-  todoDriftDismissedAtBySession: {},
-  todoDriftDismissedPendingCountBySession: {},
-  transientArtifactsBySession: {},
-  userMessagesBySession: {},
-  queuedUserMessagesBySession: {},
-  localNoticesBySession: {},
-  workflowNoticesBySession: {},
-  permissionQueue: [],
-  askUserQueue: [],
-  providers: [],
-  defaultProviderId: null,
-  keychainBackend: 'unknown',
-  kodaxDefaults: null,
-  runtimeDefaults: {},
-  runtimeConnection: initialRuntimeProjectionState.connection,
-  runtimeProfile: initialRuntimeProjectionState.profile,
-  liveProjectionBySession: initialRuntimeProjectionState.liveBySession,
-  runtimeSnapshotRequiredBySession: initialRuntimeProjectionState.snapshotRequiredBySession,
-  runtimeSnapshotCursorBySession: {},
-  compactingBySession: {},
-  workBudgetBySession: {},
-  harnessProfileBySession: {},
-  tokensBySession: {},
-  sessionTokenUsageBySession: readPersistedSessionTokenUsage(),
-  contextBudgetBySession: {},
-  providerCacheDiagnosticBySession: {},
-  todoListBySession: {},
-  managedTaskStatusBySession: {},
-  agentActorSnapshotBySession: {},
-  workflowRuns: {},
-  workflowActivityByRun: {},
-  lastDiffPath: null,
-  pendingToolPaths: {},
-  pendingSendBySession: {},
-  pendingSendRuntimeBaselineBySession: {},
-  inputHistoryBySession: {},
-  queueSnapshot: [],
-  queueTotalSize: 0,
-  notifications: [],
-  requestedPopout: null,
-  pendingProviderId: null,
-  // 持久化用户上次手动选择的 mode — 不再"用一次就消费"，而是变成"下次开 session 的默认偏好"。
-  // 用户在 Settings / picker 切的值落 localStorage；新 session 创建时如不显式给值就用这个。
-  pendingReasoningMode: readPersistedReasoningMode(),
-  pendingPermissionMode: readPersistedPermissionMode(),
-  pendingAgentMode: readPersistedAgentMode(),
-  pendingModel: readPersistedModel(),
-  sessionFlags: {},
-  recentsFilter: DEFAULT_RECENTS_FILTER,
-  theme:
-    (typeof window !== 'undefined' &&
-      (localStorage.getItem('kodax-space.theme') as 'dark' | 'light' | 'system' | null)) ||
-    'dark',
-  visualQuality: typeof window !== 'undefined' ? readVisualQuality() : 'balanced',
-  transcriptView: 'normal',
-  transcriptFontSize: 'base',
-  // 默认关：右侧栏存在意义=KodaX 计划列表，没 plan 时空着没价值；plan 来时由 Shell
-  // 的 useEffect (planLength transition) 自动开。'1' 才视作"用户主动开过"。
-  // Task Dock starts closed; Shell opens it for explicit focus requests and task-relevant events.
-  rightSidebarOpen: false,
-  leftSidebarOpen: lsGet('kodax-space.leftSidebarOpen') !== '0', // 默认开，"0" 表示用户主动关过
-  // 2026-06: 默认对齐 Codex 桌面端 — 左 260, 右 320。坏值（NaN / <100 / >800）退回默认。
-  leftSidebarWidth: clampSidebarWidth(
-    parseInt(lsGet('kodax-space.leftSidebarWidth') ?? '', 10),
-    260,
-  ),
-  rightSidebarWidth: clampSidebarWidth(
-    parseInt(lsGet('kodax-space.rightSidebarWidth') ?? '', 10),
-    320,
-  ),
-  // v0.1.9 fix: Shell activePopout 镜像 (临时 UI state,不持久化)
-  activePopoutKind: null,
-  // KX-I-02: smart director 默认 off。"1" 表示用户主动开过。
-  smartPopoutEnabled: readOptInBoolean(lsGet(LS_KEY_SMART_POPOUT)),
-  mascotMode: initialMascotMode,
-  mascotEnabled: initialMascotMode !== 'off',
-  nativeCompletionNotificationsEnabled: readOptInBoolean(
-    lsGet(LS_KEY_NATIVE_COMPLETION_NOTIFICATIONS),
-  ),
-  promotedPopoutsBySession: {},
-  projectOrder: readPersistedProjectOrder(),
-  archivedProjectsExpanded: lsGet('kodax-space.archivedProjectsExpanded') === '1',
-
-  setProjects: (projects) => set({ projects }),
-
-  setLicenseStatus: (licenseStatus) => set({ licenseStatus }),
-
-  toggleProjectExpanded: (projectPath, currentDefault) =>
-    set((state) => {
-      const next = { ...state.expandedProjects };
-      // 当前生效值 = 显式值（若有） else default。新值 = 反过来。
-      const effective = projectPath in next ? next[projectPath] : currentDefault;
-      const desired = !effective;
-      // 优化：新值等于 default → 清掉显式记录，map 占地少 + 后续 default 变化时跟着走
-      if (desired === currentDefault) {
-        delete next[projectPath];
-      } else {
-        next[projectPath] = desired;
+export const useAppStore = create<AppState>((setState) => {
+  const set = (update: Partial<AppState> | ((state: AppState) => Partial<AppState>)): void => {
+    setState((state) => {
+      // Explicit external buffer replacement is a new lifecycle, not a replay of cached planes.
+      for (const [sessionId, view] of projectedViewBySession) {
+        if (
+          state.userMessagesBySession[sessionId] !== view.userMessages ||
+          state.eventsBySession[sessionId] !== view.events
+        )
+          clearLiveTranscriptTail(sessionId);
       }
-      // 持久化 —— map 长度上限 256 防 LS 涨太大（不应到这种规模，纯防御）
-      const keys = Object.keys(next);
-      if (keys.length > 256) {
-        const drop = keys.slice(0, keys.length - 256);
-        for (const k of drop) delete next[k];
-      }
-      lsSet(LS_KEY_EXPANDED_PROJECTS, JSON.stringify(next));
-      return { expandedProjects: next };
-    }),
-  setCurrentProject: (path) => {
-    lsSet(LS_KEY_PROJECT, path);
-    set((state) => {
-      if (path === null) {
-        return { currentProjectPath: null, currentSessionId: null };
-      }
-      const nextCanon = canonProjectRootShared(path, IS_WIN_RENDERER);
-      const currentCanon = state.currentProjectPath
-        ? canonProjectRootShared(state.currentProjectPath, IS_WIN_RENDERER)
-        : null;
-      if (currentCanon === nextCanon) return { currentProjectPath: path };
-
-      return {
-        currentProjectPath: path,
-        currentSessionId: null,
-        lastDiffPath: null,
-        pendingToolPaths: {},
-      };
+      return projectTranscriptUpdate(state, typeof update === 'function' ? update(state) : update);
     });
-  },
-  setSessions: (sessions) =>
-    set((state) => ({
-      sessions: mergeRuntimeActivityIntoSessions(sessions, state.runtimeProfile),
-    })),
-  replaceSessionsForScope: (sessions, scope) =>
-    set((state) => {
-      const replaced = replaceSessionsInScope(state.sessions, sessions, scope, IS_WIN_RENDERER);
-      return {
-        sessions: mergeRuntimeActivityIntoSessions(replaced, state.runtimeProfile),
-      };
-    }),
-  setCurrentSession: (sessionId) => {
-    let seenBySessionToPersist: Readonly<Record<string, readonly string[]>> | null = null;
-    set((state) => {
-      // v0.1.9 fix: 切 session 时同步把 currentProjectPath 调到该 session 的 projectRoot。
-      // 否则 ChangesSection / WorkingFolderSection / ChipBar / BottomBar 在多项目 sidebar
-      // 下"用户从 KodaX 项目点 KodaX-Space 的 session" 时仍指着 KodaX,显示错的 git changes /
-      // 错的发送目录。
-      // sessionId=null → 回 dashboard,不动 currentProjectPath (用户还能继续看当前项目)。
-      if (sessionId === null) return { currentSessionId: null };
-      const readFlags = setSessionFlagValue(state.sessionFlags, sessionId, 'unread', false);
-      const found = state.sessions.find((s) => s.sessionId === sessionId);
-      // 查看即确认：记下当前事件长度，让已看过的 error 状态点熄灭（新 error 会再亮）。
-      // runtime 投影路径同理：记下当前 lastTerminalRun.runId，让已看过的红点熄灭。
-      const seenRunId = state.liveProjectionBySession[sessionId]?.lastTerminalRun?.runId;
-      const terminalRunIds = runtimeTerminalEvidenceCandidates(
-        {
-          connection: state.runtimeConnection,
-          profile: state.runtimeProfile,
-          liveBySession: state.liveProjectionBySession,
-        },
-        sessionId,
-      ).map((terminal) => terminal.runId);
-      if (seenRunId !== undefined) terminalRunIds.push(seenRunId);
-      for (const event of state.eventsBySession[sessionId] ?? []) {
-        if (event.kind === 'session_error' && event.runtimeEvent?.runId !== undefined) {
-          terminalRunIds.push(event.runtimeEvent.runId);
+  };
+  return {
+    projects: [],
+    licenseStatus: null,
+    currentProjectPath: lsGet(LS_KEY_PROJECT),
+    expandedProjects: readPersistedExpandedProjects(),
+    sessions: [],
+    deletingSessionIds: new Set<string>(),
+    removingSessionIds: new Set<string>(),
+    currentSessionId: null,
+    eventsBySession: {},
+    errorSeenAtBySession: {},
+    errorSeenRunIdBySession: {},
+    errorSeenRunIdsBySession: readPersistedErrorSeenRunIds(),
+    todoDriftDismissedAtBySession: {},
+    todoDriftDismissedPendingCountBySession: {},
+    transientArtifactsBySession: {},
+    userMessagesBySession: {},
+    queuedUserMessagesBySession: {},
+    localNoticesBySession: {},
+    workflowNoticesBySession: {},
+    permissionQueue: [],
+    askUserQueue: [],
+    providers: [],
+    defaultProviderId: null,
+    keychainBackend: 'unknown',
+    kodaxDefaults: null,
+    runtimeDefaults: {},
+    runtimeConnection: initialRuntimeProjectionState.connection,
+    runtimeProfile: initialRuntimeProjectionState.profile,
+    liveProjectionBySession: initialRuntimeProjectionState.liveBySession,
+    runtimeSnapshotRequiredBySession: initialRuntimeProjectionState.snapshotRequiredBySession,
+    runtimeSnapshotCursorBySession: {},
+    compactingBySession: {},
+    workBudgetBySession: {},
+    harnessProfileBySession: {},
+    tokensBySession: {},
+    sessionTokenUsageBySession: readPersistedSessionTokenUsage(),
+    contextBudgetBySession: {},
+    providerCacheDiagnosticBySession: {},
+    todoListBySession: {},
+    managedTaskStatusBySession: {},
+    agentActorSnapshotBySession: {},
+    workflowRuns: {},
+    workflowActivityByRun: {},
+    lastDiffPath: null,
+    pendingToolPaths: {},
+    pendingSendBySession: {},
+    pendingSendRuntimeBaselineBySession: {},
+    inputHistoryBySession: {},
+    queueSnapshot: [],
+    queueTotalSize: 0,
+    notifications: [],
+    requestedPopout: null,
+    pendingProviderId: null,
+    // 持久化用户上次手动选择的 mode — 不再"用一次就消费"，而是变成"下次开 session 的默认偏好"。
+    // 用户在 Settings / picker 切的值落 localStorage；新 session 创建时如不显式给值就用这个。
+    pendingReasoningMode: readPersistedReasoningMode(),
+    pendingPermissionMode: readPersistedPermissionMode(),
+    pendingAgentMode: readPersistedAgentMode(),
+    pendingModel: readPersistedModel(),
+    sessionFlags: {},
+    recentsFilter: DEFAULT_RECENTS_FILTER,
+    theme:
+      (typeof window !== 'undefined' &&
+        (localStorage.getItem('kodax-space.theme') as 'dark' | 'light' | 'system' | null)) ||
+      'dark',
+    visualQuality: typeof window !== 'undefined' ? readVisualQuality() : 'balanced',
+    transcriptView: 'normal',
+    transcriptFontSize: 'base',
+    // 默认关：右侧栏存在意义=KodaX 计划列表，没 plan 时空着没价值；plan 来时由 Shell
+    // 的 useEffect (planLength transition) 自动开。'1' 才视作"用户主动开过"。
+    // Task Dock starts closed; Shell opens it for explicit focus requests and task-relevant events.
+    rightSidebarOpen: false,
+    leftSidebarOpen: lsGet('kodax-space.leftSidebarOpen') !== '0', // 默认开，"0" 表示用户主动关过
+    // 2026-06: 默认对齐 Codex 桌面端 — 左 260, 右 320。坏值（NaN / <100 / >800）退回默认。
+    leftSidebarWidth: clampSidebarWidth(
+      parseInt(lsGet('kodax-space.leftSidebarWidth') ?? '', 10),
+      260,
+    ),
+    rightSidebarWidth: clampSidebarWidth(
+      parseInt(lsGet('kodax-space.rightSidebarWidth') ?? '', 10),
+      320,
+    ),
+    // v0.1.9 fix: Shell activePopout 镜像 (临时 UI state,不持久化)
+    activePopoutKind: null,
+    // KX-I-02: smart director 默认 off。"1" 表示用户主动开过。
+    smartPopoutEnabled: readOptInBoolean(lsGet(LS_KEY_SMART_POPOUT)),
+    mascotMode: initialMascotMode,
+    mascotEnabled: initialMascotMode !== 'off',
+    nativeCompletionNotificationsEnabled: readOptInBoolean(
+      lsGet(LS_KEY_NATIVE_COMPLETION_NOTIFICATIONS),
+    ),
+    promotedPopoutsBySession: {},
+    projectOrder: readPersistedProjectOrder(),
+    archivedProjectsExpanded: lsGet('kodax-space.archivedProjectsExpanded') === '1',
+
+    setProjects: (projects) => set({ projects }),
+
+    setLicenseStatus: (licenseStatus) => set({ licenseStatus }),
+
+    toggleProjectExpanded: (projectPath, currentDefault) =>
+      set((state) => {
+        const next = { ...state.expandedProjects };
+        // 当前生效值 = 显式值（若有） else default。新值 = 反过来。
+        const effective = projectPath in next ? next[projectPath] : currentDefault;
+        const desired = !effective;
+        // 优化：新值等于 default → 清掉显式记录，map 占地少 + 后续 default 变化时跟着走
+        if (desired === currentDefault) {
+          delete next[projectPath];
+        } else {
+          next[projectPath] = desired;
         }
-      }
-      const seenRunIds = [...(state.errorSeenRunIdsBySession[sessionId] ?? []), ...terminalRunIds]
-        .filter((runId, index, all) => all.indexOf(runId) === index)
-        .slice(-16);
-      const errorSeenRunIdsBySession =
-        seenRunIds.length > 0
-          ? { ...state.errorSeenRunIdsBySession, [sessionId]: seenRunIds }
-          : state.errorSeenRunIdsBySession;
-      seenBySessionToPersist = errorSeenRunIdsBySession;
-      const patch = {
-        ...(readFlags === state.sessionFlags ? {} : { sessionFlags: readFlags }),
-        errorSeenAtBySession: {
-          ...state.errorSeenAtBySession,
-          [sessionId]: state.eventsBySession[sessionId]?.length ?? 0,
-        },
-        ...(seenRunId
-          ? {
-              errorSeenRunIdBySession: {
-                ...state.errorSeenRunIdBySession,
-                [sessionId]: seenRunId,
-              },
-            }
-          : {}),
-        ...(seenRunIds.length > 0
-          ? {
-              errorSeenRunIdsBySession,
-            }
-          : {}),
-      };
-      if (!found || !found.projectRoot) return { currentSessionId: sessionId, ...patch };
-      const targetCanon = canonProjectRootShared(found.projectRoot, IS_WIN_RENDERER);
-      const currentCanon = state.currentProjectPath
-        ? canonProjectRootShared(state.currentProjectPath, IS_WIN_RENDERER)
-        : null;
-      if (targetCanon === currentCanon) return { currentSessionId: sessionId, ...patch };
-      // Opening another project's Session switches the whole working context
-      // (terminal, changes, sends). Persist it so reload/boot restores the
-      // project the user actually ended up in.
-      lsSet(LS_KEY_PROJECT, found.projectRoot);
-      return {
-        currentSessionId: sessionId,
-        currentProjectPath: found.projectRoot,
-        ...patch,
-      };
-    });
-    if (seenBySessionToPersist !== null) persistErrorSeenRunIds(seenBySessionToPersist);
-  },
+        // 持久化 —— map 长度上限 256 防 LS 涨太大（不应到这种规模，纯防御）
+        const keys = Object.keys(next);
+        if (keys.length > 256) {
+          const drop = keys.slice(0, keys.length - 256);
+          for (const k of drop) delete next[k];
+        }
+        lsSet(LS_KEY_EXPANDED_PROJECTS, JSON.stringify(next));
+        return { expandedProjects: next };
+      }),
+    setCurrentProject: (path) => {
+      lsSet(LS_KEY_PROJECT, path);
+      set((state) => {
+        if (path === null) {
+          return { currentProjectPath: null, currentSessionId: null };
+        }
+        const nextCanon = canonProjectRootShared(path, IS_WIN_RENDERER);
+        const currentCanon = state.currentProjectPath
+          ? canonProjectRootShared(state.currentProjectPath, IS_WIN_RENDERER)
+          : null;
+        if (currentCanon === nextCanon) return { currentProjectPath: path };
 
-  appendUserMessage: (sessionId, content, sentAt, attachments, operationId) => {
-    let messageId: string | null = null;
-    set((state) => {
-      if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
-      const bucket = state.userMessagesBySession[sessionId] ?? [];
-      const msg = createUserMessage(
-        sessionId,
-        content,
-        appendedUserMessageSentAt(bucket, sentAt),
-        undefined,
-        attachments,
-        operationId,
-      );
-      messageId = msg.id;
-      rememberHistoryLiveUsers(sessionId, [msg]);
-      return {
-        sessions: state.sessions.map((session) =>
-          session.sessionId === sessionId && msg.sentAt > session.lastActivityAt
-            ? { ...session, lastActivityAt: msg.sentAt }
-            : session,
-        ),
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: [...bucket, msg],
-        },
-      };
-    });
-    return messageId;
-  },
+        return {
+          currentProjectPath: path,
+          currentSessionId: null,
+          lastDiffPath: null,
+          pendingToolPaths: {},
+        };
+      });
+    },
+    setSessions: (sessions) =>
+      set((state) => ({
+        sessions: mergeRuntimeActivityIntoSessions(sessions, state.runtimeProfile),
+      })),
+    replaceSessionsForScope: (sessions, scope) =>
+      set((state) => {
+        const replaced = replaceSessionsInScope(state.sessions, sessions, scope, IS_WIN_RENDERER);
+        return {
+          sessions: mergeRuntimeActivityIntoSessions(replaced, state.runtimeProfile),
+        };
+      }),
+    setCurrentSession: (sessionId) => {
+      let seenBySessionToPersist: Readonly<Record<string, readonly string[]>> | null = null;
+      set((state) => {
+        // v0.1.9 fix: 切 session 时同步把 currentProjectPath 调到该 session 的 projectRoot。
+        // 否则 ChangesSection / WorkingFolderSection / ChipBar / BottomBar 在多项目 sidebar
+        // 下"用户从 KodaX 项目点 KodaX-Space 的 session" 时仍指着 KodaX,显示错的 git changes /
+        // 错的发送目录。
+        // sessionId=null → 回 dashboard,不动 currentProjectPath (用户还能继续看当前项目)。
+        if (sessionId === null) return { currentSessionId: null };
+        const readFlags = setSessionFlagValue(state.sessionFlags, sessionId, 'unread', false);
+        const found = state.sessions.find((s) => s.sessionId === sessionId);
+        // 查看即确认：记下当前事件长度，让已看过的 error 状态点熄灭（新 error 会再亮）。
+        // runtime 投影路径同理：记下当前 lastTerminalRun.runId，让已看过的红点熄灭。
+        const seenRunId = state.liveProjectionBySession[sessionId]?.lastTerminalRun?.runId;
+        const terminalRunIds = runtimeTerminalEvidenceCandidates(
+          {
+            connection: state.runtimeConnection,
+            profile: state.runtimeProfile,
+            liveBySession: state.liveProjectionBySession,
+          },
+          sessionId,
+        ).map((terminal) => terminal.runId);
+        if (seenRunId !== undefined) terminalRunIds.push(seenRunId);
+        for (const event of state.eventsBySession[sessionId] ?? []) {
+          if (event.kind === 'session_error' && event.runtimeEvent?.runId !== undefined) {
+            terminalRunIds.push(event.runtimeEvent.runId);
+          }
+        }
+        const seenRunIds = [...(state.errorSeenRunIdsBySession[sessionId] ?? []), ...terminalRunIds]
+          .filter((runId, index, all) => all.indexOf(runId) === index)
+          .slice(-16);
+        const errorSeenRunIdsBySession =
+          seenRunIds.length > 0
+            ? { ...state.errorSeenRunIdsBySession, [sessionId]: seenRunIds }
+            : state.errorSeenRunIdsBySession;
+        seenBySessionToPersist = errorSeenRunIdsBySession;
+        const patch = {
+          ...(readFlags === state.sessionFlags ? {} : { sessionFlags: readFlags }),
+          errorSeenAtBySession: {
+            ...state.errorSeenAtBySession,
+            [sessionId]: state.eventsBySession[sessionId]?.length ?? 0,
+          },
+          ...(seenRunId
+            ? {
+                errorSeenRunIdBySession: {
+                  ...state.errorSeenRunIdBySession,
+                  [sessionId]: seenRunId,
+                },
+              }
+            : {}),
+          ...(seenRunIds.length > 0
+            ? {
+                errorSeenRunIdsBySession,
+              }
+            : {}),
+        };
+        if (!found || !found.projectRoot) return { currentSessionId: sessionId, ...patch };
+        const targetCanon = canonProjectRootShared(found.projectRoot, IS_WIN_RENDERER);
+        const currentCanon = state.currentProjectPath
+          ? canonProjectRootShared(state.currentProjectPath, IS_WIN_RENDERER)
+          : null;
+        if (targetCanon === currentCanon) return { currentSessionId: sessionId, ...patch };
+        // Opening another project's Session switches the whole working context
+        // (terminal, changes, sends). Persist it so reload/boot restores the
+        // project the user actually ended up in.
+        lsSet(LS_KEY_PROJECT, found.projectRoot);
+        return {
+          currentSessionId: sessionId,
+          currentProjectPath: found.projectRoot,
+          ...patch,
+        };
+      });
+      if (seenBySessionToPersist !== null) persistErrorSeenRunIds(seenBySessionToPersist);
+    },
 
-  reserveSendOperationMessage: (sessionId, input) => {
-    let owner: LocalSendOperationMessage | null = null;
-    set((state) => {
-      if (!state.sessions.some((session) => session.sessionId === sessionId)) return state;
-      const users = state.userMessagesBySession[sessionId] ?? [];
-      const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
-      const existing = existingSendOperationOwner(
-        resolveSendOperationMessages(users, queued, input.operationId),
-        input.requestGeneration,
-      );
-      if (existing !== undefined) {
-        owner = existing.owner;
-        const patch = existingSendOperationPatch(state, sessionId, existing);
-        return Object.keys(patch).length === 0 ? state : patch;
-      }
+    appendUserMessage: (sessionId, content, sentAt, attachments, operationId) => {
+      let messageId: string | null = null;
+      set((state) => {
+        if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
+        const bucket = state.userMessagesBySession[sessionId] ?? [];
+        const msg = createUserMessage(
+          sessionId,
+          content,
+          appendedUserMessageSentAt(bucket, sentAt),
+          undefined,
+          attachments,
+          operationId,
+        );
+        messageId = msg.id;
+        rememberHistoryLiveUsers(sessionId, [msg]);
+        return {
+          sessions: state.sessions.map((session) =>
+            session.sessionId === sessionId && msg.sentAt > session.lastActivityAt
+              ? { ...session, lastActivityAt: msg.sentAt }
+              : session,
+          ),
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: [...bucket, msg],
+          },
+        };
+      });
+      return messageId;
+    },
 
-      if (input.queued) {
-        const message = createReservedQueuedMessage(sessionId, input);
-        owner = { kind: 'queued', id: message.id };
+    reserveSendOperationMessage: (sessionId, input) => {
+      let owner: LocalSendOperationMessage | null = null;
+      set((state) => {
+        if (!state.sessions.some((session) => session.sessionId === sessionId)) return state;
+        const users = state.userMessagesBySession[sessionId] ?? [];
+        const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
+        const existing = existingSendOperationOwner(
+          resolveSendOperationMessages(users, queued, input.operationId),
+          input.requestGeneration,
+        );
+        if (existing !== undefined) {
+          owner = existing.owner;
+          const patch = existingSendOperationPatch(state, sessionId, existing);
+          return Object.keys(patch).length === 0 ? state : patch;
+        }
+
+        if (input.queued) {
+          const message = createReservedQueuedMessage(sessionId, input);
+          owner = { kind: 'queued', id: message.id };
+          return {
+            queuedUserMessagesBySession: {
+              ...state.queuedUserMessagesBySession,
+              [sessionId]: [...queued, message],
+            },
+          };
+        }
+
+        const message = createReservedUserMessage(sessionId, input, users);
+        owner = { kind: 'user', id: message.id };
+        rememberHistoryLiveUsers(sessionId, [message]);
+        return {
+          sessions: state.sessions.map((session) =>
+            session.sessionId === sessionId && message.sentAt > session.lastActivityAt
+              ? { ...session, lastActivityAt: message.sentAt }
+              : session,
+          ),
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: [...users, message],
+          },
+        };
+      });
+      return owner;
+    },
+
+    rollbackSendOperationMessage: (
+      sessionId,
+      operationId,
+      expectedGeneration,
+      failureDisposition,
+    ) => {
+      let result: SendOperationRollbackResult = 'stale';
+      set((state) => {
+        if (expectedGeneration === undefined) return state;
+        const users = state.userMessagesBySession[sessionId] ?? [];
+        const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
+        const messages = resolveSendOperationMessages(users, queued, operationId);
+        const settled = messages.settledUser ?? messages.settledQueued;
+        const pendingPatch = pendingSendCleanupPatch(state, sessionId, expectedGeneration);
+        if (settled !== undefined) {
+          result = 'settled';
+          return settledSendOperationPatch(state, sessionId, operationId, messages, pendingPatch);
+        }
+
+        const provisional = messages.provisionalUser ?? messages.provisionalQueued;
+        if (provisional === undefined) {
+          result = failureDisposition === 'ambiguous' ? 'retained' : 'rolled-back';
+          return Object.keys(pendingPatch).length === 0 ? state : pendingPatch;
+        }
+        if (provisional.operationReservation?.requestGeneration !== expectedGeneration)
+          return state;
+        if (failureDisposition === 'ambiguous') {
+          result = 'retained';
+          return Object.keys(pendingPatch).length === 0 ? state : pendingPatch;
+        }
+
+        const removesUser = messages.provisionalUser?.id === provisional.id;
+        result = 'rolled-back';
+        return removeProvisionalSendOperationPatch(
+          state,
+          sessionId,
+          provisional,
+          removesUser,
+          pendingPatch,
+        );
+      });
+      return result;
+    },
+
+    settleSendOperationMessage: (sessionId, operationId) =>
+      set((state) => {
+        let changed = false;
+        const userBucket = state.userMessagesBySession[sessionId] ?? [];
+        const nextUsers = userBucket.map((message) => {
+          if (message.operationId !== operationId || message.sendAdmissionSettled === true) {
+            return message;
+          }
+          changed = true;
+          return { ...message, sendAdmissionSettled: true as const };
+        });
+        const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
+        const nextQueued = queuedBucket.map((message) => {
+          if (message.operationId !== operationId || message.sendAdmissionSettled === true) {
+            return message;
+          }
+          changed = true;
+          return { ...message, sendAdmissionSettled: true as const };
+        });
+        if (!changed) return state;
+        const updatedUsers = nextUsers.filter((message) => message.operationId === operationId);
+        for (const message of updatedUsers)
+          updateTranscriptOwner(sessionId, message, { sendAdmissionSettled: true });
+        if (updatedUsers.length > 0) rememberHistoryLiveUsers(sessionId, updatedUsers);
+        return {
+          userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: nextUsers },
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [sessionId]: nextQueued,
+          },
+        };
+      }),
+
+    acknowledgePendingSendRun: (sessionId, runId, expectedGeneration) =>
+      set((state) => {
+        if (!state.pendingSendBySession[sessionId]) return state;
+        const currentBaseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
+          requestGeneration: 0,
+          liveCursorSeq: -1,
+          profileCursorSeq: -1,
+        };
+        if (
+          (expectedGeneration !== undefined &&
+            currentBaseline.requestGeneration !== expectedGeneration) ||
+          (currentBaseline.acceptedRunId !== undefined && currentBaseline.acceptedRunId !== runId)
+        ) {
+          return state;
+        }
+        const currentAuthority = pendingSendRuntimeBaseline(
+          state,
+          sessionId,
+          currentBaseline.requestGeneration,
+        );
+        const acknowledgedBaseline = {
+          ...currentBaseline,
+          ...(currentBaseline.runtimeId === undefined && currentAuthority.runtimeId !== undefined
+            ? { runtimeId: currentAuthority.runtimeId }
+            : {}),
+          acceptedRunId: runId,
+        };
+        if (acknowledgedPendingSendAlreadyObserved(state, sessionId, acknowledgedBaseline)) {
+          const { [sessionId]: _dropPending, ...restPending } = state.pendingSendBySession;
+          const { [sessionId]: _dropBaseline, ...restBaselines } =
+            state.pendingSendRuntimeBaselineBySession;
+          return {
+            pendingSendBySession: restPending,
+            pendingSendRuntimeBaselineBySession: restBaselines,
+          };
+        }
+        return {
+          pendingSendRuntimeBaselineBySession: {
+            ...state.pendingSendRuntimeBaselineBySession,
+            [sessionId]: acknowledgedBaseline,
+          },
+        };
+      }),
+
+    bindUserMessageRuntimeRun: (sessionId, messageId, runId) =>
+      set((state) => {
+        const users = state.userMessagesBySession[sessionId];
+        if (!users) return state;
+        const targetIndex = users.findIndex((message) => message.id === messageId);
+        const target = users[targetIndex];
+        if (
+          !target ||
+          target.restoredFromHistory ||
+          target.hiddenHistoryAnchor ||
+          (target.runtimeRunId !== undefined && target.runtimeRunId !== runId)
+        ) {
+          return state;
+        }
+        const events = state.eventsBySession[sessionId] ?? [];
+        let turnId: string | undefined;
+        for (const event of events) {
+          if (
+            'turnId' in event &&
+            typeof event.turnId === 'string' &&
+            'runtimeEvent' in event &&
+            event.runtimeEvent?.runId === runId
+          ) {
+            turnId = event.turnId;
+            break;
+          }
+        }
+        if (turnId !== undefined && target.turnId !== undefined && target.turnId !== turnId) {
+          return state;
+        }
+        const boundUsers = users.slice();
+        boundUsers[targetIndex] = {
+          ...target,
+          runtimeRunId: runId,
+          ...(turnId !== undefined ? { turnId, turnUserOrdinal: target.turnUserOrdinal ?? 0 } : {}),
+        };
+        rememberHistoryLiveUsers(sessionId, boundUsers);
+        return {
+          userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: boundUsers },
+        };
+      }),
+
+    updateUserMessageAttachments: (sessionId, messageId, attachments) =>
+      set((state) => {
+        const bucket = state.userMessagesBySession[sessionId];
+        if (!bucket) return state;
+        const messageIndex = bucket.findIndex((message) => message.id === messageId);
+        if (messageIndex === -1) return state;
+        const current = bucket[messageIndex]!;
+        const previousAttachments = current.attachments ?? [];
+        const nextAttachments = attachments.map((attachment, index) => {
+          const previousLabel = previousAttachments[index]?.label;
+          return attachment.label === undefined && previousLabel !== undefined
+            ? { ...attachment, label: previousLabel }
+            : attachment;
+        });
+        const nextBucket = bucket.slice();
+        nextBucket[messageIndex] = {
+          ...current,
+          attachments: nextAttachments,
+        };
+        updateTranscriptOwner(sessionId, current, { attachments: nextAttachments });
+        rememberHistoryLiveUsers(sessionId, [nextBucket[messageIndex]!]);
+        return {
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: nextBucket,
+          },
+        };
+      }),
+
+    updateSendOperationAttachments: (sessionId, operationId, attachments) =>
+      set((state) => {
+        let changed = false;
+        const mergeAttachments = (
+          previousAttachments: readonly UserImageAttachment[] | undefined,
+        ): readonly UserImageAttachment[] =>
+          attachments.map((attachment, index) => {
+            const previousLabel = previousAttachments?.[index]?.label;
+            return attachment.label === undefined && previousLabel !== undefined
+              ? { ...attachment, label: previousLabel }
+              : attachment;
+          });
+        const userBucket = state.userMessagesBySession[sessionId] ?? [];
+        const nextUserBucket = userBucket.map((message) => {
+          if (message.operationId !== operationId) return message;
+          changed = true;
+          return { ...message, attachments: mergeAttachments(message.attachments) };
+        });
+        const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
+        const nextQueuedBucket = queuedBucket.map((message) => {
+          if (message.operationId !== operationId) return message;
+          changed = true;
+          return { ...message, attachments: mergeAttachments(message.attachments) };
+        });
+        if (!changed) return state;
+        const updatedUsers = nextUserBucket.filter(
+          (message) => message.operationId === operationId,
+        );
+        for (const message of updatedUsers)
+          updateTranscriptOwner(sessionId, message, { attachments: message.attachments });
+        if (updatedUsers.length > 0) rememberHistoryLiveUsers(sessionId, updatedUsers);
+        return {
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: nextUserBucket,
+          },
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [sessionId]: nextQueuedBucket,
+          },
+        };
+      }),
+
+    appendLocalNotice: (sessionId, content, options) => {
+      let persistedNotice: LocalNoticeMessage | null = null;
+      set((state) => {
+        if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
+        const bucket = state.localNoticesBySession[sessionId] ?? [];
+        const msg = createLocalNotice(content, options);
+        persistedNotice = msg;
+        return {
+          localNoticesBySession: {
+            ...state.localNoticesBySession,
+            [sessionId]: mergeLocalNotices([bucket, [msg]], msg.id),
+          },
+        };
+      });
+      return persistedNotice !== null
+        ? persistLocalNoticeAppend(sessionId, persistedNotice)
+        : Promise.resolve();
+    },
+
+    appendQueuedUserMessage: (sessionId, input) => {
+      const localId = `qu_${sessionId}_${++queuedUserMessageCounter}`;
+      let appended = false;
+      set((state) => {
+        if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
+        appended = true;
+        const bucket = state.queuedUserMessagesBySession[sessionId] ?? [];
+        const msg: QueuedUserMessage = {
+          id: localId,
+          content: input.content,
+          matchContent: input.matchContent ?? input.content,
+          ...(input.attachments && input.attachments.length > 0
+            ? { attachments: input.attachments }
+            : {}),
+          queueMode: input.queueMode,
+          ...(input.operationId !== undefined ? { operationId: input.operationId } : {}),
+          status: 'pending-ack',
+          sentAt: input.sentAt ?? Date.now(),
+        };
         return {
           queuedUserMessagesBySession: {
             ...state.queuedUserMessagesBySession,
-            [sessionId]: [...queued, message],
+            [sessionId]: [...bucket, msg],
           },
         };
-      }
-
-      const message = createReservedUserMessage(sessionId, input, users);
-      owner = { kind: 'user', id: message.id };
-      rememberHistoryLiveUsers(sessionId, [message]);
-      return {
-        sessions: state.sessions.map((session) =>
-          session.sessionId === sessionId && message.sentAt > session.lastActivityAt
-            ? { ...session, lastActivityAt: message.sentAt }
-            : session,
-        ),
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: [...users, message],
-        },
-      };
-    });
-    return owner;
-  },
-
-  rollbackSendOperationMessage: (
-    sessionId,
-    operationId,
-    expectedGeneration,
-    failureDisposition,
-  ) => {
-    let result: SendOperationRollbackResult = 'stale';
-    set((state) => {
-      if (expectedGeneration === undefined) return state;
-      const users = state.userMessagesBySession[sessionId] ?? [];
-      const queued = state.queuedUserMessagesBySession[sessionId] ?? [];
-      const messages = resolveSendOperationMessages(users, queued, operationId);
-      const settled = messages.settledUser ?? messages.settledQueued;
-      const pendingPatch = pendingSendCleanupPatch(state, sessionId, expectedGeneration);
-      if (settled !== undefined) {
-        result = 'settled';
-        return settledSendOperationPatch(state, sessionId, operationId, messages, pendingPatch);
-      }
-
-      const provisional = messages.provisionalUser ?? messages.provisionalQueued;
-      if (provisional === undefined) {
-        result = failureDisposition === 'ambiguous' ? 'retained' : 'rolled-back';
-        return Object.keys(pendingPatch).length === 0 ? state : pendingPatch;
-      }
-      if (provisional.operationReservation?.requestGeneration !== expectedGeneration) return state;
-      if (failureDisposition === 'ambiguous') {
-        result = 'retained';
-        return Object.keys(pendingPatch).length === 0 ? state : pendingPatch;
-      }
-
-      const removesUser = messages.provisionalUser?.id === provisional.id;
-      result = 'rolled-back';
-      return removeProvisionalSendOperationPatch(
-        state,
-        sessionId,
-        provisional,
-        removesUser,
-        pendingPatch,
-      );
-    });
-    return result;
-  },
-
-  settleSendOperationMessage: (sessionId, operationId) =>
-    set((state) => {
-      let changed = false;
-      const userBucket = state.userMessagesBySession[sessionId] ?? [];
-      const nextUsers = userBucket.map((message) => {
-        if (message.operationId !== operationId || message.sendAdmissionSettled === true) {
-          return message;
-        }
-        changed = true;
-        return { ...message, sendAdmissionSettled: true as const };
       });
-      const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
-      const nextQueued = queuedBucket.map((message) => {
-        if (message.operationId !== operationId || message.sendAdmissionSettled === true) {
-          return message;
-        }
-        changed = true;
-        return { ...message, sendAdmissionSettled: true as const };
-      });
-      if (!changed) return state;
-      const updatedUsers = nextUsers.filter((message) => message.operationId === operationId);
-      if (updatedUsers.length > 0) rememberHistoryLiveUsers(sessionId, updatedUsers);
-      return {
-        userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: nextUsers },
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [sessionId]: nextQueued,
-        },
-      };
-    }),
+      return appended ? localId : null;
+    },
 
-  acknowledgePendingSendRun: (sessionId, runId, expectedGeneration) =>
-    set((state) => {
-      if (!state.pendingSendBySession[sessionId]) return state;
-      const currentBaseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
-        requestGeneration: 0,
-        liveCursorSeq: -1,
-        profileCursorSeq: -1,
-      };
-      if (
-        (expectedGeneration !== undefined &&
-          currentBaseline.requestGeneration !== expectedGeneration) ||
-        (currentBaseline.acceptedRunId !== undefined && currentBaseline.acceptedRunId !== runId)
-      ) {
-        return state;
-      }
-      const currentAuthority = pendingSendRuntimeBaseline(
-        state,
-        sessionId,
-        currentBaseline.requestGeneration,
-      );
-      const acknowledgedBaseline = {
-        ...currentBaseline,
-        ...(currentBaseline.runtimeId === undefined && currentAuthority.runtimeId !== undefined
-          ? { runtimeId: currentAuthority.runtimeId }
-          : {}),
-        acceptedRunId: runId,
-      };
-      if (acknowledgedPendingSendAlreadyObserved(state, sessionId, acknowledgedBaseline)) {
-        const { [sessionId]: _dropPending, ...restPending } = state.pendingSendBySession;
-        const { [sessionId]: _dropBaseline, ...restBaselines } =
-          state.pendingSendRuntimeBaselineBySession;
-        return {
-          pendingSendBySession: restPending,
-          pendingSendRuntimeBaselineBySession: restBaselines,
-        };
-      }
-      return {
-        pendingSendRuntimeBaselineBySession: {
-          ...state.pendingSendRuntimeBaselineBySession,
-          [sessionId]: acknowledgedBaseline,
-        },
-      };
-    }),
-
-  bindUserMessageRuntimeRun: (sessionId, messageId, runId) =>
-    set((state) => {
-      const users = state.userMessagesBySession[sessionId];
-      if (!users) return state;
-      const targetIndex = users.findIndex((message) => message.id === messageId);
-      const target = users[targetIndex];
-      if (
-        !target ||
-        target.restoredFromHistory ||
-        target.hiddenHistoryAnchor ||
-        (target.runtimeRunId !== undefined && target.runtimeRunId !== runId)
-      ) {
-        return state;
-      }
-      const events = state.eventsBySession[sessionId] ?? [];
-      let turnId: string | undefined;
-      for (const event of events) {
-        if (
-          'turnId' in event &&
-          typeof event.turnId === 'string' &&
-          'runtimeEvent' in event &&
-          event.runtimeEvent?.runId === runId
-        ) {
-          turnId = event.turnId;
-          break;
-        }
-      }
-      if (turnId !== undefined && target.turnId !== undefined && target.turnId !== turnId) {
-        return state;
-      }
-      const boundUsers = users.slice();
-      boundUsers[targetIndex] = {
-        ...target,
-        runtimeRunId: runId,
-        ...(turnId !== undefined ? { turnId, turnUserOrdinal: 0 } : {}),
-      };
-      rememberHistoryLiveUsers(sessionId, boundUsers);
-      const folded = foldStrongIdentityDuplicateTurns(boundUsers, events);
-      rememberCanonicalizedHistoryLiveOwners(sessionId, folded.canonicalizedLiveOwners ?? []);
-      const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
-        folded.userMessages,
-        folded.events,
-      );
-      return {
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: reconciledUsers,
-        },
-        ...(folded.events !== events
-          ? {
-              eventsBySession: {
-                ...state.eventsBySession,
-                [sessionId]: folded.events,
-              },
-              transientArtifactsBySession: {
-                ...state.transientArtifactsBySession,
-                [sessionId]: collectTransientArtifactsFromEvents(folded.events),
-              },
-            }
-          : {}),
-      };
-    }),
-
-  updateUserMessageAttachments: (sessionId, messageId, attachments) =>
-    set((state) => {
-      const bucket = state.userMessagesBySession[sessionId];
-      if (!bucket) return state;
-      const messageIndex = bucket.findIndex((message) => message.id === messageId);
-      if (messageIndex === -1) return state;
-      const current = bucket[messageIndex]!;
-      const previousAttachments = current.attachments ?? [];
-      const nextAttachments = attachments.map((attachment, index) => {
-        const previousLabel = previousAttachments[index]?.label;
-        return attachment.label === undefined && previousLabel !== undefined
-          ? { ...attachment, label: previousLabel }
-          : attachment;
-      });
-      const nextBucket = bucket.slice();
-      nextBucket[messageIndex] = {
-        ...current,
-        attachments: nextAttachments,
-      };
-      rememberHistoryLiveUsers(sessionId, [nextBucket[messageIndex]!]);
-      return {
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: nextBucket,
-        },
-      };
-    }),
-
-  updateSendOperationAttachments: (sessionId, operationId, attachments) =>
-    set((state) => {
-      let changed = false;
-      const mergeAttachments = (
-        previousAttachments: readonly UserImageAttachment[] | undefined,
-      ): readonly UserImageAttachment[] =>
-        attachments.map((attachment, index) => {
-          const previousLabel = previousAttachments?.[index]?.label;
-          return attachment.label === undefined && previousLabel !== undefined
-            ? { ...attachment, label: previousLabel }
-            : attachment;
+    updateQueuedUserMessageAttachments: (sessionId, localId, attachments) =>
+      set((state) => {
+        const bucket = state.queuedUserMessagesBySession[sessionId];
+        let changed = false;
+        const mergeAttachments = (
+          previousAttachments: readonly UserImageAttachment[] | undefined,
+        ): readonly UserImageAttachment[] =>
+          attachments.map((attachment, index) => {
+            const previousLabel = previousAttachments?.[index]?.label;
+            return attachment.label === undefined && previousLabel !== undefined
+              ? { ...attachment, label: previousLabel }
+              : attachment;
+          });
+        const nextBucket = (bucket ?? []).map((entry) => {
+          if (entry.id !== localId) return entry;
+          changed = true;
+          return {
+            ...entry,
+            attachments: mergeAttachments(entry.attachments),
+          };
         });
-      const userBucket = state.userMessagesBySession[sessionId] ?? [];
-      const nextUserBucket = userBucket.map((message) => {
-        if (message.operationId !== operationId) return message;
-        changed = true;
-        return { ...message, attachments: mergeAttachments(message.attachments) };
-      });
-      const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
-      const nextQueuedBucket = queuedBucket.map((message) => {
-        if (message.operationId !== operationId) return message;
-        changed = true;
-        return { ...message, attachments: mergeAttachments(message.attachments) };
-      });
-      if (!changed) return state;
-      const updatedUsers = nextUserBucket.filter((message) => message.operationId === operationId);
-      if (updatedUsers.length > 0) rememberHistoryLiveUsers(sessionId, updatedUsers);
-      return {
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: nextUserBucket,
-        },
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [sessionId]: nextQueuedBucket,
-        },
-      };
-    }),
-
-  appendLocalNotice: (sessionId, content, options) => {
-    let persistedNotice: LocalNoticeMessage | null = null;
-    set((state) => {
-      if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
-      const bucket = state.localNoticesBySession[sessionId] ?? [];
-      const msg = createLocalNotice(content, options);
-      persistedNotice = msg;
-      return {
-        localNoticesBySession: {
-          ...state.localNoticesBySession,
-          [sessionId]: mergeLocalNotices([bucket, [msg]], msg.id),
-        },
-      };
-    });
-    return persistedNotice !== null
-      ? persistLocalNoticeAppend(sessionId, persistedNotice)
-      : Promise.resolve();
-  },
-
-  appendQueuedUserMessage: (sessionId, input) => {
-    const localId = `qu_${sessionId}_${++queuedUserMessageCounter}`;
-    let appended = false;
-    set((state) => {
-      if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
-      appended = true;
-      const bucket = state.queuedUserMessagesBySession[sessionId] ?? [];
-      const msg: QueuedUserMessage = {
-        id: localId,
-        content: input.content,
-        matchContent: input.matchContent ?? input.content,
-        ...(input.attachments && input.attachments.length > 0
-          ? { attachments: input.attachments }
-          : {}),
-        queueMode: input.queueMode,
-        ...(input.operationId !== undefined ? { operationId: input.operationId } : {}),
-        status: 'pending-ack',
-        sentAt: input.sentAt ?? Date.now(),
-      };
-      return {
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [sessionId]: [...bucket, msg],
-        },
-      };
-    });
-    return appended ? localId : null;
-  },
-
-  updateQueuedUserMessageAttachments: (sessionId, localId, attachments) =>
-    set((state) => {
-      const bucket = state.queuedUserMessagesBySession[sessionId];
-      let changed = false;
-      const mergeAttachments = (
-        previousAttachments: readonly UserImageAttachment[] | undefined,
-      ): readonly UserImageAttachment[] =>
-        attachments.map((attachment, index) => {
-          const previousLabel = previousAttachments?.[index]?.label;
-          return attachment.label === undefined && previousLabel !== undefined
-            ? { ...attachment, label: previousLabel }
-            : attachment;
-        });
-      const nextBucket = (bucket ?? []).map((entry) => {
-        if (entry.id !== localId) return entry;
-        changed = true;
-        return {
-          ...entry,
-          attachments: mergeAttachments(entry.attachments),
-        };
-      });
-      const userBucket = state.userMessagesBySession[sessionId] ?? [];
-      const nextUserBucket = userBucket.map((message) => {
-        if (message.sourceQueuedLocalId !== localId) return message;
-        changed = true;
-        return {
-          ...message,
-          attachments: mergeAttachments(message.attachments),
-        };
-      });
-      if (!changed) return state;
-      return {
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [sessionId]: nextBucket,
-        },
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: nextUserBucket,
-        },
-      };
-    }),
-
-  markQueuedUserMessageAccepted: (sessionId, localId, queueId, queueMode) =>
-    set((state) => {
-      const bucket = state.queuedUserMessagesBySession[sessionId];
-      if (!bucket) return state;
-      const resolution = resolveAcceptedQueuedMessage(bucket, localId, queueId, queueMode);
-      if (!resolution) return state;
-      const formalIndex =
-        queueId === undefined
-          ? -1
-          : (state.userMessagesBySession[sessionId] ?? []).findIndex(
-              (message) =>
-                message.deliveryQueueId === queueId &&
-                message.deliveryQueueMode === resolution.acceptedMode,
-            );
-      if (formalIndex !== -1) {
         const userBucket = state.userMessagesBySession[sessionId] ?? [];
-        const formal = userBucket[formalIndex]!;
-        const nextUsers = userBucket.slice();
-        nextUsers[formalIndex] = {
-          ...formal,
-          content: resolution.target.content,
-          ...(resolution.target.attachments !== undefined
-            ? { attachments: resolution.target.attachments }
-            : {}),
-          sourceQueuedLocalId: localId,
-          ...(resolution.target.operationId !== undefined
-            ? { operationId: resolution.target.operationId }
-            : {}),
+        const nextUserBucket = userBucket.map((message) => {
+          if (message.sourceQueuedLocalId !== localId) return message;
+          changed = true;
+          updateTranscriptOwner(sessionId, message, {
+            attachments: mergeAttachments(message.attachments),
+          });
+          return {
+            ...message,
+            attachments: mergeAttachments(message.attachments),
+          };
+        });
+        if (!changed) return state;
+        return {
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [sessionId]: nextBucket,
+          },
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: nextUserBucket,
+          },
         };
+      }),
+
+    markQueuedUserMessageAccepted: (sessionId, localId, queueId, queueMode) =>
+      set((state) => {
+        const bucket = state.queuedUserMessagesBySession[sessionId];
+        if (!bucket) return state;
+        const resolution = resolveAcceptedQueuedMessage(bucket, localId, queueId, queueMode);
+        if (!resolution) return state;
+        const formalIndex =
+          queueId === undefined
+            ? -1
+            : (state.userMessagesBySession[sessionId] ?? []).findIndex(
+                (message) =>
+                  message.deliveryQueueId === queueId &&
+                  message.deliveryQueueMode === resolution.acceptedMode,
+              );
+        if (formalIndex !== -1) {
+          const userBucket = state.userMessagesBySession[sessionId] ?? [];
+          const formal = userBucket[formalIndex]!;
+          const nextUsers = userBucket.slice();
+          nextUsers[formalIndex] = {
+            ...formal,
+            content: resolution.target.content,
+            ...(resolution.target.attachments !== undefined
+              ? { attachments: resolution.target.attachments }
+              : {}),
+            sourceQueuedLocalId: localId,
+            ...(resolution.target.operationId !== undefined
+              ? { operationId: resolution.target.operationId }
+              : {}),
+          };
+          updateTranscriptOwner(sessionId, formal, {
+            content: resolution.target.content,
+            attachments: resolution.target.attachments,
+            sourceQueuedLocalId: localId,
+            operationId: resolution.target.operationId,
+          });
+          return {
+            queuedUserMessagesBySession: {
+              ...state.queuedUserMessagesBySession,
+              [sessionId]: resolution.remaining,
+            },
+            userMessagesBySession: {
+              ...state.userMessagesBySession,
+              [sessionId]: nextUsers,
+            },
+          };
+        }
+        resolution.remaining.splice(resolution.insertionIndex, 0, resolution.accepted);
         return {
           queuedUserMessagesBySession: {
             ...state.queuedUserMessagesBySession,
             [sessionId]: resolution.remaining,
           },
-          userMessagesBySession: {
-            ...state.userMessagesBySession,
-            [sessionId]: nextUsers,
+        };
+      }),
+
+    removeQueuedUserMessage: (sessionId, localId) =>
+      set((state) => {
+        const bucket = state.queuedUserMessagesBySession[sessionId];
+        if (!bucket) return state;
+        const nextBucket = bucket.filter((entry) => entry.id !== localId);
+        if (nextBucket.length === bucket.length) return state;
+        return {
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [sessionId]: nextBucket,
           },
         };
-      }
-      resolution.remaining.splice(resolution.insertionIndex, 0, resolution.accepted);
-      return {
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [sessionId]: resolution.remaining,
-        },
-      };
-    }),
+      }),
 
-  removeQueuedUserMessage: (sessionId, localId) =>
-    set((state) => {
-      const bucket = state.queuedUserMessagesBySession[sessionId];
-      if (!bucket) return state;
-      const nextBucket = bucket.filter((entry) => entry.id !== localId);
-      if (nextBucket.length === bucket.length) return state;
-      return {
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [sessionId]: nextBucket,
-        },
-      };
-    }),
+    promoteQueuedUserMessage: (sessionId, localId, sentAt) => {
+      let promotedMessageId: string | null = null;
+      set((state) => {
+        const bucket = state.queuedUserMessagesBySession[sessionId];
+        if (!bucket) return state;
+        const idx = bucket.findIndex((entry) => entry.id === localId);
+        if (idx === -1) return state;
+        const entry = bucket[idx]!;
+        const userBucket = state.userMessagesBySession[sessionId] ?? [];
+        const promotedMessage = {
+          ...createUserMessage(
+            sessionId,
+            entry.content,
+            sentAt,
+            undefined,
+            entry.attachments,
+            entry.operationId,
+          ),
+          sourceQueuedLocalId: localId,
+        };
+        promotedMessageId = promotedMessage.id;
+        rememberHistoryLiveUsers(sessionId, [promotedMessage]);
+        return {
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [sessionId]: [...bucket.slice(0, idx), ...bucket.slice(idx + 1)],
+          },
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: [...userBucket, promotedMessage],
+          },
+        };
+      });
+      return promotedMessageId;
+    },
 
-  promoteQueuedUserMessage: (sessionId, localId, sentAt) => {
-    let promotedMessageId: string | null = null;
-    set((state) => {
-      const bucket = state.queuedUserMessagesBySession[sessionId];
-      if (!bucket) return state;
-      const idx = bucket.findIndex((entry) => entry.id === localId);
-      if (idx === -1) return state;
-      const entry = bucket[idx]!;
-      const userBucket = state.userMessagesBySession[sessionId] ?? [];
-      const promotedMessage = {
-        ...createUserMessage(
-          sessionId,
-          entry.content,
-          sentAt,
-          undefined,
-          entry.attachments,
-          entry.operationId,
-        ),
-        sourceQueuedLocalId: localId,
-      };
-      promotedMessageId = promotedMessage.id;
-      rememberHistoryLiveUsers(sessionId, [promotedMessage]);
-      return {
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [sessionId]: [...bucket.slice(0, idx), ...bucket.slice(idx + 1)],
-        },
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: [...userBucket, promotedMessage],
-        },
-      };
-    });
-    return promotedMessageId;
-  },
+    convertUserMessageToQueued: (sessionId, messageId, input) => {
+      let localId: string | null = null;
+      set((state) => {
+        if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
+        const userBucket = state.userMessagesBySession[sessionId];
+        if (!userBucket || userBucket.length === 0) return state;
+        const messageIndex = userBucket.findIndex((message) => message.id === messageId);
+        if (messageIndex === -1) return state;
+        const message = userBucket[messageIndex];
+        if (!message) return state;
+        // The acknowledgement belongs to the original provisional phase. Runtime delivery or
+        // canonical reconciliation may have settled that same owner while IPC was in flight; a
+        // late/cached queued result must never move the admitted user turn back into the queue.
+        if (userMessageHasSettledSendAdmission(message)) return state;
 
-  convertUserMessageToQueued: (sessionId, messageId, input) => {
-    let localId: string | null = null;
-    set((state) => {
-      if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
-      const userBucket = state.userMessagesBySession[sessionId];
-      if (!userBucket || userBucket.length === 0) return state;
-      const messageIndex = userBucket.findIndex((message) => message.id === messageId);
-      if (messageIndex === -1) return state;
-      const message = userBucket[messageIndex];
-      if (!message) return state;
-      // The acknowledgement belongs to the original provisional phase. Runtime delivery or
-      // canonical reconciliation may have settled that same owner while IPC was in flight; a
-      // late/cached queued result must never move the admitted user turn back into the queue.
-      if (userMessageHasSettledSendAdmission(message)) return state;
+        forgetHistoryLiveUsers(sessionId, [message.id]);
+        localId = `qu_${sessionId}_${++queuedUserMessageCounter}`;
+        const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
+        const queued: QueuedUserMessage = {
+          id: localId,
+          content: input.content,
+          matchContent: input.matchContent ?? input.content,
+          ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
+          ...(message.operationId !== undefined ? { operationId: message.operationId } : {}),
+          queueMode: input.queueMode,
+          status: 'queued',
+          sentAt: input.sentAt ?? message.sentAt,
+        };
+        return {
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: [
+              ...userBucket.slice(0, messageIndex),
+              ...userBucket.slice(messageIndex + 1),
+            ],
+          },
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [sessionId]: [...queuedBucket, queued],
+          },
+        };
+      });
+      return localId;
+    },
 
-      forgetHistoryLiveUsers(sessionId, [message.id]);
-      localId = `qu_${sessionId}_${++queuedUserMessageCounter}`;
-      const queuedBucket = state.queuedUserMessagesBySession[sessionId] ?? [];
-      const queued: QueuedUserMessage = {
-        id: localId,
-        content: input.content,
-        matchContent: input.matchContent ?? input.content,
-        ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
-        ...(message.operationId !== undefined ? { operationId: message.operationId } : {}),
-        queueMode: input.queueMode,
-        status: 'queued',
-        sentAt: input.sentAt ?? message.sentAt,
-      };
-      return {
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: [
-            ...userBucket.slice(0, messageIndex),
-            ...userBucket.slice(messageIndex + 1),
-          ],
-        },
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [sessionId]: [...queuedBucket, queued],
-        },
-      };
-    });
-    return localId;
-  },
-
-  appendWorkflowNotice: (sessionId, content, sentAt, key) =>
-    set((state) => {
-      const knownSession = state.sessions.some((s) => s.sessionId === sessionId);
-      const knownWorkflowSession = Object.values(state.workflowRuns).some(
-        (run) => run.sessionId === sessionId,
-      );
-      if (!knownSession && state.currentSessionId !== sessionId && !knownWorkflowSession)
-        return state;
-      const bucket = state.workflowNoticesBySession[sessionId] ?? [];
-      // Keyed notices are unique per logical workflow event (agent summary / run
-      // finished). If one with the same key already exists, REPLACE its content in
-      // place — keeping the original id + sentAt so it stays at its chronological
-      // position — instead of appending a near-duplicate. This collapses an agent's
-      // evolving summary (excerpt → result) to a single bubble and is idempotent under
-      // event replay / restore / hot-reload. Keyless callers (activity digests,
-      // optimistic slash notices) keep append-always semantics.
-      if (key !== undefined) {
-        const idx = bucket.findIndex((n) => n.key === key);
-        if (idx !== -1) {
-          if (bucket[idx]!.content === content) return state;
-          const nextBucket = bucket.slice();
-          nextBucket[idx] = { ...bucket[idx]!, content };
-          return {
-            workflowNoticesBySession: {
-              ...state.workflowNoticesBySession,
-              [sessionId]: nextBucket,
-            },
-          };
+    appendWorkflowNotice: (sessionId, content, sentAt, key) =>
+      set((state) => {
+        const knownSession = state.sessions.some((s) => s.sessionId === sessionId);
+        const knownWorkflowSession = Object.values(state.workflowRuns).some(
+          (run) => run.sessionId === sessionId,
+        );
+        if (!knownSession && state.currentSessionId !== sessionId && !knownWorkflowSession)
+          return state;
+        const bucket = state.workflowNoticesBySession[sessionId] ?? [];
+        // Keyed notices are unique per logical workflow event (agent summary / run
+        // finished). If one with the same key already exists, REPLACE its content in
+        // place — keeping the original id + sentAt so it stays at its chronological
+        // position — instead of appending a near-duplicate. This collapses an agent's
+        // evolving summary (excerpt → result) to a single bubble and is idempotent under
+        // event replay / restore / hot-reload. Keyless callers (activity digests,
+        // optimistic slash notices) keep append-always semantics.
+        if (key !== undefined) {
+          const idx = bucket.findIndex((n) => n.key === key);
+          if (idx !== -1) {
+            if (bucket[idx]!.content === content) return state;
+            const nextBucket = bucket.slice();
+            nextBucket[idx] = { ...bucket[idx]!, content };
+            return {
+              workflowNoticesBySession: {
+                ...state.workflowNoticesBySession,
+                [sessionId]: nextBucket,
+              },
+            };
+          }
         }
-      }
-      const id = `wf_${sessionId}_${++workflowNoticeCounter}`;
-      const msg: WorkflowNoticeMessage = {
-        id,
-        content,
-        sentAt: sentAt ?? Date.now(),
-        ...(key !== undefined ? { key } : {}),
-      };
-      return {
-        workflowNoticesBySession: {
-          ...state.workflowNoticesBySession,
-          [sessionId]: [...bucket, msg],
-        },
-      };
-    }),
+        const id = `wf_${sessionId}_${++workflowNoticeCounter}`;
+        const msg: WorkflowNoticeMessage = {
+          id,
+          content,
+          sentAt: sentAt ?? Date.now(),
+          ...(key !== undefined ? { key } : {}),
+        };
+        return {
+          workflowNoticesBySession: {
+            ...state.workflowNoticesBySession,
+            [sessionId]: [...bucket, msg],
+          },
+        };
+      }),
 
-  rollbackUserMessage: (sessionId, messageId) =>
-    set((state) => {
-      const bucket = state.userMessagesBySession[sessionId];
-      if (!bucket || bucket.length === 0) return state;
-      const messageIndex = bucket.findIndex((message) => message.id === messageId);
-      if (messageIndex === -1) return state;
-      forgetHistoryLiveUsers(sessionId, [messageId]);
-      return {
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: [...bucket.slice(0, messageIndex), ...bucket.slice(messageIndex + 1)],
-        },
-      };
-    }),
+    rollbackUserMessage: (sessionId, messageId) =>
+      set((state) => {
+        const bucket = state.userMessagesBySession[sessionId];
+        if (!bucket || bucket.length === 0) return state;
+        const messageIndex = bucket.findIndex((message) => message.id === messageId);
+        if (messageIndex === -1) return state;
+        forgetHistoryLiveUsers(sessionId, [messageId]);
+        return {
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: [...bucket.slice(0, messageIndex), ...bucket.slice(messageIndex + 1)],
+          },
+        };
+      }),
 
-  prependSessionHistory: (sessionId, items, fallbackSentAt, options) =>
-    set((state) => {
-      if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
-      // 在 set callback 内构造 historical buckets,确保读到最新 currentBucket,避免 await 期
-      // user 已经 append 了新消息后被覆盖。
-      //
-      // v0.1.x 全量回放: items 可能是 user / assistant / tool_call 交替序列。
-      //   一个 turn = 一段从 user 到下一个 user 之前的 events; session_complete 在 turn 末尾插。
-      //   composeMessages 按 session_complete 切段配对 user message ↔ events。
-      const histMsgs: UserMessage[] = [];
-      const histEvents: SessionEvent[] = [];
-      const histLocalNotices: LocalNoticeMessage[] = [];
-      const leadingPartialTurnId = authoritativeLeadingHistoryTurnId(items);
-      const historyAnchorTurnId = leadingPartialTurnId ?? stableHistoryAnchorTurnId(items);
-      const historyPrefixAnchorTurnId = `space-history-prefix:${stableHistoryHash(items)}`;
-      // Only an explicitly ambiguous projection may carry proven clone candidates (same logicalId
-      // re-created and archived — verified on disk, session 20260816_132905_g1806cde81c389).
-      // Resolved pages never dedupe: distinct legitimate rows can share a logicalId family.
-      const seenAmbiguousLogicalIds =
-        options?.conversationStatus === 'ambiguous' ? new Set<string>() : null;
-      // Issue 186 review hardening: among ambiguous candidates sharing a logicalId,
-      // prefer the smallest canonicalIndex when both candidates carry one; mixed or
-      // index-less duplicates keep the first-seen copy (keep-first fallback).
-      const skipAmbiguousItemIndex = new Set<number>();
-      if (seenAmbiguousLogicalIds !== null) {
-        const bestByLogicalId = new Map<string, { index: number; canonicalIndex: number }>();
-        items.forEach((item, index) => {
-          if (!('logicalId' in item) || typeof item.logicalId !== 'string') return;
-          if (!('canonicalIndex' in item) || typeof item.canonicalIndex !== 'number') return;
-          const best = bestByLogicalId.get(item.logicalId);
-          if (best === undefined) {
-            bestByLogicalId.set(item.logicalId, { index, canonicalIndex: item.canonicalIndex });
-            return;
+    prependSessionHistory: (sessionId, items, fallbackSentAt, options) =>
+      set((state) => {
+        if (!state.sessions.some((s) => s.sessionId === sessionId)) return state;
+        // 在 set callback 内构造 historical buckets,确保读到最新 currentBucket,避免 await 期
+        // user 已经 append 了新消息后被覆盖。
+        //
+        // v0.1.x 全量回放: items 可能是 user / assistant / tool_call 交替序列。
+        //   一个 turn = 一段从 user 到下一个 user 之前的 events; session_complete 在 turn 末尾插。
+        //   composeMessages 按 session_complete 切段配对 user message ↔ events。
+        const histMsgs: UserMessage[] = [];
+        const histEvents: SessionEvent[] = [];
+        const histLocalNotices: LocalNoticeMessage[] = [];
+        const leadingPartialTurnId = authoritativeLeadingHistoryTurnId(items);
+        const historyAnchorTurnId = leadingPartialTurnId ?? stableHistoryAnchorTurnId(items);
+        const historyPrefixAnchorTurnId = `space-history-prefix:${stableHistoryHash(items)}`;
+        // Only an explicitly ambiguous projection may carry proven clone candidates (same logicalId
+        // re-created and archived — verified on disk, session 20260816_132905_g1806cde81c389).
+        // Resolved pages never dedupe: distinct legitimate rows can share a logicalId family.
+        const seenAmbiguousLogicalIds =
+          options?.conversationStatus === 'ambiguous' ? new Set<string>() : null;
+        // Issue 186 review hardening: among ambiguous candidates sharing a logicalId,
+        // prefer the smallest canonicalIndex when both candidates carry one; mixed or
+        // index-less duplicates keep the first-seen copy (keep-first fallback).
+        const skipAmbiguousItemIndex = new Set<number>();
+        if (seenAmbiguousLogicalIds !== null) {
+          const bestByLogicalId = new Map<string, { index: number; canonicalIndex: number }>();
+          items.forEach((item, index) => {
+            if (!('logicalId' in item) || typeof item.logicalId !== 'string') return;
+            if (!('canonicalIndex' in item) || typeof item.canonicalIndex !== 'number') return;
+            const best = bestByLogicalId.get(item.logicalId);
+            if (best === undefined) {
+              bestByLogicalId.set(item.logicalId, { index, canonicalIndex: item.canonicalIndex });
+              return;
+            }
+            if (item.canonicalIndex < best.canonicalIndex) {
+              skipAmbiguousItemIndex.add(best.index);
+              bestByLogicalId.set(item.logicalId, { index, canonicalIndex: item.canonicalIndex });
+            } else {
+              skipAmbiguousItemIndex.add(index);
+            }
+          });
+        }
+        let firstCanonicalHistoricalSentAt: number | undefined;
+        for (const item of items) {
+          if (item.kind === 'local_notice') continue;
+          if (!('sentAt' in item) || !Number.isFinite(item.sentAt)) continue;
+          firstCanonicalHistoricalSentAt = item.sentAt;
+          break;
+        }
+        let lastHistoricalUserSentAt = Number.NEGATIVE_INFINITY;
+        const nextHistoricalUserSentAt = (candidateSentAt?: number): number => {
+          const fallback =
+            typeof fallbackSentAt === 'number' && Number.isFinite(fallbackSentAt)
+              ? fallbackSentAt
+              : Date.now();
+          const base =
+            typeof candidateSentAt === 'number' && Number.isFinite(candidateSentAt)
+              ? candidateSentAt
+              : fallback;
+          const sentAt = Math.max(base, lastHistoricalUserSentAt + 1);
+          lastHistoricalUserSentAt = sentAt;
+          return sentAt;
+        };
+        // 用来跟踪"上一项是否为 user (turn 边界)"-- 在 user 到来前如果有 pending assistant
+        // events 还没 session_complete,先 flush 一个 complete
+        let assistantPendingComplete = false;
+        let openUserWithoutAssistant = false;
+        let leadingHistoryPrefixPending = false;
+        const flushTurnIfNeeded = (): void => {
+          if (assistantPendingComplete) {
+            histEvents.push({ kind: 'session_complete', sessionId });
+            assistantPendingComplete = false;
+            openUserWithoutAssistant = false;
           }
-          if (item.canonicalIndex < best.canonicalIndex) {
-            skipAmbiguousItemIndex.add(best.index);
-            bestByLogicalId.set(item.logicalId, { index, canonicalIndex: item.canonicalIndex });
-          } else {
-            skipAmbiguousItemIndex.add(index);
+        };
+        const flushEmptyTurnIfNeeded = (): void => {
+          if (!assistantPendingComplete && openUserWithoutAssistant) {
+            const lastIndex = histMsgs.length - 1;
+            const last = histMsgs[lastIndex];
+            if (last) {
+              histMsgs[lastIndex] = { ...last, historyNoAssistantSegment: true };
+            }
+            openUserWithoutAssistant = false;
           }
-        });
-      }
-      let firstCanonicalHistoricalSentAt: number | undefined;
-      for (const item of items) {
-        if (item.kind === 'local_notice') continue;
-        if (!('sentAt' in item) || !Number.isFinite(item.sentAt)) continue;
-        firstCanonicalHistoricalSentAt = item.sentAt;
-        break;
-      }
-      let lastHistoricalUserSentAt = Number.NEGATIVE_INFINITY;
-      const nextHistoricalUserSentAt = (candidateSentAt?: number): number => {
-        const fallback =
-          typeof fallbackSentAt === 'number' && Number.isFinite(fallbackSentAt)
-            ? fallbackSentAt
-            : Date.now();
-        const base =
-          typeof candidateSentAt === 'number' && Number.isFinite(candidateSentAt)
-            ? candidateSentAt
-            : fallback;
-        const sentAt = Math.max(base, lastHistoricalUserSentAt + 1);
-        lastHistoricalUserSentAt = sentAt;
-        return sentAt;
-      };
-      // 用来跟踪"上一项是否为 user (turn 边界)"-- 在 user 到来前如果有 pending assistant
-      // events 还没 session_complete,先 flush 一个 complete
-      let assistantPendingComplete = false;
-      let openUserWithoutAssistant = false;
-      let leadingHistoryPrefixPending = false;
-      const flushTurnIfNeeded = (): void => {
-        if (assistantPendingComplete) {
-          histEvents.push({ kind: 'session_complete', sessionId });
-          assistantPendingComplete = false;
+        };
+        const markTurnHasEvents = (): void => {
+          assistantPendingComplete = true;
           openUserWithoutAssistant = false;
-        }
-      };
-      const flushEmptyTurnIfNeeded = (): void => {
-        if (!assistantPendingComplete && openUserWithoutAssistant) {
-          const lastIndex = histMsgs.length - 1;
-          const last = histMsgs[lastIndex];
-          if (last) {
-            histMsgs[lastIndex] = { ...last, historyNoAssistantSegment: true };
+        };
+        // composeMessages 按 userMessages 索引配对 events 段。如果 items 以 assistant
+        // 或 tool_call 开头 (KodaX 偶尔会有 greeting / initiative turn 没有 user prompt),
+        // 这些前置 events 会落到 tail 块,把后续真正 turn 的 (user, events) 配对全推错位。
+        // 解决: 第一条非 user item 触发前如果 histMsgs 还空,先塞一条隐藏的历史锚点
+        // (sentAt 用 fallback),让索引对齐，但不把内部锚点渲染成空白 user 气泡。
+        const ensureLeadingHistoryAnchor = (): void => {
+          let needsAnchor = histMsgs.length === 0;
+          if (leadingHistoryPrefixPending) {
+            flushTurnIfNeeded();
+            leadingHistoryPrefixPending = false;
+            needsAnchor = true;
           }
-          openUserWithoutAssistant = false;
-        }
-      };
-      const markTurnHasEvents = (): void => {
-        assistantPendingComplete = true;
-        openUserWithoutAssistant = false;
-      };
-      // composeMessages 按 userMessages 索引配对 events 段。如果 items 以 assistant
-      // 或 tool_call 开头 (KodaX 偶尔会有 greeting / initiative turn 没有 user prompt),
-      // 这些前置 events 会落到 tail 块,把后续真正 turn 的 (user, events) 配对全推错位。
-      // 解决: 第一条非 user item 触发前如果 histMsgs 还空,先塞一条隐藏的历史锚点
-      // (sentAt 用 fallback),让索引对齐，但不把内部锚点渲染成空白 user 气泡。
-      const ensureLeadingHistoryAnchor = (): void => {
-        let needsAnchor = histMsgs.length === 0;
-        if (leadingHistoryPrefixPending) {
-          flushTurnIfNeeded();
-          leadingHistoryPrefixPending = false;
-          needsAnchor = true;
-        }
-        if (needsAnchor) {
-          const id = `u_${sessionId}_history_anchor_${stableHistoryHash(historyAnchorTurnId)}`;
+          if (needsAnchor) {
+            const id = `u_${sessionId}_history_anchor_${stableHistoryHash(historyAnchorTurnId)}`;
+            histMsgs.push({
+              id,
+              content: '',
+              // The Session list's fallback can describe this Runtime attachment rather than the
+              // bounded page's first record. Prefer canonical item time so a leading hidden anchor
+              // cannot push every restored user beyond a concurrently submitted live query.
+              sentAt: nextHistoricalUserSentAt(firstCanonicalHistoricalSentAt ?? fallbackSentAt),
+              restoredFromHistory: true,
+              hiddenHistoryAnchor: true,
+              turnId: historyAnchorTurnId,
+              ...(leadingPartialTurnId !== undefined
+                ? { leadingPartialHistory: true as const }
+                : { turnUserOrdinal: 0 }),
+            });
+            openUserWithoutAssistant = true;
+          }
+        };
+        const ensureLeadingHistoryPrefixAnchor = (): void => {
+          if (histMsgs.length > 0) return;
+          const sentAt = Number.MIN_SAFE_INTEGER;
+          lastHistoricalUserSentAt = sentAt;
           histMsgs.push({
-            id,
+            id: `u_${sessionId}_history_anchor_${stableHistoryHash(historyPrefixAnchorTurnId)}`,
             content: '',
-            // The Session list's fallback can describe this Runtime attachment rather than the
-            // bounded page's first record. Prefer canonical item time so a leading hidden anchor
-            // cannot push every restored user beyond a concurrently submitted live query.
-            sentAt: nextHistoricalUserSentAt(firstCanonicalHistoricalSentAt ?? fallbackSentAt),
+            // A history-scope truncation describes records before every retained row, including an
+            // omitted live query recovered below. Keep its invisible owner first regardless of the
+            // first retained assistant timestamp.
+            sentAt,
             restoredFromHistory: true,
             hiddenHistoryAnchor: true,
-            turnId: historyAnchorTurnId,
-            ...(leadingPartialTurnId !== undefined
-              ? { leadingPartialHistory: true as const }
-              : { turnUserOrdinal: 0 }),
+            turnId: historyPrefixAnchorTurnId,
+            turnUserOrdinal: 0,
           });
           openUserWithoutAssistant = true;
-        }
-      };
-      const ensureLeadingHistoryPrefixAnchor = (): void => {
-        if (histMsgs.length > 0) return;
-        const sentAt = Number.MIN_SAFE_INTEGER;
-        lastHistoricalUserSentAt = sentAt;
-        histMsgs.push({
-          id: `u_${sessionId}_history_anchor_${stableHistoryHash(historyPrefixAnchorTurnId)}`,
-          content: '',
-          // A history-scope truncation describes records before every retained row, including an
-          // omitted live query recovered below. Keep its invisible owner first regardless of the
-          // first retained assistant timestamp.
-          sentAt,
-          restoredFromHistory: true,
-          hiddenHistoryAnchor: true,
-          turnId: historyPrefixAnchorTurnId,
-          turnUserOrdinal: 0,
-        });
-        openUserWithoutAssistant = true;
-      };
-      for (const [itemIndex, item] of items.entries()) {
-        const historyOrigin = transcriptHistoryOrigin(item);
-        const itemLogicalId =
-          'logicalId' in item && typeof item.logicalId === 'string' ? item.logicalId : undefined;
-        if (seenAmbiguousLogicalIds !== null) {
-          // The daemon's ambiguous projection serves both the re-created and the archived copy of
-          // a compaction-retained suffix. logicalId is the documented stable clone identity
-          // (space-ipc-schema session.ts); drop proven duplicates instead of rendering the same
-          // logical entry twice. When both candidates carry canonicalIndex the pre-scan above
-          // already picked the smaller one; remaining duplicates keep the first-seen copy.
-          if (skipAmbiguousItemIndex.has(itemIndex)) continue;
-          if (itemLogicalId !== undefined) {
-            if (seenAmbiguousLogicalIds.has(itemLogicalId)) continue;
-            seenAmbiguousLogicalIds.add(itemLogicalId);
+        };
+        for (const [itemIndex, item] of items.entries()) {
+          const historyOrigin = transcriptHistoryOrigin(item);
+          const itemLogicalId =
+            'logicalId' in item && typeof item.logicalId === 'string' ? item.logicalId : undefined;
+          if (seenAmbiguousLogicalIds !== null) {
+            // The daemon's ambiguous projection serves both the re-created and the archived copy of
+            // a compaction-retained suffix. logicalId is the documented stable clone identity
+            // (space-ipc-schema session.ts); drop proven duplicates instead of rendering the same
+            // logical entry twice. When both candidates carry canonicalIndex the pre-scan above
+            // already picked the smaller one; remaining duplicates keep the first-seen copy.
+            if (skipAmbiguousItemIndex.has(itemIndex)) continue;
+            if (itemLogicalId !== undefined) {
+              if (seenAmbiguousLogicalIds.has(itemLogicalId)) continue;
+              seenAmbiguousLogicalIds.add(itemLogicalId);
+            }
           }
-        }
-        if (item.kind === 'user') {
-          if (assistantPendingComplete) flushTurnIfNeeded();
-          else flushEmptyTurnIfNeeded();
-          leadingHistoryPrefixPending = false;
-          const id = stableHistoryUserMessageId(sessionId, item, histMsgs.length);
-          // History pairing is transcript-order based, while composeMessages still sorts by
-          // sentAt. SDK compaction/re-root and tool-result restores can collapse or backdate
-          // historical timestamps, so normalize only restored user turns to keep sort order
-          // equal to transcript order.
-          histMsgs.push({
-            id,
-            content: item.content,
-            sentAt: nextHistoricalUserSentAt(item.sentAt),
-            restoredFromHistory: true,
-            ...historyOrigin,
-            ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
-            ...(item.turnId !== undefined ? { turnId: item.turnId } : {}),
-            ...(item.turnUserOrdinal !== undefined
-              ? { turnUserOrdinal: item.turnUserOrdinal }
-              : {}),
-            ...(item.turnId !== undefined && item.turnUserOrdinal === undefined
-              ? { omittedHistoryUserOrdinal: true as const }
-              : {}),
-            ...(item.historyTurnIndex !== undefined
-              ? { historyTurnIndex: item.historyTurnIndex }
-              : {}),
-            ...(item.historyBoundary !== undefined
-              ? { historyBoundary: item.historyBoundary }
-              : {}),
-          });
-          openUserWithoutAssistant = true;
-        } else if (item.kind === 'assistant') {
-          ensureLeadingHistoryAnchor();
-          const assistantSentAt =
-            item.sentAt ?? histMsgs[histMsgs.length - 1]?.sentAt ?? fallbackSentAt;
-          if (item.thinking !== undefined && item.thinking.length > 0) {
-            histEvents.push({
+          if (item.kind === 'user') {
+            if (assistantPendingComplete) flushTurnIfNeeded();
+            else flushEmptyTurnIfNeeded();
+            leadingHistoryPrefixPending = false;
+            const id = stableHistoryUserMessageId(sessionId, item, histMsgs.length);
+            // History pairing is transcript-order based, while composeMessages still sorts by
+            // sentAt. SDK compaction/re-root and tool-result restores can collapse or backdate
+            // historical timestamps, so normalize only restored user turns to keep sort order
+            // equal to transcript order.
+            histMsgs.push({
+              id,
+              content: item.content,
+              sentAt: nextHistoricalUserSentAt(item.sentAt),
+              restoredFromHistory: true,
               ...historyOrigin,
-              kind: 'thinking_delta',
-              sessionId,
-              text: item.thinking,
-              sentAt: assistantSentAt,
+              ...(item.attachments !== undefined ? { attachments: item.attachments } : {}),
+              ...(item.turnId !== undefined ? { turnId: item.turnId } : {}),
+              ...(item.turnUserOrdinal !== undefined
+                ? { turnUserOrdinal: item.turnUserOrdinal }
+                : {}),
+              ...(item.turnId !== undefined && item.turnUserOrdinal === undefined
+                ? { omittedHistoryUserOrdinal: true as const }
+                : {}),
+              ...(item.historyTurnIndex !== undefined
+                ? { historyTurnIndex: item.historyTurnIndex }
+                : {}),
+              ...(item.historyBoundary !== undefined
+                ? { historyBoundary: item.historyBoundary }
+                : {}),
             });
-          }
-          if (item.text.length > 0) {
+            openUserWithoutAssistant = true;
+          } else if (item.kind === 'assistant') {
+            ensureLeadingHistoryAnchor();
+            const assistantSentAt =
+              item.sentAt ?? histMsgs[histMsgs.length - 1]?.sentAt ?? fallbackSentAt;
+            if (item.thinking !== undefined && item.thinking.length > 0) {
+              histEvents.push({
+                ...historyOrigin,
+                kind: 'thinking_delta',
+                sessionId,
+                text: item.thinking,
+                sentAt: assistantSentAt,
+              });
+            }
+            if (item.text.length > 0) {
+              histEvents.push({
+                ...historyOrigin,
+                kind: 'text_delta',
+                sessionId,
+                text: item.text,
+                sentAt: assistantSentAt,
+              });
+            }
+            markTurnHasEvents();
+          } else if (item.kind === 'sidecar_message') {
+            ensureLeadingHistoryAnchor();
             histEvents.push({
               ...historyOrigin,
-              kind: 'text_delta',
+              kind: 'sidecar_message',
+              sessionId,
+              message: item.message,
+            });
+            markTurnHasEvents();
+          } else if (item.kind === 'lineage_notice') {
+            ensureLeadingHistoryAnchor();
+            histEvents.push({
+              ...historyOrigin,
+              kind: 'lineage_notice',
+              sessionId,
+              noticeKind: item.noticeKind,
+              text: item.text,
+              ...(item.entryId !== undefined ? { displayId: item.entryId } : {}),
+              ...(item.sentAt !== undefined ? { sentAt: item.sentAt } : {}),
+              ...(item.tokensBefore !== undefined ? { tokensBefore: item.tokensBefore } : {}),
+              ...(item.tokensAfter !== undefined ? { tokensAfter: item.tokensAfter } : {}),
+            });
+            if (
+              item.noticeKind === 'compaction' &&
+              item.tokensBefore !== undefined &&
+              item.tokensAfter !== undefined
+            ) {
+              histEvents.push({
+                kind: 'compact_stats',
+                sessionId,
+                tokensBefore: item.tokensBefore,
+                tokensAfter: item.tokensAfter,
+              });
+            }
+            markTurnHasEvents();
+          } else if (item.kind === 'workflow_notice') {
+            ensureLeadingHistoryAnchor();
+            histEvents.push({
+              ...historyOrigin,
+              kind: 'workflow_notice',
               sessionId,
               text: item.text,
-              sentAt: assistantSentAt,
             });
-          }
-          markTurnHasEvents();
-        } else if (item.kind === 'sidecar_message') {
-          ensureLeadingHistoryAnchor();
-          histEvents.push({
-            ...historyOrigin,
-            kind: 'sidecar_message',
-            sessionId,
-            message: item.message,
-          });
-          markTurnHasEvents();
-        } else if (item.kind === 'lineage_notice') {
-          ensureLeadingHistoryAnchor();
-          histEvents.push({
-            ...historyOrigin,
-            kind: 'lineage_notice',
-            sessionId,
-            noticeKind: item.noticeKind,
-            text: item.text,
-            ...(item.entryId !== undefined ? { displayId: item.entryId } : {}),
-            ...(item.sentAt !== undefined ? { sentAt: item.sentAt } : {}),
-            ...(item.tokensBefore !== undefined ? { tokensBefore: item.tokensBefore } : {}),
-            ...(item.tokensAfter !== undefined ? { tokensAfter: item.tokensAfter } : {}),
-          });
-          if (
-            item.noticeKind === 'compaction' &&
-            item.tokensBefore !== undefined &&
-            item.tokensAfter !== undefined
-          ) {
+            markTurnHasEvents();
+          } else if (item.kind === 'history_truncation') {
+            const isLeadingHistoryPrefix = item.scope === 'history' && histMsgs.length === 0;
+            if (isLeadingHistoryPrefix) ensureLeadingHistoryPrefixAnchor();
+            else ensureLeadingHistoryAnchor();
             histEvents.push({
-              kind: 'compact_stats',
+              kind: 'history_truncation',
               sessionId,
-              tokensBefore: item.tokensBefore,
-              tokensAfter: item.tokensAfter,
+              scope: item.scope,
+              omittedItems: item.omittedItems,
             });
-          }
-          markTurnHasEvents();
-        } else if (item.kind === 'workflow_notice') {
-          ensureLeadingHistoryAnchor();
-          histEvents.push({
-            ...historyOrigin,
-            kind: 'workflow_notice',
-            sessionId,
-            text: item.text,
-          });
-          markTurnHasEvents();
-        } else if (item.kind === 'history_truncation') {
-          const isLeadingHistoryPrefix = item.scope === 'history' && histMsgs.length === 0;
-          if (isLeadingHistoryPrefix) ensureLeadingHistoryPrefixAnchor();
-          else ensureLeadingHistoryAnchor();
-          histEvents.push({
-            kind: 'history_truncation',
-            sessionId,
-            scope: item.scope,
-            omittedItems: item.omittedItems,
-          });
-          markTurnHasEvents();
-          if (isLeadingHistoryPrefix) leadingHistoryPrefixPending = true;
-        } else if (item.kind === 'local_notice') {
-          lastLocalTranscriptSentAt = Math.max(lastLocalTranscriptSentAt, item.sentAt);
-          histLocalNotices.push({
-            id: item.id,
-            content: item.content,
-            sentAt: item.sentAt,
-            ...(item.variant !== undefined ? { variant: item.variant } : {}),
-          });
-        } else {
-          // A bounded page can begin after a history_truncation in the middle of a turn. Keep
-          // the prefix notice on its own invisible owner and attach the leading tool segment to
-          // the authoritative partial-turn anchor so live/canonical folding cannot strand a
-          // duplicate tool above the query that owns it.
-          ensureLeadingHistoryAnchor();
-          histEvents.push({
-            ...historyOrigin,
-            kind: 'tool_start',
-            sessionId,
-            toolId: item.toolId,
-            toolName: item.toolName,
-            ...(item.input ? { input: item.input } : {}),
-          });
-          if (item.result !== undefined) {
+            markTurnHasEvents();
+            if (isLeadingHistoryPrefix) leadingHistoryPrefixPending = true;
+          } else if (item.kind === 'local_notice') {
+            lastLocalTranscriptSentAt = Math.max(lastLocalTranscriptSentAt, item.sentAt);
+            histLocalNotices.push({
+              id: item.id,
+              content: item.content,
+              sentAt: item.sentAt,
+              ...(item.variant !== undefined ? { variant: item.variant } : {}),
+            });
+          } else {
+            // A bounded page can begin after a history_truncation in the middle of a turn. Keep
+            // the prefix notice on its own invisible owner and attach the leading tool segment to
+            // the authoritative partial-turn anchor so live/canonical folding cannot strand a
+            // duplicate tool above the query that owns it.
+            ensureLeadingHistoryAnchor();
             histEvents.push({
               ...historyOrigin,
-              kind: 'tool_result',
+              kind: 'tool_start',
               sessionId,
               toolId: item.toolId,
               toolName: item.toolName,
-              content: item.result,
+              ...(item.input ? { input: item.input } : {}),
             });
-          }
-          markTurnHasEvents();
-        }
-      }
-      // tail: 最后一项是 assistant/tool_call 时补一个 session_complete 让段闭合
-      if (assistantPendingComplete) flushTurnIfNeeded();
-      else flushEmptyTurnIfNeeded();
-      for (const event of histEvents) restoredHistoryEvents.add(event);
-      const replaceLoadedWindow = options?.replaceLoadedWindow === true;
-      const prefixOmitted = items.some(
-        (item) => item.kind === 'history_truncation' && item.scope === 'history',
-      );
-      let liveBaseline = replaceLoadedWindow ? historyLiveBaselines.get(sessionId) : undefined;
-      if (replaceLoadedWindow && liveBaseline === undefined) {
-        liveBaseline = {
-          userMessages: (state.userMessagesBySession[sessionId] ?? []).filter(
-            (message) => message.restoredFromHistory !== true,
-          ),
-          events: (state.eventsBySession[sessionId] ?? []).filter(
-            (event) => !restoredHistoryEvents.has(event),
-          ),
-          durableCanonicalizedUserIds: new Set(),
-          canonicalIndexByUserId: new Map(),
-          retiredCanonicalizedUserIds: new Set(),
-        };
-        rememberHistoryLiveBaseline(sessionId, liveBaseline);
-      }
-      const includeLiveProjection = options?.includeLiveProjection !== false;
-      if (includeLiveProjection && liveBaseline !== undefined) {
-        const sourceRevision = options?.sourceRevision;
-        if (liveBaseline.canonicalSourceRevision !== sourceRevision) {
-          liveBaseline.canonicalIndexByUserId.clear();
-          liveBaseline.canonicalSourceRevision = sourceRevision;
-        }
-        const firstRetainedCanonicalIndex = histMsgs.reduce<number | undefined>(
-          (first, message) =>
-            message.canonicalIndex === undefined
-              ? first
-              : Math.min(first ?? message.canonicalIndex, message.canonicalIndex),
-          undefined,
-        );
-        pruneCanonicalizedHistoryLivePrefix(
-          liveBaseline,
-          firstRetainedCanonicalIndex,
-          prefixOmitted && sourceRevision !== undefined,
-        );
-        pruneDurablyCanonicalizedHistoryLivePrefix(
-          liveBaseline,
-          histMsgs,
-          histEvents,
-          prefixOmitted,
-          options?.authoritativeNewest === true,
-        );
-      }
-      const currentMsgs = includeLiveProjection
-        ? (liveBaseline?.userMessages ?? state.userMessagesBySession[sessionId] ?? [])
-        : [];
-      const currentEvents = includeLiveProjection
-        ? (liveBaseline?.events ?? state.eventsBySession[sessionId] ?? [])
-        : [];
-      const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
-      const retainedHistory = replaceLoadedWindow
-        ? retainLoadedHistoryPrefix(
-            state.userMessagesBySession[sessionId] ?? [],
-            state.eventsBySession[sessionId] ?? [],
-            histMsgs,
-            histEvents,
-          )
-        : { userMessages: histMsgs, events: histEvents };
-      let historyAndLiveEvents: readonly SessionEvent[] = [
-        ...retainedHistory.events,
-        ...currentEvents,
-      ];
-      let combinedHeadMsgs: readonly UserMessage[] = [
-        ...retainedHistory.userMessages,
-        ...currentMsgs,
-      ];
-      // An ambiguous projection's proven clone candidates flow through the logicalId dedupe
-      // below; relocating them here is untested against that path, so keep today's order.
-      if (options?.conversationStatus !== 'ambiguous') {
-        const stabilizedHead = stabilizeCanonicalPageHeadBeforeEarlierLiveTurns(
-          combinedHeadMsgs,
-          historyAndLiveEvents,
-        );
-        combinedHeadMsgs = stabilizedHead.userMessages;
-        historyAndLiveEvents = stabilizedHead.events;
-      }
-      const ownerOpenedMsgs = reconcileSnapshotInitialTurnOwners(
-        sessionId,
-        combinedHeadMsgs,
-        historyAndLiveEvents,
-        includeLiveProjection ? state.liveProjectionBySession[sessionId] : undefined,
-      );
-      const settledRuntimeRuns = options?.settledRuntimeRuns ?? [];
-      const certifiedCanonicalAuthority =
-        replaceLoadedWindow &&
-        options?.authoritativeNewest === true &&
-        options.conversationStatus === 'resolved' &&
-        options.sourceRevision !== undefined &&
-        settledRuntimeRuns.length > 0
-          ? {
-              sourceRevision: options.sourceRevision,
-              canonicalMessageIds: new Set(
-                histMsgs
-                  .filter((message) => message.canonicalIndex !== undefined)
-                  .map((message) => message.id),
-              ),
-              settledRuntimeRuns,
-            }
-          : undefined;
-      const folded = foldStrongIdentityDuplicateTurns(
-        ownerOpenedMsgs,
-        historyAndLiveEvents,
-        certifiedCanonicalAuthority,
-      );
-      rememberCanonicalizedHistoryLiveOwners(sessionId, folded.canonicalizedLiveOwners ?? []);
-      const combinedEvents = dedupePersistedCompactionBoundaries(folded.events);
-      const combinedMsgs = hideOpenStrongIdentityDuplicateProjection(
-        folded.userMessages,
-        combinedEvents,
-      );
-      let restoredTokenInfo = state.tokensBySession[sessionId];
-      if (restoredTokenInfo === undefined) {
-        const latestCompactStats = [...histEvents]
-          .reverse()
-          .find(
-            (event): event is Extract<SessionEvent, { kind: 'compact_stats' }> =>
-              event.kind === 'compact_stats' && event.contextKind !== 'child',
-          );
-        if (latestCompactStats) {
-          restoredTokenInfo = tokenInfoFromCompaction(latestCompactStats);
-        } else {
-          let total = 0;
-          for (const message of combinedMsgs) total += approxTokensForStats(message.content);
-          for (const event of combinedEvents) {
-            if (event.kind === 'text_delta' || event.kind === 'thinking_delta') {
-              total += approxTokensForStats(event.text);
-            } else if (event.kind === 'tool_result') {
-              total += approxTokensForStats(event.content);
-            }
-          }
-          if (total > 0) restoredTokenInfo = { tokens: total, source: 'estimate' };
-        }
-      }
-      // v0.1.9 fix: 历史 events 已经发生过,director 不应该再"自动展开"那些信号触发的
-      // popout (用户点已有 session 不该弹 worker/diff/plan popout)。 扫一遍 histEvents,
-      // 提前 mark 该 session 已经"促发"过的 SmartPopoutKind,让 director 视为 already
-      // promoted = 不触发。逻辑跟 popout-director/rules.ts decideAutoPromote 同构,
-      // 但避免跨模块循环 import (store 不能 import rules.ts,rules.ts 已 import 不了 store)。
-      const FILE_MUTATION_TOOLS = new Set([
-        'write',
-        'edit',
-        'multi_edit',
-        'str_replace',
-        'insert_after_anchor',
-      ]);
-      const histPromoted = new Set<string>(state.promotedPopoutsBySession[sessionId] ?? []);
-      for (const ev of histEvents) {
-        if (ev.kind === 'tool_start' && FILE_MUTATION_TOOLS.has(ev.toolName))
-          histPromoted.add('diff');
-        else if (ev.kind === 'todo_update' && ev.items.length > 0) histPromoted.add('plan');
-        else if (ev.kind === 'managed_task_status' && ev.status.activeWorkerId)
-          histPromoted.add('tasks');
-      }
-      return {
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          // 历史前置——若 race 期 user 已 append 了 Q3,结果是 [hist..., Q3]
-          [sessionId]: combinedMsgs,
-        },
-        eventsBySession: {
-          ...state.eventsBySession,
-          [sessionId]: combinedEvents,
-        },
-        localNoticesBySession: {
-          ...state.localNoticesBySession,
-          [sessionId]: mergeLocalNotices([histLocalNotices, currentLocalNotices]),
-        },
-        transientArtifactsBySession: {
-          ...state.transientArtifactsBySession,
-          [sessionId]: collectTransientArtifactsFromEvents(combinedEvents),
-        },
-        ...(restoredTokenInfo
-          ? {
-              tokensBySession: {
-                ...state.tokensBySession,
-                [sessionId]: restoredTokenInfo,
-              },
-            }
-          : {}),
-        promotedPopoutsBySession: {
-          ...state.promotedPopoutsBySession,
-          [sessionId]: histPromoted,
-        },
-      };
-    }),
-
-  evictRestoredSessionHistory: (sessionId) => {
-    const liveBaseline = historyLiveBaselines.get(sessionId);
-    if (liveBaseline !== undefined) {
-      // A closed live owner that already folded into canonical history is only a cache shadow.
-      // Restoring it while dropping its durable proof would let it reappear at the tail later.
-      pruneHistoryLiveOwners(liveBaseline, new Set(liveBaseline.durableCanonicalizedUserIds));
-    }
-    set((state) => {
-      const currentUsers = state.userMessagesBySession[sessionId];
-      const currentEvents = state.eventsBySession[sessionId];
-      if (currentUsers === undefined && currentEvents === undefined && liveBaseline === undefined) {
-        return state;
-      }
-      const liveUsers = (
-        liveBaseline?.userMessages ??
-        (currentUsers ?? []).filter((message) => message.restoredFromHistory !== true)
-      ).map(liveBaselineUser);
-      const liveEvents =
-        liveBaseline?.events ??
-        (currentEvents ?? []).filter((event) => !restoredHistoryEvents.has(event));
-      return {
-        userMessagesBySession: {
-          ...state.userMessagesBySession,
-          [sessionId]: liveUsers,
-        },
-        eventsBySession: {
-          ...state.eventsBySession,
-          [sessionId]: liveEvents,
-        },
-        transientArtifactsBySession: {
-          ...state.transientArtifactsBySession,
-          [sessionId]: collectTransientArtifactsFromEvents(liveEvents),
-        },
-      };
-    });
-    clearHistoryLiveBaseline(sessionId);
-  },
-
-  setQueueState: (snapshot, totalSize) =>
-    set({ queueSnapshot: snapshot, queueTotalSize: totalSize }),
-
-  requestPopout: (kind) => set({ requestedPopout: kind }),
-
-  pushNotification: (notice) =>
-    set((state) => {
-      // dedupe: 同 id 已存在 → 不重弹 (避免每次 iteration_end 都重新插入 ctx-warn)
-      if (state.notifications.some((n) => n.id === notice.id)) return state;
-      // 上限 50 条防内存涨;新通知插前面,旧的挤出去
-      const next = [notice, ...state.notifications].slice(0, 50);
-      return { notifications: next };
-    }),
-
-  dismissNotification: (id) =>
-    set((state) => {
-      const notifications = state.notifications.filter((n) => n.id !== id);
-      // #9 fix: dismiss 一条 todo-drift 提示时记下"轮次基线" + 当时的 pending 数——见
-      // AppState.todoDriftDismissedAtBySession 注释。appendEvent 的 todo_drift_warning
-      // 分支据此判断"同一轮未恶化"的重复事件要不要压下。
-      if (!id.startsWith('todo-drift:')) return { notifications };
-      const sessionId = id.slice('todo-drift:'.length);
-      const pendingCount = (state.todoListBySession[sessionId] ?? []).filter(
-        (item) => item.status === 'pending',
-      ).length;
-      return {
-        notifications,
-        todoDriftDismissedAtBySession: {
-          ...state.todoDriftDismissedAtBySession,
-          [sessionId]: state.userMessagesBySession[sessionId]?.length ?? 0,
-        },
-        todoDriftDismissedPendingCountBySession: {
-          ...state.todoDriftDismissedPendingCountBySession,
-          [sessionId]: pendingCount,
-        },
-      };
-    }),
-
-  // F060 Workflow Harness：push workflow.event → 覆盖式 upsert（每事件带全量 snapshot）。
-  upsertWorkflowRun: (payload) =>
-    set((state) => {
-      const { snapshot, sessionId, surface, projectRoot } = payload;
-      const eventMessage = payload.message?.trim();
-      const run: WorkflowRunT = {
-        ...snapshot,
-        ...(eventMessage ? { latestMessage: eventMessage } : {}),
-        ...(sessionId !== undefined ? { sessionId } : {}),
-        ...(surface !== undefined ? { surface } : {}),
-        ...(projectRoot !== undefined ? { projectRoot } : {}),
-      };
-      return { workflowRuns: capWorkflowRuns({ ...state.workflowRuns, [run.runId]: run }) };
-    }),
-
-  // F060：workflow.list 播种——覆盖式合并（已存在的 runId 用新值覆盖，保留其它）。
-  seedWorkflowRuns: (runs) =>
-    set((state) => {
-      if (runs.length === 0) return state;
-      // immutable：用 Object.fromEntries 构造增量，再一次性 spread（不原地 mutate 中间对象）。
-      const additions = Object.fromEntries(runs.map((r) => [r.runId, r]));
-      return { workflowRuns: capWorkflowRuns({ ...state.workflowRuns, ...additions }) };
-    }),
-
-  // F062：删除成功后从渲染层移除该 run（immutable：重建不含该 key 的对象），并清其活动流。
-  removeWorkflowRun: (runId) =>
-    set((state) => {
-      if (!(runId in state.workflowRuns) && !(runId in state.workflowActivityByRun)) {
-        return state;
-      }
-      const { [runId]: _removedRun, ...workflowRuns } = state.workflowRuns;
-      const { [runId]: _removedActivity, ...workflowActivityByRun } = state.workflowActivityByRun;
-      return { workflowRuns, workflowActivityByRun };
-    }),
-
-  // F065：子 agent 活动——按 runId 有界追加（每 run 最近 MAX_ACTIVITY_PER_RUN 条）。
-  appendWorkflowActivity: (activity) =>
-    set((state) => {
-      const bucket = state.workflowActivityByRun[activity.runId] ?? [];
-      const nextBucket = [...bucket, activity].slice(-MAX_ACTIVITY_PER_RUN);
-      const next: Record<string, readonly WorkflowActivityPayload[]> = {
-        ...state.workflowActivityByRun,
-        [activity.runId]: nextBucket,
-      };
-      // 上限 run 数（与 workflowRuns 对齐），按插入序淘汰最旧的（immutable 构造）。
-      const keys = Object.keys(next);
-      if (keys.length > MAX_WORKFLOW_RUNS) {
-        return {
-          workflowActivityByRun: Object.fromEntries(
-            keys.slice(keys.length - MAX_WORKFLOW_RUNS).map((k) => [k, next[k]!]),
-          ),
-        };
-      }
-      return { workflowActivityByRun: next };
-    }),
-
-  appendEvent: (event) =>
-    set((state) => {
-      // 切项目 / 删除 session 后，旧 session 的迟到事件仍会通过同一 push channel 到达。
-      // 如果 renderer 没有这条 session 的记录就 drop——否则会累积无人引用的 bucket。
-      // main 端事件是权威；renderer 只缓存自己 UI 里能见到的部分。
-      if (
-        !state.sessions.some((s) => s.sessionId === event.sessionId) &&
-        state.currentSessionId !== event.sessionId
-      ) {
-        return state;
-      }
-      const currentUsers = state.userMessagesBySession[event.sessionId] ?? [];
-      if (
-        (event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started') &&
-        event.queueId !== undefined
-      ) {
-        const deliveryQueueMode =
-          event.kind === 'mid_turn_user_prompt' ? 'interrupt' : event.queueMode;
-        if (
-          currentUsers.some(
-            (message) =>
-              message.deliveryQueueId === event.queueId &&
-              message.deliveryQueueMode === deliveryQueueMode,
-          )
-        ) {
-          // Reconnect/replay may redeliver an already-consumed Runtime input. Drop the entire
-          // boundary event: suppressing only the user bubble would still shift every later event
-          // segment to the next visible prompt.
-          return state;
-        }
-      }
-      const bucket = state.eventsBySession[event.sessionId] ?? [];
-      const liveBaselineEvents = historyLiveBaselines.get(event.sessionId)?.events;
-      if (
-        runtimeJournalEventWasApplied(bucket, event) ||
-        (liveBaselineEvents !== undefined &&
-          liveBaselineEvents !== bucket &&
-          runtimeJournalEventWasApplied(liveBaselineEvents, event))
-      ) {
-        return state;
-      }
-      if (snapshotCoversRuntimeDraftEvent(state, event)) return state;
-      if (isCompactionNotice(event)) {
-        const provisionalIndex =
-          event.provisionalId === undefined
-            ? -1
-            : bucket.findIndex(
-                (existing) =>
-                  isCompactionNotice(existing) && existing.provisionalId === event.provisionalId,
-              );
-        const exactIndex =
-          event.entryId === undefined
-            ? -1
-            : bucket.findIndex(
-                (existing) => isCompactionNotice(existing) && existing.entryId === event.entryId,
-              );
-        if (provisionalIndex >= 0) {
-          const existing = bucket[provisionalIndex]!;
-          if (!isCompactionNotice(existing) || event.entryId === undefined) return state;
-          if (existing.entryId === undefined) {
-            const storedEvent = stampLiveStreamEvent(event);
-            if (exactIndex >= 0 && exactIndex !== provisionalIndex) {
-              // History restored the durable row before this provisional resolved. Now that the
-              // Runtime supplies the same physical entryId, retain the canonical history slot and
-              // its already-rendered identity, then remove only the proven placeholder.
-              const canonical = bucket[exactIndex]!;
-              const reconciledEvent = isCompactionNotice(canonical)
-                ? {
-                    ...canonical,
-                    ...storedEvent,
-                    displayId:
-                      canonical.displayId ??
-                      canonical.entryId ??
-                      event.displayId ??
-                      event.provisionalId ??
-                      event.entryId,
-                  }
-                : storedEvent;
-              const reconciled = bucket.flatMap((candidate, index) => {
-                if (index === provisionalIndex) return [];
-                return [index === exactIndex ? reconciledEvent : candidate];
+            if (item.result !== undefined) {
+              histEvents.push({
+                ...historyOrigin,
+                kind: 'tool_result',
+                sessionId,
+                toolId: item.toolId,
+                toolName: item.toolName,
+                content: item.result,
               });
-              return {
-                eventsBySession: {
-                  ...state.eventsBySession,
-                  [event.sessionId]: reconciled,
-                },
-                lastEvent: reconciledEvent,
-              };
             }
-            // Durable provenance arrived after the immediate placeholder. Upgrade the exact same
-            // array slot so later text/tool/end events can never be overtaken or reparented.
-            const upgraded = bucket.slice();
-            upgraded[provisionalIndex] = storedEvent;
-            return {
-              eventsBySession: {
-                ...state.eventsBySession,
-                [event.sessionId]: upgraded,
-              },
-              lastEvent: storedEvent,
-            };
+            markTurnHasEvents();
           }
-          // Conflicting exact rows for one provisional identity are corrupt/ambiguous. Fall
-          // through and preserve the new fact instead of deleting or overwriting either row.
         }
-        if (exactIndex >= 0) {
-          // Physical entry identity is authoritative. This check deliberately happens after
-          // provisional reconciliation so history-first delivery can retire its proven live
-          // placeholder instead of leaving a duplicate behind.
+        // tail: 最后一项是 assistant/tool_call 时补一个 session_complete 让段闭合
+        if (assistantPendingComplete) flushTurnIfNeeded();
+        else flushEmptyTurnIfNeeded();
+        for (const event of histEvents) restoredHistoryEvents.add(event);
+        const replaceLoadedWindow = options?.replaceLoadedWindow === true;
+        let liveBaseline = liveTailBySession.get(sessionId);
+        if (liveBaseline === undefined) {
+          liveBaseline = {
+            userMessages: (state.userMessagesBySession[sessionId] ?? []).filter(
+              (message) => message.restoredFromHistory !== true,
+            ),
+            events: (state.eventsBySession[sessionId] ?? []).filter(
+              (event) => !restoredHistoryEvents.has(event),
+            ),
+          };
+          rememberLiveTranscriptTail(sessionId, liveBaseline);
+        }
+        const includeLiveProjection = options?.includeLiveProjection !== false;
+        const currentLocalNotices = state.localNoticesBySession[sessionId] ?? [];
+        const previousPage = canonicalPageBySession.get(sessionId);
+        if (
+          options?.authoritativeNewest !== true &&
+          previousPage?.sourceRevision !== undefined &&
+          previousPage.sourceRevision !== options?.sourceRevision
+        )
+          liveBaseline.coverage?.clear();
+        const windowSize = Math.max(
+          previousPage?.windowSize ?? 0,
+          histMsgs.length + histEvents.length,
+        );
+        const retainedHistory = replaceLoadedWindow
+          ? boundCanonicalPage(
+              retainLoadedHistoryPrefix(
+                previousPage?.userMessages ?? state.userMessagesBySession[sessionId] ?? [],
+                previousPage?.events ?? state.eventsBySession[sessionId] ?? [],
+                histMsgs,
+                histEvents,
+              ),
+              { userMessages: histMsgs, events: histEvents },
+              windowSize +
+                histMsgs.filter((user) => user.historyNoAssistantSegment === true).length,
+            )
+          : prependCanonicalPage({ userMessages: histMsgs, events: histEvents }, previousPage);
+        if (replaceLoadedWindow) {
+          const floor = histMsgs.find(
+            (message) => message.canonicalIndex !== undefined,
+          )?.canonicalIndex;
+          if (floor !== undefined) releaseCoveredLiveUnits(liveBaseline, floor);
+        }
+        const settledRuntimeRuns = options?.settledRuntimeRuns ?? [];
+        const certifiedCanonicalAuthority =
+          replaceLoadedWindow &&
+          options?.authoritativeNewest === true &&
+          options.conversationStatus === 'resolved' &&
+          options.sourceRevision !== undefined &&
+          settledRuntimeRuns.length > 0
+            ? {
+                sourceRevision: options.sourceRevision,
+                canonicalMessageIds: new Set(
+                  histMsgs
+                    .filter((message) => message.canonicalIndex !== undefined)
+                    .map((message) => message.id),
+                ),
+                settledRuntimeRuns,
+              }
+            : undefined;
+        canonicalPageBySession.set(sessionId, {
+          windowSize,
+          dataChanged: false,
+          ...retainedHistory,
+          userMessages: retainedHistory.userMessages.map((user) => {
+            const known = previousPage?.userMessages.find(
+              (previous) => transcriptUserIdentity(previous, user) === 'match',
+            );
+            return known ? { ...runtimeOwnerMetadata(known), ...user } : user;
+          }),
+          includeLiveProjection,
+          sourceRevision: options?.sourceRevision,
+          revision: options?.revision,
+          cursor: options?.cursor,
+          authority: certifiedCanonicalAuthority,
+        });
+        if (includeLiveProjection)
+          liveBaseline.userMessages = reconcileSnapshotInitialTurnOwners(
+            sessionId,
+            liveBaseline.userMessages,
+            liveBaseline.events,
+            state.liveProjectionBySession[sessionId],
+          );
+        const combinedEvents = retainedHistory.events;
+        const combinedMsgs = retainedHistory.userMessages;
+        let restoredTokenInfo = state.tokensBySession[sessionId];
+        if (restoredTokenInfo === undefined) {
+          const latestCompactStats = [...histEvents]
+            .reverse()
+            .find(
+              (event): event is Extract<SessionEvent, { kind: 'compact_stats' }> =>
+                event.kind === 'compact_stats' && event.contextKind !== 'child',
+            );
+          if (latestCompactStats) {
+            restoredTokenInfo = tokenInfoFromCompaction(latestCompactStats);
+          } else {
+            let total = 0;
+            for (const message of combinedMsgs) total += approxTokensForStats(message.content);
+            for (const event of combinedEvents) {
+              if (event.kind === 'text_delta' || event.kind === 'thinking_delta') {
+                total += approxTokensForStats(event.text);
+              } else if (event.kind === 'tool_result') {
+                total += approxTokensForStats(event.content);
+              }
+            }
+            if (total > 0) restoredTokenInfo = { tokens: total, source: 'estimate' };
+          }
+        }
+        // v0.1.9 fix: 历史 events 已经发生过,director 不应该再"自动展开"那些信号触发的
+        // popout (用户点已有 session 不该弹 worker/diff/plan popout)。 扫一遍 histEvents,
+        // 提前 mark 该 session 已经"促发"过的 SmartPopoutKind,让 director 视为 already
+        // promoted = 不触发。逻辑跟 popout-director/rules.ts decideAutoPromote 同构,
+        // 但避免跨模块循环 import (store 不能 import rules.ts,rules.ts 已 import 不了 store)。
+        const FILE_MUTATION_TOOLS = new Set([
+          'write',
+          'edit',
+          'multi_edit',
+          'str_replace',
+          'insert_after_anchor',
+        ]);
+        const histPromoted = new Set<string>(state.promotedPopoutsBySession[sessionId] ?? []);
+        for (const ev of histEvents) {
+          if (ev.kind === 'tool_start' && FILE_MUTATION_TOOLS.has(ev.toolName))
+            histPromoted.add('diff');
+          else if (ev.kind === 'todo_update' && ev.items.length > 0) histPromoted.add('plan');
+          else if (ev.kind === 'managed_task_status' && ev.status.activeWorkerId)
+            histPromoted.add('tasks');
+        }
+        return {
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            // 历史前置——若 race 期 user 已 append 了 Q3,结果是 [hist..., Q3]
+            [sessionId]: combinedMsgs,
+          },
+          eventsBySession: {
+            ...state.eventsBySession,
+            [sessionId]: combinedEvents,
+          },
+          localNoticesBySession: {
+            ...state.localNoticesBySession,
+            [sessionId]: mergeLocalNotices([histLocalNotices, currentLocalNotices]),
+          },
+          transientArtifactsBySession: {
+            ...state.transientArtifactsBySession,
+            [sessionId]: collectTransientArtifactsFromEvents(combinedEvents),
+          },
+          ...(restoredTokenInfo
+            ? {
+                tokensBySession: {
+                  ...state.tokensBySession,
+                  [sessionId]: restoredTokenInfo,
+                },
+              }
+            : {}),
+          promotedPopoutsBySession: {
+            ...state.promotedPopoutsBySession,
+            [sessionId]: histPromoted,
+          },
+        };
+      }),
+
+    evictRestoredSessionHistory: (sessionId) => {
+      const liveBaseline = liveTailBySession.get(sessionId);
+      if (liveBaseline !== undefined) {
+        // A closed live owner that already folded into canonical history is only a cache shadow.
+        // Restoring it while dropping its durable proof would let it reappear at the tail later.
+        releaseCoveredLiveUnits(liveBaseline);
+      }
+      canonicalPageBySession.delete(sessionId);
+      projectedViewBySession.delete(sessionId);
+      set((state) => {
+        const currentUsers = state.userMessagesBySession[sessionId];
+        const currentEvents = state.eventsBySession[sessionId];
+        if (
+          currentUsers === undefined &&
+          currentEvents === undefined &&
+          liveBaseline === undefined
+        ) {
           return state;
         }
-      }
-      // A failure may happen before Runtime admission, so there is no authoritative session_start
-      // and no Runtime turnId to bind the optimistic root query. Give only that live failure a
-      // renderer-local owner identity. Without it, a restored session_complete immediately before
-      // the failure looks like a legacy duplicate-terminal chain and every later response shifts
-      // one user bubble to the left.
-      const latestLocalTerminalTurnId =
-        (event.kind === 'session_error' || event.kind === 'session_complete') &&
-        event.turnId === undefined
-          ? localTerminalTurnIdForLatestLiveUser(currentUsers)
-          : undefined;
-      const previousEvent = bucket.at(-1);
-      const localTerminalTurnId =
-        event.kind === 'session_error'
-          ? latestLocalTerminalTurnId
-          : event.kind === 'session_complete' &&
-              previousEvent?.kind === 'session_error' &&
-              previousEvent.turnId !== undefined &&
-              previousEvent.turnId === latestLocalTerminalTurnId
-            ? latestLocalTerminalTurnId
-            : undefined;
-      const eventWithLocalOwner =
-        localTerminalTurnId === undefined ? event : { ...event, turnId: localTerminalTurnId };
-      const storedEvent = stampLiveStreamEvent(eventWithLocalOwner);
-      if (isCancelledSessionError(event)) {
-        // Deduplicate the optimistic BottomBar cancellation and the later main-process receipt.
-        // Renderer-local owners make consecutive pre-admission cancellations distinguishable even
-        // when neither has a session_start. Fall back to positional dedupe only when both legacy
-        // events genuinely lack identity, and never cross a session_start boundary.
-        const storedTerminalTurnId = 'turnId' in storedEvent ? storedEvent.turnId : undefined;
-        for (let i = bucket.length - 1; i >= 0; i--) {
-          const previous = bucket[i];
-          if (!previous) continue;
-          if (previous.kind === 'session_start') break;
-          if (previous.kind === 'session_error' && isCancelledSessionError(previous)) {
-            if (storedTerminalTurnId !== undefined || previous.turnId !== undefined) {
-              if (storedTerminalTurnId !== undefined && storedTerminalTurnId === previous.turnId) {
-                return state;
-              }
-              continue;
-            }
+        const liveUsers = (
+          liveBaseline?.userMessages ??
+          (currentUsers ?? []).filter((message) => message.restoredFromHistory !== true)
+        ).map(liveBaselineUser);
+        const liveEvents =
+          liveBaseline?.events ??
+          (currentEvents ?? []).filter((event) => !restoredHistoryEvents.has(event));
+        return {
+          userMessagesBySession: {
+            ...state.userMessagesBySession,
+            [sessionId]: liveUsers,
+          },
+          eventsBySession: {
+            ...state.eventsBySession,
+            [sessionId]: liveEvents,
+          },
+          transientArtifactsBySession: {
+            ...state.transientArtifactsBySession,
+            [sessionId]: collectTransientArtifactsFromEvents(liveEvents),
+          },
+        };
+      });
+    },
+
+    setQueueState: (snapshot, totalSize) =>
+      set({ queueSnapshot: snapshot, queueTotalSize: totalSize }),
+
+    requestPopout: (kind) => set({ requestedPopout: kind }),
+
+    pushNotification: (notice) =>
+      set((state) => {
+        // dedupe: 同 id 已存在 → 不重弹 (避免每次 iteration_end 都重新插入 ctx-warn)
+        if (state.notifications.some((n) => n.id === notice.id)) return state;
+        // 上限 50 条防内存涨;新通知插前面,旧的挤出去
+        const next = [notice, ...state.notifications].slice(0, 50);
+        return { notifications: next };
+      }),
+
+    dismissNotification: (id) =>
+      set((state) => {
+        const notifications = state.notifications.filter((n) => n.id !== id);
+        // #9 fix: dismiss 一条 todo-drift 提示时记下"轮次基线" + 当时的 pending 数——见
+        // AppState.todoDriftDismissedAtBySession 注释。appendEvent 的 todo_drift_warning
+        // 分支据此判断"同一轮未恶化"的重复事件要不要压下。
+        if (!id.startsWith('todo-drift:')) return { notifications };
+        const sessionId = id.slice('todo-drift:'.length);
+        const pendingCount = (state.todoListBySession[sessionId] ?? []).filter(
+          (item) => item.status === 'pending',
+        ).length;
+        return {
+          notifications,
+          todoDriftDismissedAtBySession: {
+            ...state.todoDriftDismissedAtBySession,
+            [sessionId]: state.userMessagesBySession[sessionId]?.length ?? 0,
+          },
+          todoDriftDismissedPendingCountBySession: {
+            ...state.todoDriftDismissedPendingCountBySession,
+            [sessionId]: pendingCount,
+          },
+        };
+      }),
+
+    // F060 Workflow Harness：push workflow.event → 覆盖式 upsert（每事件带全量 snapshot）。
+    upsertWorkflowRun: (payload) =>
+      set((state) => {
+        const { snapshot, sessionId, surface, projectRoot } = payload;
+        const eventMessage = payload.message?.trim();
+        const run: WorkflowRunT = {
+          ...snapshot,
+          ...(eventMessage ? { latestMessage: eventMessage } : {}),
+          ...(sessionId !== undefined ? { sessionId } : {}),
+          ...(surface !== undefined ? { surface } : {}),
+          ...(projectRoot !== undefined ? { projectRoot } : {}),
+        };
+        return { workflowRuns: capWorkflowRuns({ ...state.workflowRuns, [run.runId]: run }) };
+      }),
+
+    // F060：workflow.list 播种——覆盖式合并（已存在的 runId 用新值覆盖，保留其它）。
+    seedWorkflowRuns: (runs) =>
+      set((state) => {
+        if (runs.length === 0) return state;
+        // immutable：用 Object.fromEntries 构造增量，再一次性 spread（不原地 mutate 中间对象）。
+        const additions = Object.fromEntries(runs.map((r) => [r.runId, r]));
+        return { workflowRuns: capWorkflowRuns({ ...state.workflowRuns, ...additions }) };
+      }),
+
+    // F062：删除成功后从渲染层移除该 run（immutable：重建不含该 key 的对象），并清其活动流。
+    removeWorkflowRun: (runId) =>
+      set((state) => {
+        if (!(runId in state.workflowRuns) && !(runId in state.workflowActivityByRun)) {
+          return state;
+        }
+        const { [runId]: _removedRun, ...workflowRuns } = state.workflowRuns;
+        const { [runId]: _removedActivity, ...workflowActivityByRun } = state.workflowActivityByRun;
+        return { workflowRuns, workflowActivityByRun };
+      }),
+
+    // F065：子 agent 活动——按 runId 有界追加（每 run 最近 MAX_ACTIVITY_PER_RUN 条）。
+    appendWorkflowActivity: (activity) =>
+      set((state) => {
+        const bucket = state.workflowActivityByRun[activity.runId] ?? [];
+        const nextBucket = [...bucket, activity].slice(-MAX_ACTIVITY_PER_RUN);
+        const next: Record<string, readonly WorkflowActivityPayload[]> = {
+          ...state.workflowActivityByRun,
+          [activity.runId]: nextBucket,
+        };
+        // 上限 run 数（与 workflowRuns 对齐），按插入序淘汰最旧的（immutable 构造）。
+        const keys = Object.keys(next);
+        if (keys.length > MAX_WORKFLOW_RUNS) {
+          return {
+            workflowActivityByRun: Object.fromEntries(
+              keys.slice(keys.length - MAX_WORKFLOW_RUNS).map((k) => [k, next[k]!]),
+            ),
+          };
+        }
+        return { workflowActivityByRun: next };
+      }),
+
+    appendEvent: (event) =>
+      set((state) => {
+        // 切项目 / 删除 session 后，旧 session 的迟到事件仍会通过同一 push channel 到达。
+        // 如果 renderer 没有这条 session 的记录就 drop——否则会累积无人引用的 bucket。
+        // main 端事件是权威；renderer 只缓存自己 UI 里能见到的部分。
+        if (
+          !state.sessions.some((s) => s.sessionId === event.sessionId) &&
+          state.currentSessionId !== event.sessionId
+        ) {
+          return state;
+        }
+        const currentUsers = state.userMessagesBySession[event.sessionId] ?? [];
+        if (
+          (event.kind === 'mid_turn_user_prompt' || event.kind === 'queued_user_prompt_started') &&
+          event.queueId !== undefined
+        ) {
+          const deliveryQueueMode =
+            event.kind === 'mid_turn_user_prompt' ? 'interrupt' : event.queueMode;
+          if (
+            currentUsers.some(
+              (message) =>
+                message.deliveryQueueId === event.queueId &&
+                message.deliveryQueueMode === deliveryQueueMode,
+            )
+          ) {
+            // Reconnect/replay may redeliver an already-consumed Runtime input. Drop the entire
+            // boundary event: suppressing only the user bubble would still shift every later event
+            // segment to the next visible prompt.
             return state;
           }
         }
-      }
-      rememberHistoryLiveEvent(
-        event.sessionId,
-        storedEvent,
-        state.runtimeSnapshotCursorBySession[event.sessionId],
-      );
-      const appendedEvents = appendSessionEvent(
-        bucket,
-        storedEvent,
-        state.runtimeSnapshotCursorBySession[event.sessionId],
-      );
-      const lifecycleTurnId =
-        'turnId' in storedEvent && typeof storedEvent.turnId === 'string'
-          ? storedEvent.turnId
-          : undefined;
-      const runtimeRunId =
-        'runtimeEvent' in storedEvent ? storedEvent.runtimeEvent?.runId : undefined;
-      const originlessStartCanRepair =
-        event.kind === 'session_start' &&
-        (!('runtimeEvent' in storedEvent) || storedEvent.runtimeEvent === undefined);
-      // Runtime-origin lifecycle events may only claim an owner already bound by the send ACK.
-      // Their position in the live stream is not causal proof: an observation gap can replay an
-      // older Run after a newer anonymous query. Legacy originless starts retain positional repair.
-      const unscopedTurnBinding =
-        event.kind === 'session_start'
-          ? originlessStartCanRepair
-            ? 'latest'
-            : 'none'
-          : event.kind === 'session_complete' || event.kind === 'session_error'
-            ? 'unique'
-            : 'none';
-      const initialTurnUsers =
-        event.kind === 'session_start' && lifecycleTurnId !== undefined
-          ? openExactRestoredInitialTurn(currentUsers, lifecycleTurnId, runtimeRunId)
-          : currentUsers;
-      if (initialTurnUsers !== currentUsers && lifecycleTurnId !== undefined) {
-        const openedOwner = initialTurnUsers.find(
-          (message) =>
-            message.restoredFromHistory === true &&
-            message.turnId === lifecycleTurnId &&
-            message.turnUserOrdinal === 0 &&
-            message.historyNoAssistantSegment !== true,
-        );
-        if (openedOwner) rememberOpenedHistoryLiveOwner(event.sessionId, openedOwner);
-      }
-      const lifecycleBoundUsers =
-        lifecycleTurnId !== undefined && !isPromptSegmentBoundary(storedEvent)
-          ? bindInitialLiveUserTurnIdentity(
-              initialTurnUsers,
-              lifecycleTurnId,
-              runtimeRunId,
-              unscopedTurnBinding,
-              appendedEvents,
-            )
-          : initialTurnUsers;
-      const lifecycleIdentityChanged = lifecycleBoundUsers !== currentUsers;
-      const next: Partial<AppState> = {
-        eventsBySession: {
-          ...state.eventsBySession,
-          [event.sessionId]: appendedEvents,
-        },
-        ...(lifecycleIdentityChanged
-          ? {
-              userMessagesBySession: {
-                ...state.userMessagesBySession,
-                [event.sessionId]: lifecycleBoundUsers,
-              },
+        const bucket = state.eventsBySession[event.sessionId] ?? [];
+        const liveTail = liveTailBySession.get(event.sessionId);
+        if (liveTail && isRetiredTranscriptEvent(liveTail.retirement, event)) return state;
+        if (runtimeJournalEventWasApplied(liveTail?.events ?? bucket, event)) {
+          return state;
+        }
+        if (snapshotCoversRuntimeDraftEvent(state, event)) return state;
+        if (isCompactionNotice(event)) {
+          rememberHistoryLiveEvent(event.sessionId, stampLiveStreamEvent(event));
+          const provisionalIndex =
+            event.provisionalId === undefined
+              ? -1
+              : bucket.findIndex(
+                  (existing) =>
+                    isCompactionNotice(existing) && existing.provisionalId === event.provisionalId,
+                );
+          const exactIndex =
+            event.entryId === undefined
+              ? -1
+              : bucket.findIndex(
+                  (existing) => isCompactionNotice(existing) && existing.entryId === event.entryId,
+                );
+          if (provisionalIndex >= 0) {
+            const existing = bucket[provisionalIndex]!;
+            if (!isCompactionNotice(existing) || event.entryId === undefined) return state;
+            if (existing.entryId === undefined) {
+              const storedEvent = stampLiveStreamEvent(event);
+              if (exactIndex >= 0 && exactIndex !== provisionalIndex) {
+                // History restored the durable row before this provisional resolved. Now that the
+                // Runtime supplies the same physical entryId, retain the canonical history slot and
+                // its already-rendered identity, then remove only the proven placeholder.
+                const canonical = bucket[exactIndex]!;
+                const reconciledEvent = isCompactionNotice(canonical)
+                  ? {
+                      ...canonical,
+                      ...storedEvent,
+                      displayId:
+                        canonical.displayId ??
+                        canonical.entryId ??
+                        event.displayId ??
+                        event.provisionalId ??
+                        event.entryId,
+                    }
+                  : storedEvent;
+                const reconciled = bucket.flatMap((candidate, index) => {
+                  if (index === provisionalIndex) return [];
+                  return [index === exactIndex ? reconciledEvent : candidate];
+                });
+                return {
+                  eventsBySession: {
+                    ...state.eventsBySession,
+                    [event.sessionId]: reconciled,
+                  },
+                  lastEvent: reconciledEvent,
+                };
+              }
+              // Durable provenance arrived after the immediate placeholder. Upgrade the exact same
+              // array slot so later text/tool/end events can never be overtaken or reparented.
+              const upgraded = bucket.slice();
+              upgraded[provisionalIndex] = storedEvent;
+              return {
+                eventsBySession: {
+                  ...state.eventsBySession,
+                  [event.sessionId]: upgraded,
+                },
+                lastEvent: storedEvent,
+              };
             }
-          : {}),
-        lastEvent: storedEvent,
-      };
-      const rootContextEvent =
-        !('contextKind' in event) ||
-        event.contextKind === undefined ||
-        event.contextKind === 'root';
-      const startsCompaction = event.kind === 'compact_start' && rootContextEvent;
-      const endsCompaction =
-        (event.kind === 'compact_end' && rootContextEvent) ||
-        event.kind === 'session_complete' ||
-        event.kind === 'session_error';
-      if (startsCompaction && state.compactingBySession[event.sessionId] !== true) {
-        next.compactingBySession = {
-          ...state.compactingBySession,
-          [event.sessionId]: true,
-        };
-      } else if (endsCompaction && state.compactingBySession[event.sessionId] === true) {
-        const { [event.sessionId]: _drop, ...restCompacting } = state.compactingBySession;
-        next.compactingBySession = restCompacting;
-      }
-      // 只在"运行真正开始/结束"的生命周期事件到达时才清 pendingSend，把 spinner 交给 event-driven 状态。
-      // ⚠️ 不能"任一事件到达就清"：repo-intelligence（repointel_trace）/ managed_task_status 等**非生命周期**
-      // 事件可能先于 session_start 到达；若此时就清了 pendingSend，而 snapshotFromEvents 又只把
-      // session_start / queued_user_prompt_started / mid_turn_user_prompt 当 streaming，spinner 会在
-      // session_start 到达前整段消失
-      // ——用户看到 query 气泡却没有任何"正在做什么"指示（新会话首个 query 期间 repo 分析最久，尤其明显）。
-      // 这里的生命周期 kind 必须与 ActivitySpinner.snapshotFromEvents 认的那组保持一致。
-      const clearsPendingSend =
-        event.kind === 'session_start' ||
-        event.kind === 'queued_user_prompt_started' ||
-        event.kind === 'mid_turn_user_prompt' ||
-        event.kind === 'session_complete' ||
-        event.kind === 'session_error';
-      if (
-        clearsPendingSend &&
-        state.pendingSendBySession[event.sessionId] &&
-        eventClearsPendingSend(event, state.pendingSendRuntimeBaselineBySession[event.sessionId])
-      ) {
-        const { [event.sessionId]: _drop, ...restPending } = state.pendingSendBySession;
-        const { [event.sessionId]: _dropBaseline, ...restBaselines } =
-          state.pendingSendRuntimeBaselineBySession;
-        next.pendingSendBySession = restPending;
-        next.pendingSendRuntimeBaselineBySession = restBaselines;
-      }
-      if (event.kind === 'mid_turn_user_prompt') {
-        const currentPromptUsers =
-          next.userMessagesBySession?.[event.sessionId] ??
-          state.userMessagesBySession[event.sessionId] ??
-          [];
-        const userMessages = alignSegmentOwnersBeforePrompt(
-          event.sessionId,
-          currentPromptUsers,
-          appendedEvents,
-          appendedEvents.length - 1,
-        );
-        const identity =
-          event.turnId !== undefined
-            ? {
-                turnId: event.turnId,
-                turnUserOrdinal:
-                  event.turnUserOrdinal ?? resolveLiveUserOrdinal(userMessages, event.turnId),
-              }
-            : undefined;
-        const promotionState =
-          userMessages === state.userMessagesBySession[event.sessionId]
-            ? state
-            : ({
-                ...state,
-                userMessagesBySession: {
-                  ...state.userMessagesBySession,
-                  [event.sessionId]: userMessages,
-                },
-              } as AppState);
-        Object.assign(
-          next,
-          promoteQueuedUserMessageForPrompt(
-            promotionState,
-            event.sessionId,
-            'interrupt',
-            event.content,
-            event.queueId,
-            identity,
-            event.entryId,
-            event.turnUserOrdinal === undefined,
-          ),
-        );
-      } else if (event.kind === 'queued_user_prompt_started') {
-        const currentPromptUsers =
-          next.userMessagesBySession?.[event.sessionId] ??
-          state.userMessagesBySession[event.sessionId] ??
-          [];
-        const userMessages = alignSegmentOwnersBeforePrompt(
-          event.sessionId,
-          currentPromptUsers,
-          appendedEvents,
-          appendedEvents.length - 1,
-        );
-        const identity =
-          event.turnId !== undefined
-            ? {
-                turnId: event.turnId,
-                turnUserOrdinal:
-                  event.turnUserOrdinal ?? resolveLiveUserOrdinal(userMessages, event.turnId),
-              }
-            : undefined;
-        const promotionState =
-          userMessages === state.userMessagesBySession[event.sessionId]
-            ? state
-            : ({
-                ...state,
-                userMessagesBySession: {
-                  ...state.userMessagesBySession,
-                  [event.sessionId]: userMessages,
-                },
-              } as AppState);
-        Object.assign(
-          next,
-          promoteQueuedUserMessageForPrompt(
-            promotionState,
-            event.sessionId,
-            event.queueMode,
-            event.content,
-            event.queueId,
-            identity,
-            undefined,
-            event.turnUserOrdinal === undefined,
-          ),
-        );
-      } else if (event.kind === 'queued_user_prompt_failed') {
-        Object.assign(next, failQueuedUserMessageForPrompt(state, event));
-      } else if (isCancelledSessionError(event)) {
-        const queued = state.queuedUserMessagesBySession[event.sessionId];
-        if (queued && queued.length > 0) {
-          const retained = queued.filter((entry) => entry.status === 'failed');
-          next.queuedUserMessagesBySession = {
-            ...state.queuedUserMessagesBySession,
-            [event.sessionId]: retained,
-          };
+            // Conflicting exact rows for one provisional identity are corrupt/ambiguous. Fall
+            // through and preserve the new fact instead of deleting or overwriting either row.
+          }
+          if (exactIndex >= 0) {
+            // Physical entry identity is authoritative. This check deliberately happens after
+            // provisional reconciliation so history-first delivery can retire its proven live
+            // placeholder instead of leaving a duplicate behind.
+            return state;
+          }
         }
-      }
-      if (
-        lifecycleIdentityChanged ||
-        event.kind === 'session_start' ||
-        event.kind === 'mid_turn_user_prompt' ||
-        event.kind === 'queued_user_prompt_started' ||
-        event.kind === 'session_complete' ||
-        event.kind === 'session_error'
-      ) {
-        const candidateUsers =
-          next.userMessagesBySession?.[event.sessionId] ??
-          state.userMessagesBySession[event.sessionId] ??
-          [];
-        rememberHistoryLiveUsers(event.sessionId, candidateUsers);
-        const folded = foldStrongIdentityDuplicateTurns(candidateUsers, appendedEvents);
-        rememberCanonicalizedHistoryLiveOwners(
+        // A failure may happen before Runtime admission, so there is no authoritative session_start
+        // and no Runtime turnId to bind the optimistic root query. Give only that live failure a
+        // renderer-local owner identity. Without it, a restored session_complete immediately before
+        // the failure looks like a legacy duplicate-terminal chain and every later response shifts
+        // one user bubble to the left.
+        const latestLocalTerminalTurnId =
+          (event.kind === 'session_error' || event.kind === 'session_complete') &&
+          event.turnId === undefined
+            ? localTerminalTurnIdForLatestLiveUser(currentUsers)
+            : undefined;
+        const previousEvent = bucket.at(-1);
+        const localTerminalTurnId =
+          event.kind === 'session_error'
+            ? latestLocalTerminalTurnId
+            : event.kind === 'session_complete' &&
+                previousEvent?.kind === 'session_error' &&
+                previousEvent.turnId !== undefined &&
+                previousEvent.turnId === latestLocalTerminalTurnId
+              ? latestLocalTerminalTurnId
+              : undefined;
+        const eventWithLocalOwner =
+          localTerminalTurnId === undefined ? event : { ...event, turnId: localTerminalTurnId };
+        const storedEvent = stampLiveStreamEvent(eventWithLocalOwner);
+        if (isCancelledSessionError(event)) {
+          // Deduplicate the optimistic BottomBar cancellation and the later main-process receipt.
+          // Renderer-local owners make consecutive pre-admission cancellations distinguishable even
+          // when neither has a session_start. Fall back to positional dedupe only when both legacy
+          // events genuinely lack identity, and never cross a session_start boundary.
+          const storedTerminalTurnId = 'turnId' in storedEvent ? storedEvent.turnId : undefined;
+          for (let i = bucket.length - 1; i >= 0; i--) {
+            const previous = bucket[i];
+            if (!previous) continue;
+            if (previous.kind === 'session_start') break;
+            if (previous.kind === 'session_error' && isCancelledSessionError(previous)) {
+              if (storedTerminalTurnId !== undefined || previous.turnId !== undefined) {
+                if (
+                  storedTerminalTurnId !== undefined &&
+                  storedTerminalTurnId === previous.turnId
+                ) {
+                  return state;
+                }
+                continue;
+              }
+              return state;
+            }
+          }
+        }
+        rememberHistoryLiveEvent(
           event.sessionId,
-          folded.canonicalizedLiveOwners ?? [],
+          storedEvent,
+          state.runtimeSnapshotCursorBySession[event.sessionId],
         );
-        const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
-          folded.userMessages,
-          folded.events,
+        const appendedEvents = appendSessionEvent(
+          bucket,
+          storedEvent,
+          state.runtimeSnapshotCursorBySession[event.sessionId],
         );
-        if (folded.events !== appendedEvents) {
-          next.eventsBySession = {
+        const lifecycleTurnId =
+          'turnId' in storedEvent && typeof storedEvent.turnId === 'string'
+            ? storedEvent.turnId
+            : undefined;
+        const runtimeRunId =
+          'runtimeEvent' in storedEvent ? storedEvent.runtimeEvent?.runId : undefined;
+        const originlessStartCanRepair =
+          event.kind === 'session_start' &&
+          (!('runtimeEvent' in storedEvent) || storedEvent.runtimeEvent === undefined);
+        // Runtime-origin lifecycle events may only claim an owner already bound by the send ACK.
+        // Their position in the live stream is not causal proof: an observation gap can replay an
+        // older Run after a newer anonymous query. Legacy originless starts retain positional repair.
+        const unscopedTurnBinding =
+          event.kind === 'session_start'
+            ? originlessStartCanRepair
+              ? 'latest'
+              : 'none'
+            : event.kind === 'session_complete' || event.kind === 'session_error'
+              ? 'unique'
+              : 'none';
+        const initialTurnUsers =
+          event.kind === 'session_start' && lifecycleTurnId !== undefined
+            ? openExactRestoredInitialTurn(currentUsers, lifecycleTurnId, runtimeRunId)
+            : currentUsers;
+        if (initialTurnUsers !== currentUsers && lifecycleTurnId !== undefined) {
+          const openedOwner = initialTurnUsers.find(
+            (message) =>
+              message.restoredFromHistory === true &&
+              message.turnId === lifecycleTurnId &&
+              message.turnUserOrdinal === 0 &&
+              message.historyNoAssistantSegment !== true,
+          );
+          if (openedOwner) rememberOpenedHistoryLiveOwner(event.sessionId, openedOwner);
+        }
+        const lifecycleBoundUsers =
+          lifecycleTurnId !== undefined && !isPromptSegmentBoundary(storedEvent)
+            ? bindInitialLiveUserTurnIdentity(
+                initialTurnUsers,
+                lifecycleTurnId,
+                runtimeRunId,
+                unscopedTurnBinding,
+                appendedEvents,
+              )
+            : initialTurnUsers;
+        const lifecycleIdentityChanged = lifecycleBoundUsers !== currentUsers;
+        const next: Partial<AppState> = {
+          eventsBySession: {
             ...state.eventsBySession,
-            [event.sessionId]: folded.events,
+            [event.sessionId]: appendedEvents,
+          },
+          ...(lifecycleIdentityChanged
+            ? {
+                userMessagesBySession: {
+                  ...state.userMessagesBySession,
+                  [event.sessionId]: lifecycleBoundUsers,
+                },
+              }
+            : {}),
+          lastEvent: storedEvent,
+        };
+        const rootContextEvent =
+          !('contextKind' in event) ||
+          event.contextKind === undefined ||
+          event.contextKind === 'root';
+        const startsCompaction = event.kind === 'compact_start' && rootContextEvent;
+        const endsCompaction =
+          (event.kind === 'compact_end' && rootContextEvent) ||
+          event.kind === 'session_complete' ||
+          event.kind === 'session_error';
+        if (startsCompaction && state.compactingBySession[event.sessionId] !== true) {
+          next.compactingBySession = {
+            ...state.compactingBySession,
+            [event.sessionId]: true,
           };
-          next.transientArtifactsBySession = {
-            ...state.transientArtifactsBySession,
-            [event.sessionId]: collectTransientArtifactsFromEvents(folded.events),
-          };
+        } else if (endsCompaction && state.compactingBySession[event.sessionId] === true) {
+          const { [event.sessionId]: _drop, ...restCompacting } = state.compactingBySession;
+          next.compactingBySession = restCompacting;
         }
-        if (reconciledUsers !== candidateUsers) {
-          next.userMessagesBySession = {
-            ...state.userMessagesBySession,
-            [event.sessionId]: reconciledUsers,
-          };
+        // 只在"运行真正开始/结束"的生命周期事件到达时才清 pendingSend，把 spinner 交给 event-driven 状态。
+        // ⚠️ 不能"任一事件到达就清"：repo-intelligence（repointel_trace）/ managed_task_status 等**非生命周期**
+        // 事件可能先于 session_start 到达；若此时就清了 pendingSend，而 snapshotFromEvents 又只把
+        // session_start / queued_user_prompt_started / mid_turn_user_prompt 当 streaming，spinner 会在
+        // session_start 到达前整段消失
+        // ——用户看到 query 气泡却没有任何"正在做什么"指示（新会话首个 query 期间 repo 分析最久，尤其明显）。
+        // 这里的生命周期 kind 必须与 ActivitySpinner.snapshotFromEvents 认的那组保持一致。
+        const clearsPendingSend =
+          event.kind === 'session_start' ||
+          event.kind === 'queued_user_prompt_started' ||
+          event.kind === 'mid_turn_user_prompt' ||
+          event.kind === 'session_complete' ||
+          event.kind === 'session_error';
+        if (
+          clearsPendingSend &&
+          state.pendingSendBySession[event.sessionId] &&
+          eventClearsPendingSend(event, state.pendingSendRuntimeBaselineBySession[event.sessionId])
+        ) {
+          const { [event.sessionId]: _drop, ...restPending } = state.pendingSendBySession;
+          const { [event.sessionId]: _dropBaseline, ...restBaselines } =
+            state.pendingSendRuntimeBaselineBySession;
+          next.pendingSendBySession = restPending;
+          next.pendingSendRuntimeBaselineBySession = restBaselines;
         }
-      }
-      // F008: 同步抽取 work_budget / harness_profile 到 derived maps
-      // —— 视图不必每次 scan 整条 bucket
-      if (event.kind === 'iteration_end') {
-        if (event.contextKind !== 'child') {
-          // Context window belongs to the root Agent only. Child context sizes must never
-          // overwrite the gauge, even though their Provider usage contributes to session cost.
-          const current = state.tokensBySession[event.sessionId];
-          if (acceptsRootContextUpdate(current, event.contextId, event.contextRevision)) {
-            next.tokensBySession = {
-              ...state.tokensBySession,
-              [event.sessionId]: {
-                tokens: event.tokenCount,
-                source: 'iteration_end',
-                ...(event.tokenSource !== undefined ? { tokenSource: event.tokenSource } : {}),
-                ...(event.contextId ? { observedOrder: nextRootContextReadingOrder() } : {}),
-                ...(event.contextId ? { contextId: event.contextId } : {}),
-                ...(event.contextRevision !== undefined
-                  ? { contextRevision: event.contextRevision }
-                  : {}),
-                ...(current?.lastCompaction ? { lastCompaction: current.lastCompaction } : {}),
-              },
+        if (event.kind === 'mid_turn_user_prompt') {
+          const currentPromptUsers =
+            next.userMessagesBySession?.[event.sessionId] ??
+            state.userMessagesBySession[event.sessionId] ??
+            [];
+          const userMessages = alignSegmentOwnersBeforePrompt(
+            event.sessionId,
+            currentPromptUsers,
+            appendedEvents,
+            appendedEvents.length - 1,
+          );
+          const identity =
+            event.turnId !== undefined
+              ? {
+                  turnId: event.turnId,
+                  turnUserOrdinal:
+                    event.turnUserOrdinal ?? resolveLiveUserOrdinal(userMessages, event.turnId),
+                }
+              : undefined;
+          const promotionState =
+            userMessages === state.userMessagesBySession[event.sessionId]
+              ? state
+              : ({
+                  ...state,
+                  userMessagesBySession: {
+                    ...state.userMessagesBySession,
+                    [event.sessionId]: userMessages,
+                  },
+                } as AppState);
+          Object.assign(
+            next,
+            promoteQueuedUserMessageForPrompt(
+              promotionState,
+              event.sessionId,
+              'interrupt',
+              event.content,
+              event.queueId,
+              identity,
+              event.entryId,
+              event.turnUserOrdinal === undefined,
+            ),
+          );
+        } else if (event.kind === 'queued_user_prompt_started') {
+          const currentPromptUsers =
+            next.userMessagesBySession?.[event.sessionId] ??
+            state.userMessagesBySession[event.sessionId] ??
+            [];
+          const userMessages = alignSegmentOwnersBeforePrompt(
+            event.sessionId,
+            currentPromptUsers,
+            appendedEvents,
+            appendedEvents.length - 1,
+          );
+          const identity =
+            event.turnId !== undefined
+              ? {
+                  turnId: event.turnId,
+                  turnUserOrdinal:
+                    event.turnUserOrdinal ?? resolveLiveUserOrdinal(userMessages, event.turnId),
+                }
+              : undefined;
+          const promotionState =
+            userMessages === state.userMessagesBySession[event.sessionId]
+              ? state
+              : ({
+                  ...state,
+                  userMessagesBySession: {
+                    ...state.userMessagesBySession,
+                    [event.sessionId]: userMessages,
+                  },
+                } as AppState);
+          Object.assign(
+            next,
+            promoteQueuedUserMessageForPrompt(
+              promotionState,
+              event.sessionId,
+              event.queueMode,
+              event.content,
+              event.queueId,
+              identity,
+              undefined,
+              event.turnUserOrdinal === undefined,
+            ),
+          );
+        } else if (event.kind === 'queued_user_prompt_failed') {
+          Object.assign(next, failQueuedUserMessageForPrompt(state, event));
+        } else if (isCancelledSessionError(event)) {
+          const queued = state.queuedUserMessagesBySession[event.sessionId];
+          if (queued && queued.length > 0) {
+            const retained = queued.filter((entry) => entry.status === 'failed');
+            next.queuedUserMessagesBySession = {
+              ...state.queuedUserMessagesBySession,
+              [event.sessionId]: retained,
             };
           }
         }
+        if (
+          lifecycleIdentityChanged ||
+          event.kind === 'session_start' ||
+          event.kind === 'mid_turn_user_prompt' ||
+          event.kind === 'queued_user_prompt_started' ||
+          event.kind === 'session_complete' ||
+          event.kind === 'session_error'
+        ) {
+          const candidateUsers =
+            next.userMessagesBySession?.[event.sessionId] ??
+            state.userMessagesBySession[event.sessionId] ??
+            [];
+          rememberHistoryLiveUsers(event.sessionId, candidateUsers);
+        }
+        // F008: 同步抽取 work_budget / harness_profile 到 derived maps
+        // —— 视图不必每次 scan 整条 bucket
+        if (event.kind === 'iteration_end') {
+          if (event.contextKind !== 'child') {
+            // Context window belongs to the root Agent only. Child context sizes must never
+            // overwrite the gauge, even though their Provider usage contributes to session cost.
+            const current = state.tokensBySession[event.sessionId];
+            if (acceptsRootContextUpdate(current, event.contextId, event.contextRevision)) {
+              next.tokensBySession = {
+                ...state.tokensBySession,
+                [event.sessionId]: {
+                  tokens: event.tokenCount,
+                  source: 'iteration_end',
+                  ...(event.tokenSource !== undefined ? { tokenSource: event.tokenSource } : {}),
+                  ...(event.contextId ? { observedOrder: nextRootContextReadingOrder() } : {}),
+                  ...(event.contextId ? { contextId: event.contextId } : {}),
+                  ...(event.contextRevision !== undefined
+                    ? { contextRevision: event.contextRevision }
+                    : {}),
+                  ...(current?.lastCompaction ? { lastCompaction: current.lastCompaction } : {}),
+                },
+              };
+            }
+          }
 
-        // KodaX 0.7.77 diagnostics are emitted before iteration_end and cover physical calls
-        // that have no iteration summary (child/retry/fallback/repair/compaction helpers).
-        // Keep iteration_end only as the compatibility source until diagnostics activate.
-        const currentUsage = state.sessionTokenUsageBySession[event.sessionId];
-        if (event.usage && currentUsage?.accountingSource !== 'provider_diagnostic') {
+          // KodaX 0.7.77 diagnostics are emitted before iteration_end and cover physical calls
+          // that have no iteration summary (child/retry/fallback/repair/compaction helpers).
+          // Keep iteration_end only as the compatibility source until diagnostics activate.
+          const currentUsage = state.sessionTokenUsageBySession[event.sessionId];
+          if (event.usage && currentUsage?.accountingSource !== 'provider_diagnostic') {
+            const accumulated = accumulateSessionTokenUsage(
+              currentUsage,
+              event.usage,
+              event.contextKind === 'child',
+              { source: 'iteration' },
+            );
+            if (accumulated) {
+              const usageBySession = {
+                ...state.sessionTokenUsageBySession,
+                [event.sessionId]: accumulated,
+              };
+              next.sessionTokenUsageBySession = usageBySession;
+              persistSessionTokenUsage(usageBySession);
+            }
+          }
+        } else if (event.kind === 'context_budget_snapshot' && event.contextKind !== 'child') {
+          next.contextBudgetBySession = {
+            ...state.contextBudgetBySession,
+            [event.sessionId]: {
+              ...event,
+              ...(event.contextId ? { observedOrder: nextRootContextReadingOrder() } : {}),
+            },
+          };
+        } else if (event.kind === 'provider_cache_diagnostic') {
           const accumulated = accumulateSessionTokenUsage(
-            currentUsage,
-            event.usage,
+            state.sessionTokenUsageBySession[event.sessionId],
+            event,
             event.contextKind === 'child',
-            { source: 'iteration' },
+            {
+              source: 'provider_diagnostic',
+              requestId: event.requestId,
+              countWhenUsageMissing: true,
+            },
           );
-          if (accumulated) {
+          if (accumulated !== state.sessionTokenUsageBySession[event.sessionId]) {
             const usageBySession = {
               ...state.sessionTokenUsageBySession,
               [event.sessionId]: accumulated,
@@ -8448,1554 +8038,1520 @@ export const useAppStore = create<AppState>((set) => ({
             next.sessionTokenUsageBySession = usageBySession;
             persistSessionTokenUsage(usageBySession);
           }
-        }
-      } else if (event.kind === 'context_budget_snapshot' && event.contextKind !== 'child') {
-        next.contextBudgetBySession = {
-          ...state.contextBudgetBySession,
-          [event.sessionId]: {
-            ...event,
-            ...(event.contextId ? { observedOrder: nextRootContextReadingOrder() } : {}),
-          },
-        };
-      } else if (event.kind === 'provider_cache_diagnostic') {
-        const accumulated = accumulateSessionTokenUsage(
-          state.sessionTokenUsageBySession[event.sessionId],
-          event,
-          event.contextKind === 'child',
-          {
-            source: 'provider_diagnostic',
-            requestId: event.requestId,
-            countWhenUsageMissing: true,
-          },
-        );
-        if (accumulated !== state.sessionTokenUsageBySession[event.sessionId]) {
-          const usageBySession = {
-            ...state.sessionTokenUsageBySession,
-            [event.sessionId]: accumulated,
-          };
-          next.sessionTokenUsageBySession = usageBySession;
-          persistSessionTokenUsage(usageBySession);
-        }
-        if (event.contextKind !== 'child') {
-          next.providerCacheDiagnosticBySession = {
-            ...state.providerCacheDiagnosticBySession,
-            [event.sessionId]: event,
-          };
-        }
-      } else if (event.kind === 'compact_stats' && event.contextKind !== 'child') {
-        // Compaction changes the active model context without deleting visible scrollback.
-        // Keep the authoritative post-compaction value separate from transcript history.
-        const current = state.tokensBySession[event.sessionId];
-        const contextRevision = event.afterRevision ?? event.contextRevision;
-        // A revision-less compact_stats event is only safe to apply over a
-        // revisioned reading when it explicitly confirms both commitment and
-        // ownership of the current root context. Legacy events that omit
-        // either signal may be stale and must not roll the gauge backwards.
-        const compatibleCommittedCompaction =
-          event.committed === true &&
-          contextRevision === undefined &&
-          current?.contextRevision !== undefined &&
-          event.contextId !== undefined &&
-          current.contextId !== undefined &&
-          current.contextId === event.contextId;
-        if (
-          compatibleCommittedCompaction ||
-          acceptsRootContextUpdate(current, event.contextId, contextRevision)
-        ) {
-          next.tokensBySession = {
-            ...state.tokensBySession,
-            [event.sessionId]: {
-              ...tokenInfoFromCompaction(event),
-              ...(compatibleCommittedCompaction && current?.contextId
-                ? { contextId: current.contextId }
-                : {}),
-              ...(compatibleCommittedCompaction && current?.contextRevision !== undefined
-                ? { contextRevision: current.contextRevision }
-                : {}),
-            },
-          };
-          if (event.committed !== false && state.contextBudgetBySession[event.sessionId]) {
-            const { [event.sessionId]: _staleBudget, ...remainingBudgets } =
-              state.contextBudgetBySession;
-            next.contextBudgetBySession = remainingBudgets;
+          if (event.contextKind !== 'child') {
+            next.providerCacheDiagnosticBySession = {
+              ...state.providerCacheDiagnosticBySession,
+              [event.sessionId]: event,
+            };
           }
-        }
-      } else if (event.kind === 'session_complete') {
-        if (!isSessionVisiblyOpen(state, event.sessionId)) {
-          const unreadFlags = setSessionFlagValue(
-            next.sessionFlags ?? state.sessionFlags,
-            event.sessionId,
-            'unread',
-            true,
-          );
-          if (unreadFlags !== state.sessionFlags) next.sessionFlags = unreadFlags;
-        }
-        // History restore 的 terminal — 若到此还没有 iteration_end 写入 tokensBySession，
-        // 从已有 buffer 累加一次给 dashboard 用。只算一次（已有真实 tokens 时不覆盖）。
-        const existing = state.tokensBySession[event.sessionId];
-        const terminalUsers =
-          next.userMessagesBySession?.[event.sessionId] ??
-          state.userMessagesBySession[event.sessionId] ??
-          [];
-        const terminalEvents = next.eventsBySession?.[event.sessionId] ?? appendedEvents;
-        const foldedHistoryBoundary = terminalEvents !== appendedEvents;
-        if (existing === undefined || (foldedHistoryBoundary && existing.source === 'estimate')) {
-          // Count the reconciled buffers. In the history-first race the pre-terminal state
-          // temporarily contains both copies; counting `state`/`bucket` would double the
-          // estimate even though this terminal atomically folds the duplicate boundary.
-          let total = 0;
-          for (const um of terminalUsers) total += approxTokensForStats(um.content);
-          for (const ev of terminalEvents) {
-            if (ev.kind === 'text_delta' || ev.kind === 'thinking_delta') {
-              total += approxTokensForStats(ev.text);
-            } else if (ev.kind === 'tool_result') {
-              total += approxTokensForStats(ev.content);
-            }
-          }
-          if (total > 0) {
+        } else if (event.kind === 'compact_stats' && event.contextKind !== 'child') {
+          // Compaction changes the active model context without deleting visible scrollback.
+          // Keep the authoritative post-compaction value separate from transcript history.
+          const current = state.tokensBySession[event.sessionId];
+          const contextRevision = event.afterRevision ?? event.contextRevision;
+          // A revision-less compact_stats event is only safe to apply over a
+          // revisioned reading when it explicitly confirms both commitment and
+          // ownership of the current root context. Legacy events that omit
+          // either signal may be stale and must not roll the gauge backwards.
+          const compatibleCommittedCompaction =
+            event.committed === true &&
+            contextRevision === undefined &&
+            current?.contextRevision !== undefined &&
+            event.contextId !== undefined &&
+            current.contextId !== undefined &&
+            current.contextId === event.contextId;
+          if (
+            compatibleCommittedCompaction ||
+            acceptsRootContextUpdate(current, event.contextId, contextRevision)
+          ) {
             next.tokensBySession = {
               ...state.tokensBySession,
-              [event.sessionId]: { tokens: total, source: 'estimate' },
+              [event.sessionId]: {
+                ...tokenInfoFromCompaction(event),
+                ...(compatibleCommittedCompaction && current?.contextId
+                  ? { contextId: current.contextId }
+                  : {}),
+                ...(compatibleCommittedCompaction && current?.contextRevision !== undefined
+                  ? { contextRevision: current.contextRevision }
+                  : {}),
+              },
             };
+            if (event.committed !== false && state.contextBudgetBySession[event.sessionId]) {
+              const { [event.sessionId]: _staleBudget, ...remainingBudgets } =
+                state.contextBudgetBySession;
+              next.contextBudgetBySession = remainingBudgets;
+            }
           }
-        }
-        // #4 fix: run 结束时清掉 managed_task_status 快照——否则 AMA strip / BackgroundTaskBar /
-        // Workers popout 会一直把这个已完成的 run 当作 still-active 展示(快照从来没被清过,
-        // 一直停在最后一次收到的 status)。AmaWorkStrip / WorkersSection / TasksPanel 在
-        // snapshot 为 undefined 时已经渲染空闲态,直接删掉这个 key 即可。
-        if (state.managedTaskStatusBySession[event.sessionId] !== undefined) {
-          const { [event.sessionId]: _droppedMtsComplete, ...restMtsComplete } =
-            state.managedTaskStatusBySession;
-          next.managedTaskStatusBySession = restMtsComplete;
-        }
-      } else if (event.kind === 'session_error') {
-        if (!isCancelledSessionError(event) && !isSessionVisiblyOpen(state, event.sessionId)) {
-          const unreadFlags = setSessionFlagValue(
-            next.sessionFlags ?? state.sessionFlags,
-            event.sessionId,
-            'unread',
-            true,
-          );
-          if (unreadFlags !== state.sessionFlags) next.sessionFlags = unreadFlags;
-        }
-        // #4 fix: 同 session_complete——出错终止时也清掉 managed_task_status 快照,不让已经
-        // 结束(哪怕是异常结束)的 run 一直显示成活跃状态。
-        if (state.managedTaskStatusBySession[event.sessionId] !== undefined) {
-          const { [event.sessionId]: _droppedMtsError, ...restMtsError } =
-            state.managedTaskStatusBySession;
-          next.managedTaskStatusBySession = restMtsError;
-        }
-      } else if (event.kind === 'work_budget') {
-        next.workBudgetBySession = {
-          ...state.workBudgetBySession,
-          [event.sessionId]: { used: event.used, cap: event.cap },
-        };
-      } else if (event.kind === 'harness_profile') {
-        next.harnessProfileBySession = {
-          ...state.harnessProfileBySession,
-          [event.sessionId]: { profile: event.profile, round: event.round },
-        };
-      } else if (event.kind === 'todo_update') {
-        // alpha.1: 全量替换；空列表表示 cleared
-        next.todoListBySession = {
-          ...state.todoListBySession,
-          [event.sessionId]: event.items,
-        };
-      } else if (event.kind === 'managed_task_status') {
-        // alpha.1: 直接覆盖最新值。同时派生 legacy work_budget / harness_profile
-        // 以便老 TasksPanel/Tabs 仍能渲染。
-        //
-        // #4 fix: SDK 有时会在收尾时先推一条 phase==='completed' 的 managed_task_status
-        // 快照,再推 session_complete/session_error。若原样存下这条"completed"快照,
-        // 两条事件之间会有一帧 UI 显示"看起来还在跑但 phase=completed"的过渡怪状态。
-        // 这里直接不存 completed 快照(等同于清空),让下游的空闲态立即生效,不必等
-        // session_complete 分支来清。
-        if (event.status.phase === 'completed') {
+        } else if (event.kind === 'session_complete') {
+          if (!isSessionVisiblyOpen(state, event.sessionId)) {
+            const unreadFlags = setSessionFlagValue(
+              next.sessionFlags ?? state.sessionFlags,
+              event.sessionId,
+              'unread',
+              true,
+            );
+            if (unreadFlags !== state.sessionFlags) next.sessionFlags = unreadFlags;
+          }
+          // History restore 的 terminal — 若到此还没有 iteration_end 写入 tokensBySession，
+          // 从已有 buffer 累加一次给 dashboard 用。只算一次（已有真实 tokens 时不覆盖）。
+          const existing = state.tokensBySession[event.sessionId];
+          const terminalUsers =
+            next.userMessagesBySession?.[event.sessionId] ??
+            state.userMessagesBySession[event.sessionId] ??
+            [];
+          const terminalEvents = next.eventsBySession?.[event.sessionId] ?? appendedEvents;
+          const foldedHistoryBoundary = terminalEvents !== appendedEvents;
+          if (existing === undefined || (foldedHistoryBoundary && existing.source === 'estimate')) {
+            // Count the reconciled buffers. In the history-first race the pre-terminal state
+            // temporarily contains both copies; counting `state`/`bucket` would double the
+            // estimate even though this terminal atomically folds the duplicate boundary.
+            let total = 0;
+            for (const um of terminalUsers) total += approxTokensForStats(um.content);
+            for (const ev of terminalEvents) {
+              if (ev.kind === 'text_delta' || ev.kind === 'thinking_delta') {
+                total += approxTokensForStats(ev.text);
+              } else if (ev.kind === 'tool_result') {
+                total += approxTokensForStats(ev.content);
+              }
+            }
+            if (total > 0) {
+              next.tokensBySession = {
+                ...state.tokensBySession,
+                [event.sessionId]: { tokens: total, source: 'estimate' },
+              };
+            }
+          }
+          // #4 fix: run 结束时清掉 managed_task_status 快照——否则 AMA strip / BackgroundTaskBar /
+          // Workers popout 会一直把这个已完成的 run 当作 still-active 展示(快照从来没被清过,
+          // 一直停在最后一次收到的 status)。AmaWorkStrip / WorkersSection / TasksPanel 在
+          // snapshot 为 undefined 时已经渲染空闲态,直接删掉这个 key 即可。
           if (state.managedTaskStatusBySession[event.sessionId] !== undefined) {
-            const { [event.sessionId]: _droppedMtsPhase, ...restMtsPhase } =
+            const { [event.sessionId]: _droppedMtsComplete, ...restMtsComplete } =
               state.managedTaskStatusBySession;
-            next.managedTaskStatusBySession = restMtsPhase;
+            next.managedTaskStatusBySession = restMtsComplete;
           }
-        } else {
-          const previousStatus = state.managedTaskStatusBySession[event.sessionId];
-          next.managedTaskStatusBySession = {
-            ...state.managedTaskStatusBySession,
-            [event.sessionId]: mergeManagedTaskStatus(previousStatus, event.status),
-          };
-        }
-        const ws = event.status;
-        if (ws.budgetUsage !== undefined && ws.globalWorkBudget !== undefined) {
+        } else if (event.kind === 'session_error') {
+          if (!isCancelledSessionError(event) && !isSessionVisiblyOpen(state, event.sessionId)) {
+            const unreadFlags = setSessionFlagValue(
+              next.sessionFlags ?? state.sessionFlags,
+              event.sessionId,
+              'unread',
+              true,
+            );
+            if (unreadFlags !== state.sessionFlags) next.sessionFlags = unreadFlags;
+          }
+          // #4 fix: 同 session_complete——出错终止时也清掉 managed_task_status 快照,不让已经
+          // 结束(哪怕是异常结束)的 run 一直显示成活跃状态。
+          if (state.managedTaskStatusBySession[event.sessionId] !== undefined) {
+            const { [event.sessionId]: _droppedMtsError, ...restMtsError } =
+              state.managedTaskStatusBySession;
+            next.managedTaskStatusBySession = restMtsError;
+          }
+        } else if (event.kind === 'work_budget') {
           next.workBudgetBySession = {
             ...state.workBudgetBySession,
-            [event.sessionId]: { used: ws.budgetUsage, cap: ws.globalWorkBudget },
+            [event.sessionId]: { used: event.used, cap: event.cap },
           };
-        }
-        // KodaX harnessProfile 是字符串（KodaXHarnessProfile）；老 enum 限 H0/H1/H2。
-        // 已知映射：'H0_DIRECT' / 'H1_EXECUTE_EVAL' / 'H2_PLAN_EXECUTE_EVAL' 字面量直接通过；
-        // 其他 KodaX 自定义 profile 留 undefined（保留旧值，避免抖动）。
-        const profile = ws.harnessProfile;
-        if (
-          profile === 'H0_DIRECT' ||
-          profile === 'H1_EXECUTE_EVAL' ||
-          profile === 'H2_PLAN_EXECUTE_EVAL'
-        ) {
+        } else if (event.kind === 'harness_profile') {
           next.harnessProfileBySession = {
             ...state.harnessProfileBySession,
-            [event.sessionId]: { profile, round: ws.currentRound },
+            [event.sessionId]: { profile: event.profile, round: event.round },
           };
-        }
-      } else if (event.kind === 'todo_drift_warning') {
-        const driftNoticeId = `todo-drift:${event.sessionId}`;
-        const legacyDriftNoticePrefix = `${driftNoticeId}:`;
-        const notificationsWithoutLegacyDrift = (next.notifications ?? state.notifications).filter(
-          (notice) => !notice.id.startsWith(legacyDriftNoticePrefix),
-        );
-        // #9 fix: 用户关掉这条提示后，SDK 同一轮里常因为同样的"todo 没标 in-progress"状态
-        // 反复再推 todo_drift_warning（每次工具调用都可能触发一次）——之前的实现里 dismiss
-        // 只是从 notifications 数组删掉，下一条同 id 事件一来 pushNotificationLocal 找不到
-        // 旧 id 就当"新通知"塞回去，等于用户点了关闭却立刻弹回来。这里按"同一轮 + 没有明显
-        // 恶化"压下重复事件；开始新一轮（用户发了新消息）或 pendingCount 涨了则照常弹出，
-        // 并清掉过期的 dismiss 标记（下次再关闭会用新的基线重新武装抑制）。
-        const dismissedTurn = state.todoDriftDismissedAtBySession[event.sessionId];
-        const dismissedPendingCount =
-          state.todoDriftDismissedPendingCountBySession[event.sessionId];
-        const currentTurn =
-          (next.userMessagesBySession ?? state.userMessagesBySession)[event.sessionId]?.length ?? 0;
-        const sameTurn = dismissedTurn !== undefined && currentTurn <= dismissedTurn;
-        const notEscalated =
-          dismissedPendingCount !== undefined &&
-          event.warning.pendingCount <= dismissedPendingCount;
-        if (sameTurn && notEscalated) {
-          next.notifications = notificationsWithoutLegacyDrift;
-        } else {
-          const subject = event.warning.firstPendingTodoSubject
-            ? ` Pending item: "${event.warning.firstPendingTodoSubject.slice(0, 120)}".`
-            : '';
-          next.notifications = pushNotificationLocal(notificationsWithoutLegacyDrift, {
-            id: driftNoticeId,
-            severity: 'info',
-            text:
-              `Todo list drift detected while running ${event.warning.toolName}: ` +
-              `${event.warning.pendingCount} pending item(s), none marked in progress.` +
-              `${subject} KodaX nudged the agent to update todos.`,
-            sessionId: event.sessionId,
-            createdAt: Date.now(),
-            dismissOnOutsideInteraction: true,
-          });
-          if (dismissedTurn !== undefined || dismissedPendingCount !== undefined) {
-            const { [event.sessionId]: _droppedDriftTurn, ...restDriftTurn } =
-              state.todoDriftDismissedAtBySession;
-            const { [event.sessionId]: _droppedDriftPending, ...restDriftPending } =
-              state.todoDriftDismissedPendingCountBySession;
-            next.todoDriftDismissedAtBySession = restDriftTurn;
-            next.todoDriftDismissedPendingCountBySession = restDriftPending;
-          }
-        }
-      } else if (event.kind === 'tool_start') {
-        // F009：记 toolId → path 暂存；等 tool_result 来配对决定要不要 jump 到 diff
-        // input.path 由 mock-session / real adapter 在 tool_start 时附上
-        if (
-          (event.toolName === 'write' || event.toolName === 'edit') &&
-          event.input &&
-          typeof event.input.path === 'string'
-        ) {
-          next.pendingToolPaths = {
-            ...state.pendingToolPaths,
-            [event.toolId]: event.input.path,
+        } else if (event.kind === 'todo_update') {
+          // alpha.1: 全量替换；空列表表示 cleared
+          next.todoListBySession = {
+            ...state.todoListBySession,
+            [event.sessionId]: event.items,
           };
-        }
-      } else if (event.kind === 'tool_result') {
-        // F009：write/edit 完成 + tool_start 暂存了 path → 触发 FilePanel 跳 diff
-        const pendingPath = state.pendingToolPaths[event.toolId];
-        if (pendingPath && (event.toolName === 'write' || event.toolName === 'edit')) {
-          next.lastDiffPath = pendingPath;
-          // 同时清掉 pending（防止内存累积）
-          const { [event.toolId]: _drop, ...restPending } = state.pendingToolPaths;
-          next.pendingToolPaths = restPending;
-        }
-        // Derived transient-artifact table (see AppState.transientArtifactsBySession):
-        // when a create_artifact tool completes, mint/merge its snapshot once, here,
-        // rather than re-scanning the whole event log per streamed token in the view.
-        // The matching tool_start (with input) is already in `bucket` — start always
-        // precedes result — so we read it back (scanning from the end: it's recent).
-        let artifactInput: Record<string, unknown> | undefined;
-        let isArtifactResult = false;
-        for (let i = bucket.length - 1; i >= 0; i--) {
-          const started = bucket[i];
-          if (started.kind === 'tool_start' && started.toolId === event.toolId) {
-            isArtifactResult = started.toolName === 'create_artifact';
-            artifactInput = started.input;
-            break;
-          }
-        }
-        if (isArtifactResult) {
-          const snapshot = snapshotFromCreateArtifactTool({
-            status: 'done',
-            input: artifactInput,
-            result: event.content,
-          });
-          if (snapshot) {
-            next.transientArtifactsBySession = {
-              ...state.transientArtifactsBySession,
-              [event.sessionId]: upsertTransientArtifact(
-                state.transientArtifactsBySession[event.sessionId] ?? [],
-                snapshot,
-              ),
+        } else if (event.kind === 'managed_task_status') {
+          // alpha.1: 直接覆盖最新值。同时派生 legacy work_budget / harness_profile
+          // 以便老 TasksPanel/Tabs 仍能渲染。
+          //
+          // #4 fix: SDK 有时会在收尾时先推一条 phase==='completed' 的 managed_task_status
+          // 快照,再推 session_complete/session_error。若原样存下这条"completed"快照,
+          // 两条事件之间会有一帧 UI 显示"看起来还在跑但 phase=completed"的过渡怪状态。
+          // 这里直接不存 completed 快照(等同于清空),让下游的空闲态立即生效,不必等
+          // session_complete 分支来清。
+          if (event.status.phase === 'completed') {
+            if (state.managedTaskStatusBySession[event.sessionId] !== undefined) {
+              const { [event.sessionId]: _droppedMtsPhase, ...restMtsPhase } =
+                state.managedTaskStatusBySession;
+              next.managedTaskStatusBySession = restMtsPhase;
+            }
+          } else {
+            const previousStatus = state.managedTaskStatusBySession[event.sessionId];
+            next.managedTaskStatusBySession = {
+              ...state.managedTaskStatusBySession,
+              [event.sessionId]: mergeManagedTaskStatus(previousStatus, event.status),
             };
           }
-        }
-      }
-      const currentBudget = (next.workBudgetBySession ?? state.workBudgetBySession)[
-        event.sessionId
-      ];
-      const liveBudget = applyLiveBudgetFallback(currentBudget, event);
-      if (liveBudget && liveBudget !== currentBudget) {
-        next.workBudgetBySession = {
-          ...(next.workBudgetBySession ?? state.workBudgetBySession),
-          [event.sessionId]: liveBudget,
-        };
-      }
-      return next;
-    }),
-
-  upsertSession: (meta) =>
-    set((state) => {
-      const existingIdx = state.sessions.findIndex((s) => s.sessionId === meta.sessionId);
-      if (existingIdx < 0) {
-        return { sessions: [meta, ...state.sessions] };
-      }
-      const next = state.sessions.slice();
-      next[existingIdx] = meta;
-      return { sessions: next };
-    }),
-
-  removeSession: (sessionId) => {
-    clearHistoryLiveBaseline(sessionId);
-    clearLastOpenedFileViewerSnapshotForSession(sessionId);
-    failedLocalNoticeAppends.delete(sessionId);
-    failedLocalNoticeAppendNeedsReconcile.delete(sessionId);
-    failedLocalNoticeReplaces.delete(sessionId);
-    clearLocalNoticePersistenceFailure(sessionId);
-    set((state) => {
-      // 同时清掉对应事件 buffer 和 user message buffer——session 不在了，留着就是泄漏
-      const { [sessionId]: _evt, ...restEvents } = state.eventsBySession;
-      const { [sessionId]: _esa, ...restErrorSeen } = state.errorSeenAtBySession;
-      const { [sessionId]: _esr, ...restErrorSeenRun } = state.errorSeenRunIdBySession;
-      const { [sessionId]: _esrs, ...restErrorSeenRuns } = state.errorSeenRunIdsBySession;
-      persistErrorSeenRunIds(restErrorSeenRuns);
-      // #9 fix: todo-drift dismiss 基线也是 per-session 派生态，session 删了要一起清。
-      const { [sessionId]: _tdda, ...restTodoDriftDismissedAt } =
-        state.todoDriftDismissedAtBySession;
-      const { [sessionId]: _tddp, ...restTodoDriftDismissedPending } =
-        state.todoDriftDismissedPendingCountBySession;
-      const { [sessionId]: _ta, ...restTransientArtifacts } = state.transientArtifactsBySession;
-      const { [sessionId]: _msg, ...restMsgs } = state.userMessagesBySession;
-      const { [sessionId]: _queuedMsg, ...restQueuedMsgs } = state.queuedUserMessagesBySession;
-      const { [sessionId]: _localNotice, ...restLocalNotices } = state.localNoticesBySession;
-      const { [sessionId]: _wfn, ...restWorkflowNotices } = state.workflowNoticesBySession;
-      const { [sessionId]: _bud, ...restBudgets } = state.workBudgetBySession;
-      const { [sessionId]: _prof, ...restProfiles } = state.harnessProfileBySession;
-      const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
-      const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
-      const { [sessionId]: _actors, ...restActorSnapshots } = state.agentActorSnapshotBySession;
-      const { [sessionId]: _snapshotCursor, ...restSnapshotCursors } =
-        state.runtimeSnapshotCursorBySession;
-      const { [sessionId]: _compacting, ...restCompacting } = state.compactingBySession;
-      const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
-      const { [sessionId]: _usage, ...restUsage } = state.sessionTokenUsageBySession;
-      const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
-      const { [sessionId]: _providerCache, ...restProviderCacheDiagnostics } =
-        state.providerCacheDiagnosticBySession;
-      persistSessionTokenUsage(restUsage);
-      // KX-I-02 review HIGH-3 — director 的 per-session promoted set 同样跟着 session
-      // 走,session 删了就清掉,避免 long-lived 进程下泄漏。
-      const { [sessionId]: _prom, ...restPromoted } = state.promotedPopoutsBySession;
-      // v0.1.9 release review HIGH-1 — 漏清 3 个 session-keyed map:
-      //   - inputHistoryBySession (200 string * N session 累积)
-      //   - pendingSendBySession (失败路径删 session 时 true 永留 spinner)
-      //   - sessionFlags (pinned/archived/unread 残留)
-      const { [sessionId]: _ih, ...restHistory } = state.inputHistoryBySession;
-      const { [sessionId]: _ps, ...restPending } = state.pendingSendBySession;
-      const { [sessionId]: _pendingBaseline, ...restPendingBaselines } =
-        state.pendingSendRuntimeBaselineBySession;
-      const { [sessionId]: _sf, ...restFlags } = state.sessionFlags;
-      return {
-        sessions: state.sessions.filter((s) => s.sessionId !== sessionId),
-        eventsBySession: restEvents,
-        errorSeenAtBySession: restErrorSeen,
-        errorSeenRunIdBySession: restErrorSeenRun,
-        errorSeenRunIdsBySession: restErrorSeenRuns,
-        todoDriftDismissedAtBySession: restTodoDriftDismissedAt,
-        todoDriftDismissedPendingCountBySession: restTodoDriftDismissedPending,
-        transientArtifactsBySession: restTransientArtifacts,
-        userMessagesBySession: restMsgs,
-        queuedUserMessagesBySession: restQueuedMsgs,
-        localNoticesBySession: restLocalNotices,
-        workflowNoticesBySession: restWorkflowNotices,
-        workBudgetBySession: restBudgets,
-        harnessProfileBySession: restProfiles,
-        todoListBySession: restTodos,
-        managedTaskStatusBySession: restMts,
-        agentActorSnapshotBySession: restActorSnapshots,
-        runtimeSnapshotCursorBySession: restSnapshotCursors,
-        compactingBySession: restCompacting,
-        tokensBySession: restTokens,
-        sessionTokenUsageBySession: restUsage,
-        contextBudgetBySession: restContextBudgets,
-        providerCacheDiagnosticBySession: restProviderCacheDiagnostics,
-        promotedPopoutsBySession: restPromoted,
-        inputHistoryBySession: restHistory,
-        pendingSendBySession: restPending,
-        pendingSendRuntimeBaselineBySession: restPendingBaselines,
-        sessionFlags: restFlags,
-        deletingSessionIds: new Set([...state.deletingSessionIds].filter((id) => id !== sessionId)),
-        removingSessionIds: new Set([...state.removingSessionIds].filter((id) => id !== sessionId)),
-        permissionQueue: state.permissionQueue.filter((p) => p.sessionId !== sessionId),
-        askUserQueue: state.askUserQueue.filter((p) => p.sessionId !== sessionId),
-        currentSessionId: state.currentSessionId === sessionId ? null : state.currentSessionId,
-        // F009: 删 session 不能让 pending tool path / lastDiffPath 留指着已删 session
-        lastDiffPath: state.currentSessionId === sessionId ? null : state.lastDiffPath,
-      };
-    });
-    persistLocalNoticeReplace(sessionId, []);
-  },
-
-  // 删除 pending 状态：三个删除入口（SessionMenu ▾菜单/快捷键D、SessionContextMenu
-  // 右键、SessionList 行内 ×）与视觉渲染（SessionList）分属不同组件，故放 store 而非组件 state。
-  markSessionDeleting: (sessionId) =>
-    set((state) => {
-      if (state.deletingSessionIds.has(sessionId)) return state;
-      return { deletingSessionIds: new Set(state.deletingSessionIds).add(sessionId) };
-    }),
-
-  unmarkSessionDeleting: (sessionId) =>
-    set((state) => {
-      if (!state.deletingSessionIds.has(sessionId)) return state;
-      const next = new Set(state.deletingSessionIds);
-      next.delete(sessionId);
-      return { deletingSessionIds: next };
-    }),
-
-  markSessionRemoving: (sessionId) =>
-    set((state) => {
-      if (state.removingSessionIds.has(sessionId)) return state;
-      return { removingSessionIds: new Set(state.removingSessionIds).add(sessionId) };
-    }),
-
-  enqueuePermission: (req) =>
-    set((state) => {
-      // 防 main 端重发同 reqId（push 不应当重发，但兜底）
-      if (state.permissionQueue.some((p) => p.reqId === req.reqId)) return state;
-      return { permissionQueue: [...state.permissionQueue, req] };
-    }),
-
-  dequeuePermission: (reqId) =>
-    set((state) => ({
-      permissionQueue: state.permissionQueue.filter((p) => p.reqId !== reqId),
-    })),
-
-  enqueueAskUser: (req) =>
-    set((state) => {
-      if (state.askUserQueue.some((p) => p.reqId === req.reqId)) return state;
-      return { askUserQueue: [...state.askUserQueue, req] };
-    }),
-
-  dequeueAskUser: (reqId) =>
-    set((state) => ({
-      askUserQueue: state.askUserQueue.filter((p) => p.reqId !== reqId),
-    })),
-
-  setProviders: (providers, defaultProviderId, keychainBackend) =>
-    set({ providers, defaultProviderId, keychainBackend }),
-  setDefaultProviderId: (id) =>
-    set((state) => ({
-      defaultProviderId: id,
-      providers: state.providers.map((provider) => {
-        const isDefault = provider.id === id;
-        return provider.isDefault === isDefault ? provider : { ...provider, isDefault };
-      }),
-    })),
-
-  setKodaxDefaults: (defaults) => set({ kodaxDefaults: defaults }),
-  setRuntimeDefaults: (defaults) => set({ runtimeDefaults: { ...defaults } }),
-  setCoderRuntimeConnection: (connection) =>
-    set((state) => {
-      const next = replaceRuntimeConnection(
-        {
-          connection: state.runtimeConnection,
-          profile: state.runtimeProfile,
-          liveBySession: state.liveProjectionBySession,
-          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
-        },
-        connection,
-      );
-      if (next.connection === state.runtimeConnection) return state;
-      const keepActorSnapshots =
-        runtimeConnectionHasFreshLiveAuthority(next.connection) &&
-        next.connection.runtimeId !== undefined &&
-        next.connection.runtimeId === state.runtimeConnection.runtimeId;
-      const replacesKnownRuntime =
-        state.runtimeConnection.runtimeId !== undefined &&
-        state.runtimeConnection.runtimeId !== next.connection.runtimeId;
-      const retiredRuntimeSessionIds = new Set<string>();
-      if (replacesKnownRuntime) {
-        for (const session of state.sessions) {
-          if ((session.surface ?? 'code') === 'code') {
-            retiredRuntimeSessionIds.add(session.sessionId);
+          const ws = event.status;
+          if (ws.budgetUsage !== undefined && ws.globalWorkBudget !== undefined) {
+            next.workBudgetBySession = {
+              ...state.workBudgetBySession,
+              [event.sessionId]: { used: ws.budgetUsage, cap: ws.globalWorkBudget },
+            };
+          }
+          // KodaX harnessProfile 是字符串（KodaXHarnessProfile）；老 enum 限 H0/H1/H2。
+          // 已知映射：'H0_DIRECT' / 'H1_EXECUTE_EVAL' / 'H2_PLAN_EXECUTE_EVAL' 字面量直接通过；
+          // 其他 KodaX 自定义 profile 留 undefined（保留旧值，避免抖动）。
+          const profile = ws.harnessProfile;
+          if (
+            profile === 'H0_DIRECT' ||
+            profile === 'H1_EXECUTE_EVAL' ||
+            profile === 'H2_PLAN_EXECUTE_EVAL'
+          ) {
+            next.harnessProfileBySession = {
+              ...state.harnessProfileBySession,
+              [event.sessionId]: { profile, round: ws.currentRound },
+            };
+          }
+        } else if (event.kind === 'todo_drift_warning') {
+          const driftNoticeId = `todo-drift:${event.sessionId}`;
+          const legacyDriftNoticePrefix = `${driftNoticeId}:`;
+          const notificationsWithoutLegacyDrift = (
+            next.notifications ?? state.notifications
+          ).filter((notice) => !notice.id.startsWith(legacyDriftNoticePrefix));
+          // #9 fix: 用户关掉这条提示后，SDK 同一轮里常因为同样的"todo 没标 in-progress"状态
+          // 反复再推 todo_drift_warning（每次工具调用都可能触发一次）——之前的实现里 dismiss
+          // 只是从 notifications 数组删掉，下一条同 id 事件一来 pushNotificationLocal 找不到
+          // 旧 id 就当"新通知"塞回去，等于用户点了关闭却立刻弹回来。这里按"同一轮 + 没有明显
+          // 恶化"压下重复事件；开始新一轮（用户发了新消息）或 pendingCount 涨了则照常弹出，
+          // 并清掉过期的 dismiss 标记（下次再关闭会用新的基线重新武装抑制）。
+          const dismissedTurn = state.todoDriftDismissedAtBySession[event.sessionId];
+          const dismissedPendingCount =
+            state.todoDriftDismissedPendingCountBySession[event.sessionId];
+          const currentTurn =
+            (next.userMessagesBySession ?? state.userMessagesBySession)[event.sessionId]?.length ??
+            0;
+          const sameTurn = dismissedTurn !== undefined && currentTurn <= dismissedTurn;
+          const notEscalated =
+            dismissedPendingCount !== undefined &&
+            event.warning.pendingCount <= dismissedPendingCount;
+          if (sameTurn && notEscalated) {
+            next.notifications = notificationsWithoutLegacyDrift;
+          } else {
+            const subject = event.warning.firstPendingTodoSubject
+              ? ` Pending item: "${event.warning.firstPendingTodoSubject.slice(0, 120)}".`
+              : '';
+            next.notifications = pushNotificationLocal(notificationsWithoutLegacyDrift, {
+              id: driftNoticeId,
+              severity: 'info',
+              text:
+                `Todo list drift detected while running ${event.warning.toolName}: ` +
+                `${event.warning.pendingCount} pending item(s), none marked in progress.` +
+                `${subject} KodaX nudged the agent to update todos.`,
+              sessionId: event.sessionId,
+              createdAt: Date.now(),
+              dismissOnOutsideInteraction: true,
+            });
+            if (dismissedTurn !== undefined || dismissedPendingCount !== undefined) {
+              const { [event.sessionId]: _droppedDriftTurn, ...restDriftTurn } =
+                state.todoDriftDismissedAtBySession;
+              const { [event.sessionId]: _droppedDriftPending, ...restDriftPending } =
+                state.todoDriftDismissedPendingCountBySession;
+              next.todoDriftDismissedAtBySession = restDriftTurn;
+              next.todoDriftDismissedPendingCountBySession = restDriftPending;
+            }
+          }
+        } else if (event.kind === 'tool_start') {
+          // F009：记 toolId → path 暂存；等 tool_result 来配对决定要不要 jump 到 diff
+          // input.path 由 mock-session / real adapter 在 tool_start 时附上
+          if (
+            (event.toolName === 'write' || event.toolName === 'edit') &&
+            event.input &&
+            typeof event.input.path === 'string'
+          ) {
+            next.pendingToolPaths = {
+              ...state.pendingToolPaths,
+              [event.toolId]: event.input.path,
+            };
+          }
+        } else if (event.kind === 'tool_result') {
+          // F009：write/edit 完成 + tool_start 暂存了 path → 触发 FilePanel 跳 diff
+          const pendingPath = state.pendingToolPaths[event.toolId];
+          if (pendingPath && (event.toolName === 'write' || event.toolName === 'edit')) {
+            next.lastDiffPath = pendingPath;
+            // 同时清掉 pending（防止内存累积）
+            const { [event.toolId]: _drop, ...restPending } = state.pendingToolPaths;
+            next.pendingToolPaths = restPending;
+          }
+          // Derived transient-artifact table (see AppState.transientArtifactsBySession):
+          // when a create_artifact tool completes, mint/merge its snapshot once, here,
+          // rather than re-scanning the whole event log per streamed token in the view.
+          // The matching tool_start (with input) is already in `bucket` — start always
+          // precedes result — so we read it back (scanning from the end: it's recent).
+          let artifactInput: Record<string, unknown> | undefined;
+          let isArtifactResult = false;
+          for (let i = bucket.length - 1; i >= 0; i--) {
+            const started = bucket[i];
+            if (started.kind === 'tool_start' && started.toolId === event.toolId) {
+              isArtifactResult = started.toolName === 'create_artifact';
+              artifactInput = started.input;
+              break;
+            }
+          }
+          if (isArtifactResult) {
+            const snapshot = snapshotFromCreateArtifactTool({
+              status: 'done',
+              input: artifactInput,
+              result: event.content,
+            });
+            if (snapshot) {
+              next.transientArtifactsBySession = {
+                ...state.transientArtifactsBySession,
+                [event.sessionId]: upsertTransientArtifact(
+                  state.transientArtifactsBySession[event.sessionId] ?? [],
+                  snapshot,
+                ),
+              };
+            }
           }
         }
-        for (const session of state.runtimeProfile?.sessions ?? []) {
-          retiredRuntimeSessionIds.add(session.sessionId);
-        }
-        for (const interaction of state.runtimeProfile?.interactions ?? []) {
-          retiredRuntimeSessionIds.add(interaction.request.sessionId);
-        }
-        for (const sessionId of Object.keys(state.liveProjectionBySession)) {
-          retiredRuntimeSessionIds.add(sessionId);
-        }
-      }
-      const pendingSendRuntimeBaselineBySession = Object.fromEntries(
-        Object.keys(state.pendingSendBySession).map((sessionId) => {
-          const baseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
-            requestGeneration: 0,
-            liveCursorSeq: -1,
-            profileCursorSeq: -1,
+        const currentBudget = (next.workBudgetBySession ?? state.workBudgetBySession)[
+          event.sessionId
+        ];
+        const liveBudget = applyLiveBudgetFallback(currentBudget, event);
+        if (liveBudget && liveBudget !== currentBudget) {
+          next.workBudgetBySession = {
+            ...(next.workBudgetBySession ?? state.workBudgetBySession),
+            [event.sessionId]: liveBudget,
           };
-          return [
-            sessionId,
-            baseline.runtimeId === undefined && next.connection.runtimeId !== undefined
-              ? { ...baseline, runtimeId: next.connection.runtimeId }
-              : baseline,
-          ];
-        }),
-      );
-      return {
-        runtimeConnection: next.connection,
-        liveProjectionBySession: next.liveBySession,
-        runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
-        ...(keepActorSnapshots
-          ? {}
-          : {
-              agentActorSnapshotBySession: {},
-              runtimeSnapshotCursorBySession: {},
-              ...(replacesKnownRuntime
-                ? {
-                    pendingSendBySession: {},
-                    pendingSendRuntimeBaselineBySession: {},
-                    permissionQueue: state.permissionQueue.filter(
-                      (request) => !retiredRuntimeSessionIds.has(request.sessionId),
-                    ),
-                    askUserQueue: state.askUserQueue.filter(
-                      (request) => !retiredRuntimeSessionIds.has(request.sessionId),
-                    ),
-                  }
-                : { pendingSendRuntimeBaselineBySession }),
-            }),
-      };
-    }),
-  replaceAgentActorSnapshot: (snapshot) =>
-    set((state) => {
-      if (
-        !runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) ||
-        state.runtimeConnection.runtimeId !== snapshot.runtimeId
-      ) {
-        return state;
-      }
-      const current = state.agentActorSnapshotBySession[snapshot.sessionId];
-      if (
-        current?.runtimeId === snapshot.runtimeId &&
-        (current.revision > snapshot.revision ||
-          (current.revision === snapshot.revision && current.eventCursor >= snapshot.eventCursor))
-      ) {
-        return state;
-      }
-      return {
-        agentActorSnapshotBySession: {
-          ...state.agentActorSnapshotBySession,
-          [snapshot.sessionId]: snapshot,
-        },
-      };
-    }),
-  replaceRuntimeProfileProjection: (profile) =>
-    set((state) => {
-      const next = replaceRuntimeProfile(
-        {
-          connection: state.runtimeConnection,
-          profile: state.runtimeProfile,
-          liveBySession: state.liveProjectionBySession,
-          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
-        },
-        profile,
-      );
-      const codeSessionIds = new Set(next.profile?.sessions.map((session) => session.sessionId));
-      for (const interaction of next.profile?.interactions ?? []) {
-        codeSessionIds.add(interaction.request.sessionId);
-      }
-      const runtimePermissions = (next.profile?.interactions ?? [])
-        .filter(
-          (interaction): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
-            interaction.kind === 'permission' && interaction.state === 'pending',
-        )
-        .map((interaction) => interaction.request);
-      const runtimeAskUser = (next.profile?.interactions ?? [])
-        .filter(
-          (interaction): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
-            interaction.kind === 'ask-user' && interaction.state === 'pending',
-        )
-        .map((interaction) => interaction.request);
-      let pendingSendBySession = state.pendingSendBySession;
-      let pendingSendRuntimeBaselineBySession = state.pendingSendRuntimeBaselineBySession;
-      for (const session of next.profile?.sessions ?? []) {
-        const baseline = pendingSendRuntimeBaselineBySession[session.sessionId];
-        if (
-          runtimeProfileClearsPendingSend(next.profile, session.sessionId, baseline) &&
-          pendingSendBySession[session.sessionId]
-        ) {
-          const { [session.sessionId]: _drop, ...rest } = pendingSendBySession;
-          const { [session.sessionId]: _dropBaseline, ...restBaselines } =
-            pendingSendRuntimeBaselineBySession;
-          pendingSendBySession = rest;
-          pendingSendRuntimeBaselineBySession = restBaselines;
         }
-      }
-      return {
-        sessions: mergeRuntimeActivityIntoSessions(state.sessions, next.profile),
-        runtimeConnection: next.connection,
-        runtimeProfile: next.profile,
-        liveProjectionBySession: next.liveBySession,
-        runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
-        runtimeSnapshotCursorBySession:
+        return next;
+      }),
+
+    upsertSession: (meta) =>
+      set((state) => {
+        const existingIdx = state.sessions.findIndex((s) => s.sessionId === meta.sessionId);
+        if (existingIdx < 0) {
+          return { sessions: [meta, ...state.sessions] };
+        }
+        const next = state.sessions.slice();
+        next[existingIdx] = meta;
+        return { sessions: next };
+      }),
+
+    removeSession: (sessionId) => {
+      clearLiveTranscriptTail(sessionId);
+      clearLastOpenedFileViewerSnapshotForSession(sessionId);
+      failedLocalNoticeAppends.delete(sessionId);
+      failedLocalNoticeAppendNeedsReconcile.delete(sessionId);
+      failedLocalNoticeReplaces.delete(sessionId);
+      clearLocalNoticePersistenceFailure(sessionId);
+      set((state) => {
+        // 同时清掉对应事件 buffer 和 user message buffer——session 不在了，留着就是泄漏
+        const { [sessionId]: _evt, ...restEvents } = state.eventsBySession;
+        const { [sessionId]: _esa, ...restErrorSeen } = state.errorSeenAtBySession;
+        const { [sessionId]: _esr, ...restErrorSeenRun } = state.errorSeenRunIdBySession;
+        const { [sessionId]: _esrs, ...restErrorSeenRuns } = state.errorSeenRunIdsBySession;
+        persistErrorSeenRunIds(restErrorSeenRuns);
+        // #9 fix: todo-drift dismiss 基线也是 per-session 派生态，session 删了要一起清。
+        const { [sessionId]: _tdda, ...restTodoDriftDismissedAt } =
+          state.todoDriftDismissedAtBySession;
+        const { [sessionId]: _tddp, ...restTodoDriftDismissedPending } =
+          state.todoDriftDismissedPendingCountBySession;
+        const { [sessionId]: _ta, ...restTransientArtifacts } = state.transientArtifactsBySession;
+        const { [sessionId]: _msg, ...restMsgs } = state.userMessagesBySession;
+        const { [sessionId]: _queuedMsg, ...restQueuedMsgs } = state.queuedUserMessagesBySession;
+        const { [sessionId]: _localNotice, ...restLocalNotices } = state.localNoticesBySession;
+        const { [sessionId]: _wfn, ...restWorkflowNotices } = state.workflowNoticesBySession;
+        const { [sessionId]: _bud, ...restBudgets } = state.workBudgetBySession;
+        const { [sessionId]: _prof, ...restProfiles } = state.harnessProfileBySession;
+        const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
+        const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
+        const { [sessionId]: _actors, ...restActorSnapshots } = state.agentActorSnapshotBySession;
+        const { [sessionId]: _snapshotCursor, ...restSnapshotCursors } =
+          state.runtimeSnapshotCursorBySession;
+        const { [sessionId]: _compacting, ...restCompacting } = state.compactingBySession;
+        const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
+        const { [sessionId]: _usage, ...restUsage } = state.sessionTokenUsageBySession;
+        const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
+        const { [sessionId]: _providerCache, ...restProviderCacheDiagnostics } =
+          state.providerCacheDiagnosticBySession;
+        persistSessionTokenUsage(restUsage);
+        // KX-I-02 review HIGH-3 — director 的 per-session promoted set 同样跟着 session
+        // 走,session 删了就清掉,避免 long-lived 进程下泄漏。
+        const { [sessionId]: _prom, ...restPromoted } = state.promotedPopoutsBySession;
+        // v0.1.9 release review HIGH-1 — 漏清 3 个 session-keyed map:
+        //   - inputHistoryBySession (200 string * N session 累积)
+        //   - pendingSendBySession (失败路径删 session 时 true 永留 spinner)
+        //   - sessionFlags (pinned/archived/unread 残留)
+        const { [sessionId]: _ih, ...restHistory } = state.inputHistoryBySession;
+        const { [sessionId]: _ps, ...restPending } = state.pendingSendBySession;
+        const { [sessionId]: _pendingBaseline, ...restPendingBaselines } =
+          state.pendingSendRuntimeBaselineBySession;
+        const { [sessionId]: _sf, ...restFlags } = state.sessionFlags;
+        return {
+          sessions: state.sessions.filter((s) => s.sessionId !== sessionId),
+          eventsBySession: restEvents,
+          errorSeenAtBySession: restErrorSeen,
+          errorSeenRunIdBySession: restErrorSeenRun,
+          errorSeenRunIdsBySession: restErrorSeenRuns,
+          todoDriftDismissedAtBySession: restTodoDriftDismissedAt,
+          todoDriftDismissedPendingCountBySession: restTodoDriftDismissedPending,
+          transientArtifactsBySession: restTransientArtifacts,
+          userMessagesBySession: restMsgs,
+          queuedUserMessagesBySession: restQueuedMsgs,
+          localNoticesBySession: restLocalNotices,
+          workflowNoticesBySession: restWorkflowNotices,
+          workBudgetBySession: restBudgets,
+          harnessProfileBySession: restProfiles,
+          todoListBySession: restTodos,
+          managedTaskStatusBySession: restMts,
+          agentActorSnapshotBySession: restActorSnapshots,
+          runtimeSnapshotCursorBySession: restSnapshotCursors,
+          compactingBySession: restCompacting,
+          tokensBySession: restTokens,
+          sessionTokenUsageBySession: restUsage,
+          contextBudgetBySession: restContextBudgets,
+          providerCacheDiagnosticBySession: restProviderCacheDiagnostics,
+          promotedPopoutsBySession: restPromoted,
+          inputHistoryBySession: restHistory,
+          pendingSendBySession: restPending,
+          pendingSendRuntimeBaselineBySession: restPendingBaselines,
+          sessionFlags: restFlags,
+          deletingSessionIds: new Set(
+            [...state.deletingSessionIds].filter((id) => id !== sessionId),
+          ),
+          removingSessionIds: new Set(
+            [...state.removingSessionIds].filter((id) => id !== sessionId),
+          ),
+          permissionQueue: state.permissionQueue.filter((p) => p.sessionId !== sessionId),
+          askUserQueue: state.askUserQueue.filter((p) => p.sessionId !== sessionId),
+          currentSessionId: state.currentSessionId === sessionId ? null : state.currentSessionId,
+          // F009: 删 session 不能让 pending tool path / lastDiffPath 留指着已删 session
+          lastDiffPath: state.currentSessionId === sessionId ? null : state.lastDiffPath,
+        };
+      });
+      persistLocalNoticeReplace(sessionId, []);
+    },
+
+    // 删除 pending 状态：三个删除入口（SessionMenu ▾菜单/快捷键D、SessionContextMenu
+    // 右键、SessionList 行内 ×）与视觉渲染（SessionList）分属不同组件，故放 store 而非组件 state。
+    markSessionDeleting: (sessionId) =>
+      set((state) => {
+        if (state.deletingSessionIds.has(sessionId)) return state;
+        return { deletingSessionIds: new Set(state.deletingSessionIds).add(sessionId) };
+      }),
+
+    unmarkSessionDeleting: (sessionId) =>
+      set((state) => {
+        if (!state.deletingSessionIds.has(sessionId)) return state;
+        const next = new Set(state.deletingSessionIds);
+        next.delete(sessionId);
+        return { deletingSessionIds: next };
+      }),
+
+    markSessionRemoving: (sessionId) =>
+      set((state) => {
+        if (state.removingSessionIds.has(sessionId)) return state;
+        return { removingSessionIds: new Set(state.removingSessionIds).add(sessionId) };
+      }),
+
+    enqueuePermission: (req) =>
+      set((state) => {
+        // 防 main 端重发同 reqId（push 不应当重发，但兜底）
+        if (state.permissionQueue.some((p) => p.reqId === req.reqId)) return state;
+        return { permissionQueue: [...state.permissionQueue, req] };
+      }),
+
+    dequeuePermission: (reqId) =>
+      set((state) => ({
+        permissionQueue: state.permissionQueue.filter((p) => p.reqId !== reqId),
+      })),
+
+    enqueueAskUser: (req) =>
+      set((state) => {
+        if (state.askUserQueue.some((p) => p.reqId === req.reqId)) return state;
+        return { askUserQueue: [...state.askUserQueue, req] };
+      }),
+
+    dequeueAskUser: (reqId) =>
+      set((state) => ({
+        askUserQueue: state.askUserQueue.filter((p) => p.reqId !== reqId),
+      })),
+
+    setProviders: (providers, defaultProviderId, keychainBackend) =>
+      set({ providers, defaultProviderId, keychainBackend }),
+    setDefaultProviderId: (id) =>
+      set((state) => ({
+        defaultProviderId: id,
+        providers: state.providers.map((provider) => {
+          const isDefault = provider.id === id;
+          return provider.isDefault === isDefault ? provider : { ...provider, isDefault };
+        }),
+      })),
+
+    setKodaxDefaults: (defaults) => set({ kodaxDefaults: defaults }),
+    setRuntimeDefaults: (defaults) => set({ runtimeDefaults: { ...defaults } }),
+    setCoderRuntimeConnection: (connection) =>
+      set((state) => {
+        const next = replaceRuntimeConnection(
+          {
+            connection: state.runtimeConnection,
+            profile: state.runtimeProfile,
+            liveBySession: state.liveProjectionBySession,
+            snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+          },
+          connection,
+        );
+        if (next.connection === state.runtimeConnection) return state;
+        const keepActorSnapshots =
+          runtimeConnectionHasFreshLiveAuthority(next.connection) &&
           next.connection.runtimeId !== undefined &&
-          next.connection.runtimeId === state.runtimeConnection.runtimeId &&
-          runtimeConnectionHasFreshLiveAuthority(next.connection)
-            ? state.runtimeSnapshotCursorBySession
-            : {},
-        agentActorSnapshotBySession:
-          next.connection.runtimeId !== undefined &&
-          next.connection.runtimeId === state.runtimeConnection.runtimeId &&
-          runtimeConnectionHasFreshLiveAuthority(next.connection)
-            ? state.agentActorSnapshotBySession
-            : {},
-        permissionQueue: [
-          ...state.permissionQueue.filter((request) => !codeSessionIds.has(request.sessionId)),
-          ...runtimePermissions,
-        ],
-        askUserQueue: [
-          ...state.askUserQueue.filter((request) => !codeSessionIds.has(request.sessionId)),
-          ...runtimeAskUser,
-        ],
-        pendingSendBySession,
-        pendingSendRuntimeBaselineBySession,
-      };
-    }),
-  replaceSessionLiveProjection: (projection, options) => {
-    let accepted = false;
-    set((state) => {
-      const currentProjection = state.liveProjectionBySession[projection.sessionId];
-      const next = replaceSessionLiveProjectionState(
-        {
-          connection: state.runtimeConnection,
-          profile: state.runtimeProfile,
-          liveBySession: state.liveProjectionBySession,
-          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
-        },
-        projection,
-      );
-      const acceptedNewProjection = next.liveBySession[projection.sessionId] === projection;
-      const acceptedEqualProjection =
-        (options?.allowEqualHydration === true ||
-          state.runtimeSnapshotRequiredBySession[projection.sessionId] === true) &&
-        currentProjection !== undefined &&
-        next.liveBySession[projection.sessionId] === currentProjection &&
-        runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) &&
-        state.runtimeConnection.runtimeId === projection.cursor.runtimeId &&
-        currentProjection.cursor.runtimeId === projection.cursor.runtimeId &&
-        currentProjection.projectionRevision === projection.projectionRevision &&
-        projection.cursor.seq >= currentProjection.cursor.seq &&
-        next.snapshotRequiredBySession[projection.sessionId] !== true;
-      // Only an explicit activation/recovery snapshot may repeat the live revision after
-      // history/LRU/window reconstruction removed renderer-only transcript rows. Periodic reads
-      // remain no-ops at equal revision and cannot replay cumulative drafts into a healthy view.
-      const acceptedProjection = acceptedNewProjection || acceptedEqualProjection;
-      accepted = acceptedProjection;
-      if (!acceptedProjection) {
+          next.connection.runtimeId === state.runtimeConnection.runtimeId;
+        const replacesKnownRuntime =
+          state.runtimeConnection.runtimeId !== undefined &&
+          state.runtimeConnection.runtimeId !== next.connection.runtimeId;
+        const retiredRuntimeSessionIds = new Set<string>();
+        if (replacesKnownRuntime) {
+          for (const session of state.sessions) {
+            if ((session.surface ?? 'code') === 'code') {
+              retiredRuntimeSessionIds.add(session.sessionId);
+            }
+          }
+          for (const session of state.runtimeProfile?.sessions ?? []) {
+            retiredRuntimeSessionIds.add(session.sessionId);
+          }
+          for (const interaction of state.runtimeProfile?.interactions ?? []) {
+            retiredRuntimeSessionIds.add(interaction.request.sessionId);
+          }
+          for (const sessionId of Object.keys(state.liveProjectionBySession)) {
+            retiredRuntimeSessionIds.add(sessionId);
+          }
+        }
+        const pendingSendRuntimeBaselineBySession = Object.fromEntries(
+          Object.keys(state.pendingSendBySession).map((sessionId) => {
+            const baseline = state.pendingSendRuntimeBaselineBySession[sessionId] ?? {
+              requestGeneration: 0,
+              liveCursorSeq: -1,
+              profileCursorSeq: -1,
+            };
+            return [
+              sessionId,
+              baseline.runtimeId === undefined && next.connection.runtimeId !== undefined
+                ? { ...baseline, runtimeId: next.connection.runtimeId }
+                : baseline,
+            ];
+          }),
+        );
+        return {
+          runtimeConnection: next.connection,
+          liveProjectionBySession: next.liveBySession,
+          runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+          ...(keepActorSnapshots
+            ? {}
+            : {
+                agentActorSnapshotBySession: {},
+                runtimeSnapshotCursorBySession: {},
+                ...(replacesKnownRuntime
+                  ? {
+                      pendingSendBySession: {},
+                      pendingSendRuntimeBaselineBySession: {},
+                      permissionQueue: state.permissionQueue.filter(
+                        (request) => !retiredRuntimeSessionIds.has(request.sessionId),
+                      ),
+                      askUserQueue: state.askUserQueue.filter(
+                        (request) => !retiredRuntimeSessionIds.has(request.sessionId),
+                      ),
+                    }
+                  : { pendingSendRuntimeBaselineBySession }),
+              }),
+        };
+      }),
+    replaceAgentActorSnapshot: (snapshot) =>
+      set((state) => {
         if (
-          next.liveBySession === state.liveProjectionBySession &&
-          next.snapshotRequiredBySession === state.runtimeSnapshotRequiredBySession
+          !runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) ||
+          state.runtimeConnection.runtimeId !== snapshot.runtimeId
         ) {
           return state;
         }
-        // Rejected full snapshots may be stale, belong to another Runtime, or arrive while live
-        // authority is unavailable. Preserve only the pure reducer's reconciliation marker; none
-        // of the rejected payload may update settings, interactions, hydration, or cursor planes.
+        const current = state.agentActorSnapshotBySession[snapshot.sessionId];
+        if (
+          current?.runtimeId === snapshot.runtimeId &&
+          (current.revision > snapshot.revision ||
+            (current.revision === snapshot.revision && current.eventCursor >= snapshot.eventCursor))
+        ) {
+          return state;
+        }
         return {
+          agentActorSnapshotBySession: {
+            ...state.agentActorSnapshotBySession,
+            [snapshot.sessionId]: snapshot,
+          },
+        };
+      }),
+    replaceRuntimeProfileProjection: (profile) =>
+      set((state) => {
+        const next = replaceRuntimeProfile(
+          {
+            connection: state.runtimeConnection,
+            profile: state.runtimeProfile,
+            liveBySession: state.liveProjectionBySession,
+            snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+          },
+          profile,
+        );
+        const codeSessionIds = new Set(next.profile?.sessions.map((session) => session.sessionId));
+        for (const interaction of next.profile?.interactions ?? []) {
+          codeSessionIds.add(interaction.request.sessionId);
+        }
+        const runtimePermissions = (next.profile?.interactions ?? [])
+          .filter(
+            (interaction): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
+              interaction.kind === 'permission' && interaction.state === 'pending',
+          )
+          .map((interaction) => interaction.request);
+        const runtimeAskUser = (next.profile?.interactions ?? [])
+          .filter(
+            (interaction): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
+              interaction.kind === 'ask-user' && interaction.state === 'pending',
+          )
+          .map((interaction) => interaction.request);
+        let pendingSendBySession = state.pendingSendBySession;
+        let pendingSendRuntimeBaselineBySession = state.pendingSendRuntimeBaselineBySession;
+        for (const session of next.profile?.sessions ?? []) {
+          const baseline = pendingSendRuntimeBaselineBySession[session.sessionId];
+          if (
+            runtimeProfileClearsPendingSend(next.profile, session.sessionId, baseline) &&
+            pendingSendBySession[session.sessionId]
+          ) {
+            const { [session.sessionId]: _drop, ...rest } = pendingSendBySession;
+            const { [session.sessionId]: _dropBaseline, ...restBaselines } =
+              pendingSendRuntimeBaselineBySession;
+            pendingSendBySession = rest;
+            pendingSendRuntimeBaselineBySession = restBaselines;
+          }
+        }
+        return {
+          sessions: mergeRuntimeActivityIntoSessions(state.sessions, next.profile),
+          runtimeConnection: next.connection,
+          runtimeProfile: next.profile,
           liveProjectionBySession: next.liveBySession,
           runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+          runtimeSnapshotCursorBySession:
+            next.connection.runtimeId !== undefined &&
+            next.connection.runtimeId === state.runtimeConnection.runtimeId &&
+            runtimeConnectionHasFreshLiveAuthority(next.connection)
+              ? state.runtimeSnapshotCursorBySession
+              : {},
+          agentActorSnapshotBySession:
+            next.connection.runtimeId !== undefined &&
+            next.connection.runtimeId === state.runtimeConnection.runtimeId &&
+            runtimeConnectionHasFreshLiveAuthority(next.connection)
+              ? state.agentActorSnapshotBySession
+              : {},
+          permissionQueue: [
+            ...state.permissionQueue.filter((request) => !codeSessionIds.has(request.sessionId)),
+            ...runtimePermissions,
+          ],
+          askUserQueue: [
+            ...state.askUserQueue.filter((request) => !codeSessionIds.has(request.sessionId)),
+            ...runtimeAskUser,
+          ],
+          pendingSendBySession,
+          pendingSendRuntimeBaselineBySession,
         };
-      }
-      const identityProjection = preserveKnownProjectionRunTurnIdentity(
-        currentProjection,
-        projection,
-      );
-      const storedProjection =
-        acceptedEqualProjection && currentProjection !== undefined
-          ? preserveKnownProjectionRunTurnIdentity(identityProjection, currentProjection)
-          : identityProjection;
-      const liveProjectionBySession =
-        storedProjection !== next.liveBySession[projection.sessionId]
-          ? {
-              ...next.liveBySession,
-              [projection.sessionId]: storedProjection,
-            }
-          : next.liveBySession;
-      const snapshotRun = identityProjection.activeRun ?? identityProjection.lastTerminalRun;
-      const previousBarrier = state.runtimeSnapshotCursorBySession[projection.sessionId];
-      const sameBarrierRun =
-        snapshotRun !== undefined &&
-        previousBarrier?.runtimeId === projection.cursor.runtimeId &&
-        previousBarrier.runId === snapshotRun.runId;
-      const currentEvents = state.eventsBySession[projection.sessionId] ?? [];
-      const currentUsers = state.userMessagesBySession[projection.sessionId] ?? [];
-      const currentQueued = state.queuedUserMessagesBySession[projection.sessionId] ?? [];
-      const queuedInputs = reconcileRuntimeQueuedMessages(
-        currentUsers,
-        currentQueued,
-        identityProjection,
-      );
-      const startedAfterTurnInputs = reconcileRuntimeStartedAfterTurnInputs(
-        currentEvents,
-        queuedInputs.userMessages,
-        queuedInputs.queuedMessages,
-        identityProjection,
-      );
-      const deliveredInputs = reconcileRuntimeDeliveredInputs(
-        startedAfterTurnInputs.events,
-        startedAfterTurnInputs.userMessages,
-        startedAfterTurnInputs.queuedMessages,
-        identityProjection,
-      );
-      const sidecarHydratedEvents = hydrateProjectedSidecarMessages(
-        deliveredInputs.events,
-        identityProjection,
-      );
-      const hydratedEvents = hydrateSessionEventsFromLiveSnapshot(
-        sidecarHydratedEvents,
-        identityProjection,
-      );
-      const snapshotOwnedUsers = reconcileSnapshotInitialTurnOwners(
-        projection.sessionId,
-        deliveredInputs.userMessages,
-        hydratedEvents,
-        identityProjection,
-      );
-      const operationClaimedUsers = claimUserMessagesByOriginOperation(
-        snapshotOwnedUsers,
-        identityProjection,
-      );
-      const folded = foldStrongIdentityDuplicateTurns(operationClaimedUsers, hydratedEvents);
-      rememberCanonicalizedHistoryLiveOwners(
-        projection.sessionId,
-        folded.canonicalizedLiveOwners ?? [],
-      );
-      const reconciledUsers = hideOpenStrongIdentityDuplicateProjection(
-        folded.userMessages,
-        folded.events,
-      );
-      const reconciledEvents = folded.events;
-      const liveBaseline = historyLiveBaselines.get(projection.sessionId);
-      if (liveBaseline !== undefined) {
-        // Page replacement is rebuilt from this independent live projection. Hydrate the same
-        // authoritative Runtime snapshot into that baseline as well, otherwise loading an older
-        // page would rebuild from a pre-reconnect baseline and make assistant/thinking/tool state
-        // restored by the snapshot disappear.
-        const queuedBaseline = reconcileRuntimeQueuedMessages(
-          liveBaseline.userMessages,
+      }),
+    replaceSessionLiveProjection: (projection, options) => {
+      let accepted = false;
+      set((state) => {
+        const currentProjection = state.liveProjectionBySession[projection.sessionId];
+        const next = replaceSessionLiveProjectionState(
+          {
+            connection: state.runtimeConnection,
+            profile: state.runtimeProfile,
+            liveBySession: state.liveProjectionBySession,
+            snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+          },
+          projection,
+        );
+        const acceptedNewProjection = next.liveBySession[projection.sessionId] === projection;
+        const acceptedEqualProjection =
+          (options?.allowEqualHydration === true ||
+            state.runtimeSnapshotRequiredBySession[projection.sessionId] === true) &&
+          currentProjection !== undefined &&
+          next.liveBySession[projection.sessionId] === currentProjection &&
+          runtimeConnectionHasFreshLiveAuthority(state.runtimeConnection) &&
+          state.runtimeConnection.runtimeId === projection.cursor.runtimeId &&
+          currentProjection.cursor.runtimeId === projection.cursor.runtimeId &&
+          currentProjection.projectionRevision === projection.projectionRevision &&
+          projection.cursor.seq >= currentProjection.cursor.seq &&
+          next.snapshotRequiredBySession[projection.sessionId] !== true;
+        // Only an explicit activation/recovery snapshot may repeat the live revision after
+        // history/LRU/window reconstruction removed renderer-only transcript rows. Periodic reads
+        // remain no-ops at equal revision and cannot replay cumulative drafts into a healthy view.
+        const acceptedProjection = acceptedNewProjection || acceptedEqualProjection;
+        accepted = acceptedProjection;
+        if (!acceptedProjection) {
+          if (
+            next.liveBySession === state.liveProjectionBySession &&
+            next.snapshotRequiredBySession === state.runtimeSnapshotRequiredBySession
+          ) {
+            return state;
+          }
+          // Rejected full snapshots may be stale, belong to another Runtime, or arrive while live
+          // authority is unavailable. Preserve only the pure reducer's reconciliation marker; none
+          // of the rejected payload may update settings, interactions, hydration, or cursor planes.
+          return {
+            liveProjectionBySession: next.liveBySession,
+            runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+          };
+        }
+        const identityProjection = preserveKnownProjectionRunTurnIdentity(
+          currentProjection,
+          projection,
+        );
+        const storedProjection =
+          acceptedEqualProjection && currentProjection !== undefined
+            ? preserveKnownProjectionRunTurnIdentity(identityProjection, currentProjection)
+            : identityProjection;
+        const liveProjectionBySession =
+          storedProjection !== next.liveBySession[projection.sessionId]
+            ? {
+                ...next.liveBySession,
+                [projection.sessionId]: storedProjection,
+              }
+            : next.liveBySession;
+        const snapshotRun = identityProjection.activeRun ?? identityProjection.lastTerminalRun;
+        const previousBarrier = state.runtimeSnapshotCursorBySession[projection.sessionId];
+        const sameBarrierRun =
+          snapshotRun !== undefined &&
+          previousBarrier?.runtimeId === projection.cursor.runtimeId &&
+          previousBarrier.runId === snapshotRun.runId;
+        const currentEvents =
+          liveTailBySession.get(projection.sessionId)?.events ??
+          state.eventsBySession[projection.sessionId] ??
+          [];
+        const currentUsers =
+          liveTailBySession.get(projection.sessionId)?.userMessages ??
+          state.userMessagesBySession[projection.sessionId] ??
+          [];
+        const currentQueued = state.queuedUserMessagesBySession[projection.sessionId] ?? [];
+        const queuedInputs = reconcileRuntimeQueuedMessages(
+          currentUsers,
           currentQueued,
           identityProjection,
         );
-        const startedAfterTurnBaseline = reconcileRuntimeStartedAfterTurnInputs(
-          liveBaseline.events,
-          queuedBaseline.userMessages,
-          queuedBaseline.queuedMessages,
+        const startedAfterTurnInputs = reconcileRuntimeStartedAfterTurnInputs(
+          currentEvents,
+          queuedInputs.userMessages,
+          queuedInputs.queuedMessages,
           identityProjection,
         );
-        const deliveredBaseline = reconcileRuntimeDeliveredInputs(
-          startedAfterTurnBaseline.events,
-          startedAfterTurnBaseline.userMessages,
-          startedAfterTurnBaseline.queuedMessages,
+        const deliveredInputs = reconcileRuntimeDeliveredInputs(
+          startedAfterTurnInputs.events,
+          startedAfterTurnInputs.userMessages,
+          startedAfterTurnInputs.queuedMessages,
           identityProjection,
         );
-        const hydratedBaselineEvents = hydrateSessionEventsFromLiveSnapshot(
-          hydrateProjectedSidecarMessages(deliveredBaseline.events, identityProjection),
+        const sidecarHydratedEvents = hydrateProjectedSidecarMessages(
+          deliveredInputs.events,
           identityProjection,
         );
-        rememberHistoryLiveBaseline(projection.sessionId, {
-          ...liveBaseline,
-          userMessages: reconcileSnapshotInitialTurnOwners(
-            projection.sessionId,
-            deliveredBaseline.userMessages,
-            hydratedBaselineEvents,
-            identityProjection,
-          ),
-          events: hydratedBaselineEvents,
-        });
-      }
-      const clearsPendingSend =
-        Boolean(state.pendingSendBySession[projection.sessionId]) &&
-        liveProjectionClearsPendingSend(
-          projection,
-          state.pendingSendRuntimeBaselineBySession[projection.sessionId],
+        const hydratedEvents = hydrateSessionEventsFromLiveSnapshot(
+          sidecarHydratedEvents,
+          identityProjection,
         );
-      const pendingSendPatch = clearsPendingSend
-        ? (() => {
-            const { [projection.sessionId]: _drop, ...rest } = state.pendingSendBySession;
-            const { [projection.sessionId]: _dropBaseline, ...restBaselines } =
-              state.pendingSendRuntimeBaselineBySession;
-            return {
-              pendingSendBySession: rest,
-              pendingSendRuntimeBaselineBySession: restBaselines,
-            };
-          })()
-        : {};
-      const runtimePermissions = projection.interactions
-        .filter(
-          (interaction): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
-            interaction.kind === 'permission' && interaction.state === 'pending',
-        )
-        .map((interaction) => interaction.request);
-      const runtimeAskUser = projection.interactions
-        .filter(
-          (interaction): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
-            interaction.kind === 'ask-user' && interaction.state === 'pending',
-        )
-        .map((interaction) => interaction.request);
-      return {
-        sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
-        liveProjectionBySession,
-        runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
-        ...(snapshotRun
-          ? {
-              runtimeSnapshotCursorBySession: {
-                ...state.runtimeSnapshotCursorBySession,
-                [projection.sessionId]: {
-                  ...projection.cursor,
-                  runId: snapshotRun.runId,
-                  ...(projection.assistantDraft !== undefined
-                    ? { assistantDraftSeq: projection.cursor.seq }
-                    : sameBarrierRun && previousBarrier.assistantDraftSeq !== undefined
-                      ? { assistantDraftSeq: previousBarrier.assistantDraftSeq }
-                      : {}),
-                  ...(projection.thinkingDraft !== undefined
-                    ? { thinkingDraftSeq: projection.cursor.seq }
-                    : sameBarrierRun && previousBarrier.thinkingDraftSeq !== undefined
-                      ? { thinkingDraftSeq: previousBarrier.thinkingDraftSeq }
-                      : {}),
-                },
-              },
-            }
-          : {}),
-        ...(reconciledEvents !== currentEvents
-          ? {
-              eventsBySession: {
-                ...state.eventsBySession,
-                [projection.sessionId]: reconciledEvents,
-              },
-            }
-          : {}),
-        ...(reconciledUsers !== currentUsers
-          ? {
-              userMessagesBySession: {
-                ...state.userMessagesBySession,
-                [projection.sessionId]: reconciledUsers,
-              },
-            }
-          : {}),
-        permissionQueue: [
-          ...state.permissionQueue.filter((request) => request.sessionId !== projection.sessionId),
-          ...runtimePermissions,
-        ],
-        askUserQueue: [
-          ...state.askUserQueue.filter((request) => request.sessionId !== projection.sessionId),
-          ...runtimeAskUser,
-        ],
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [projection.sessionId]: deliveredInputs.queuedMessages,
-        },
-        ...pendingSendPatch,
-      };
-    });
-    return accepted;
-  },
-  applySessionLiveProjectionChange: (change) => {
-    let status: ApplySessionLiveChangeStatus = 'ignored';
-    set((state) => {
-      const currentProjection = state.liveProjectionBySession[change.sessionId];
-      const result = applySessionLiveChange(
-        {
-          connection: state.runtimeConnection,
-          profile: state.runtimeProfile,
-          liveBySession: state.liveProjectionBySession,
-          snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
-        },
-        change,
-      );
-      status = result.status;
-      if (
-        result.state.liveBySession === state.liveProjectionBySession &&
-        result.state.snapshotRequiredBySession === state.runtimeSnapshotRequiredBySession
-      ) {
-        return state;
-      }
-      const rawProjection = result.state.liveBySession[change.sessionId];
-      const projection =
-        result.status === 'applied' && rawProjection !== undefined
-          ? preserveKnownProjectionRunTurnIdentity(currentProjection, rawProjection)
-          : rawProjection;
-      const liveProjectionBySession =
-        projection !== undefined && projection !== rawProjection
-          ? {
-              ...result.state.liveBySession,
-              [change.sessionId]: projection,
-            }
-          : result.state.liveBySession;
-      const appliesRunIdentity =
-        result.status === 'applied' &&
-        projection !== undefined &&
-        (change.change.domain === 'run' || change.change.domain === 'terminal');
-      const appliesDeliveredInputs =
-        result.status === 'applied' &&
-        projection !== undefined &&
-        (appliesRunIdentity || change.change.domain === 'queue');
-      const appliesSidecar =
-        result.status === 'applied' &&
-        projection !== undefined &&
-        change.change.domain === 'sidecar';
-      const currentEvents = state.eventsBySession[change.sessionId] ?? [];
-      const currentUsers = state.userMessagesBySession[change.sessionId] ?? [];
-      const currentQueued = state.queuedUserMessagesBySession[change.sessionId] ?? [];
-      const queuedInputs =
-        appliesDeliveredInputs && projection !== undefined
-          ? reconcileRuntimeQueuedMessages(currentUsers, currentQueued, projection)
-          : { userMessages: currentUsers, queuedMessages: currentQueued };
-      const startedAfterTurnInputs =
-        appliesDeliveredInputs && projection !== undefined
-          ? reconcileRuntimeStartedAfterTurnInputs(
-              currentEvents,
-              queuedInputs.userMessages,
-              queuedInputs.queuedMessages,
-              projection,
-            )
-          : { events: currentEvents, ...queuedInputs };
-      const deliveredInputs =
-        appliesDeliveredInputs && projection !== undefined
-          ? reconcileRuntimeDeliveredInputs(
-              startedAfterTurnInputs.events,
-              startedAfterTurnInputs.userMessages,
-              startedAfterTurnInputs.queuedMessages,
-              projection,
-            )
-          : {
-              events: currentEvents,
-              userMessages: currentUsers,
-              queuedMessages: currentQueued,
-            };
-      const sidecarHydratedEvents =
-        (appliesRunIdentity || appliesSidecar) && projection !== undefined
-          ? hydrateProjectedSidecarMessages(deliveredInputs.events, projection)
-          : deliveredInputs.events;
-      const hydratedEvents = appliesRunIdentity
-        ? hydrateSessionEventsFromLiveSnapshot(sidecarHydratedEvents, projection)
-        : sidecarHydratedEvents;
-      const snapshotOwnedUsers = appliesRunIdentity
-        ? reconcileSnapshotInitialTurnOwners(
-            change.sessionId,
-            deliveredInputs.userMessages,
-            hydratedEvents,
+        const snapshotOwnedUsers = reconcileSnapshotInitialTurnOwners(
+          projection.sessionId,
+          deliveredInputs.userMessages,
+          hydratedEvents,
+          identityProjection,
+        );
+        const operationClaimedUsers = claimUserMessagesByOriginOperation(
+          snapshotOwnedUsers,
+          identityProjection,
+        );
+        const reconciledUsers = operationClaimedUsers;
+        const reconciledEvents = hydratedEvents;
+        const liveBaseline = liveTailBySession.get(projection.sessionId);
+        if (liveBaseline !== undefined) {
+          liveBaseline.userMessages = operationClaimedUsers;
+          liveBaseline.events = hydratedEvents;
+        }
+        const clearsPendingSend =
+          Boolean(state.pendingSendBySession[projection.sessionId]) &&
+          liveProjectionClearsPendingSend(
             projection,
-            change.change.domain === 'terminal' ? 'terminal' : 'active',
+            state.pendingSendRuntimeBaselineBySession[projection.sessionId],
+          );
+        const pendingSendPatch = clearsPendingSend
+          ? (() => {
+              const { [projection.sessionId]: _drop, ...rest } = state.pendingSendBySession;
+              const { [projection.sessionId]: _dropBaseline, ...restBaselines } =
+                state.pendingSendRuntimeBaselineBySession;
+              return {
+                pendingSendBySession: rest,
+                pendingSendRuntimeBaselineBySession: restBaselines,
+              };
+            })()
+          : {};
+        const runtimePermissions = projection.interactions
+          .filter(
+            (interaction): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
+              interaction.kind === 'permission' && interaction.state === 'pending',
           )
-        : deliveredInputs.userMessages;
-      const operationClaimedUsers =
-        appliesRunIdentity && projection !== undefined
-          ? claimUserMessagesByOriginOperation(snapshotOwnedUsers, projection)
-          : snapshotOwnedUsers;
-      const folded = appliesRunIdentity
-        ? foldStrongIdentityDuplicateTurns(operationClaimedUsers, hydratedEvents)
-        : { userMessages: operationClaimedUsers, events: hydratedEvents };
-      if (appliesRunIdentity) {
-        rememberCanonicalizedHistoryLiveOwners(
-          change.sessionId,
-          folded.canonicalizedLiveOwners ?? [],
-        );
-      }
-      const reconciledUsers = appliesRunIdentity
-        ? hideOpenStrongIdentityDuplicateProjection(folded.userMessages, folded.events)
-        : operationClaimedUsers;
-      const reconciledEvents = folded.events;
-      const liveBaseline = historyLiveBaselines.get(change.sessionId);
-      if ((appliesDeliveredInputs || appliesSidecar) && liveBaseline !== undefined) {
-        const queuedBaseline = appliesDeliveredInputs
-          ? reconcileRuntimeQueuedMessages(liveBaseline.userMessages, currentQueued, projection)
-          : { userMessages: liveBaseline.userMessages, queuedMessages: currentQueued };
-        const startedAfterTurnBaseline = appliesDeliveredInputs
-          ? reconcileRuntimeStartedAfterTurnInputs(
-              liveBaseline.events,
-              queuedBaseline.userMessages,
-              queuedBaseline.queuedMessages,
-              projection,
-            )
-          : { events: liveBaseline.events, ...queuedBaseline };
-        const deliveredBaseline = appliesDeliveredInputs
-          ? reconcileRuntimeDeliveredInputs(
-              startedAfterTurnBaseline.events,
-              startedAfterTurnBaseline.userMessages,
-              startedAfterTurnBaseline.queuedMessages,
-              projection,
-            )
-          : { events: liveBaseline.events, userMessages: liveBaseline.userMessages };
-        const sidecarHydratedBaseline = hydrateProjectedSidecarMessages(
-          deliveredBaseline.events,
-          projection,
-        );
-        const hydratedBaselineEvents = appliesRunIdentity
-          ? hydrateSessionEventsFromLiveSnapshot(sidecarHydratedBaseline, projection)
-          : sidecarHydratedBaseline;
-        rememberHistoryLiveBaseline(change.sessionId, {
-          ...liveBaseline,
-          userMessages: appliesRunIdentity
-            ? reconcileSnapshotInitialTurnOwners(
-                change.sessionId,
-                deliveredBaseline.userMessages,
-                hydratedBaselineEvents,
-                projection,
-                change.change.domain === 'terminal' ? 'terminal' : 'active',
-              )
-            : deliveredBaseline.userMessages,
-          events: hydratedBaselineEvents,
-        });
-      }
-      const clearsPendingSend =
-        result.status === 'applied' &&
-        projection !== undefined &&
-        Boolean(state.pendingSendBySession[change.sessionId]) &&
-        liveProjectionClearsPendingSend(
-          projection,
-          state.pendingSendRuntimeBaselineBySession[change.sessionId],
-        );
-      const pendingSendPatch = clearsPendingSend
-        ? (() => {
-            const { [change.sessionId]: _drop, ...rest } = state.pendingSendBySession;
-            const { [change.sessionId]: _dropBaseline, ...restBaselines } =
-              state.pendingSendRuntimeBaselineBySession;
-            return {
-              pendingSendBySession: rest,
-              pendingSendRuntimeBaselineBySession: restBaselines,
-            };
-          })()
-        : {};
-      const interactionPatch =
-        (change.change.domain === 'interaction' ||
-          (change.change.domain === 'run' && change.change.resetRunScopedState === true)) &&
-        projection
-          ? {
-              permissionQueue: [
-                ...state.permissionQueue.filter(
-                  (request) => request.sessionId !== change.sessionId,
-                ),
-                ...projection.interactions
-                  .filter(
-                    (
-                      interaction,
-                    ): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
-                      interaction.kind === 'permission' && interaction.state === 'pending',
-                  )
-                  .map((interaction) => interaction.request),
-              ],
-              askUserQueue: [
-                ...state.askUserQueue.filter((request) => request.sessionId !== change.sessionId),
-                ...projection.interactions
-                  .filter(
-                    (
-                      interaction,
-                    ): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
-                      interaction.kind === 'ask-user' && interaction.state === 'pending',
-                  )
-                  .map((interaction) => interaction.request),
-              ],
-            }
-          : {};
-      const settingsPatch =
-        change.change.domain === 'settings' && projection
-          ? { sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection) }
-          : {};
-      const queuePatch =
-        result.status === 'applied' &&
-        projection !== undefined &&
-        (change.change.domain === 'run' || change.change.domain === 'queue')
-          ? {
-              queuedUserMessagesBySession: {
-                ...state.queuedUserMessagesBySession,
-                [change.sessionId]: deliveredInputs.queuedMessages,
-              },
-            }
-          : {};
-      return {
-        liveProjectionBySession,
-        runtimeSnapshotRequiredBySession: result.state.snapshotRequiredBySession,
-        ...(reconciledEvents !== currentEvents
-          ? {
-              eventsBySession: {
-                ...state.eventsBySession,
-                [change.sessionId]: reconciledEvents,
-              },
-            }
-          : {}),
-        ...(reconciledUsers !== currentUsers
-          ? {
-              userMessagesBySession: {
-                ...state.userMessagesBySession,
-                [change.sessionId]: reconciledUsers,
-              },
-            }
-          : {}),
-        ...interactionPatch,
-        ...settingsPatch,
-        ...queuePatch,
-        ...pendingSendPatch,
-      };
-    });
-    return status;
-  },
-  invalidateSessionLiveProjection: (invalidation) =>
-    set((state) => {
-      if (
-        state.runtimeConnection.runtimeId !== invalidation.runtimeId &&
-        state.liveProjectionBySession[invalidation.sessionId]?.cursor.runtimeId !==
-          invalidation.runtimeId
-      ) {
-        return state;
-      }
-      const { [invalidation.sessionId]: _live, ...remainingLive } = state.liveProjectionBySession;
-      const { [invalidation.sessionId]: _cursor, ...remainingCursors } =
-        state.runtimeSnapshotCursorBySession;
-      return {
-        liveProjectionBySession: remainingLive,
-        runtimeSnapshotCursorBySession: remainingCursors,
-        runtimeSnapshotRequiredBySession: {
-          ...state.runtimeSnapshotRequiredBySession,
-          [invalidation.sessionId]: true,
-        },
-        permissionQueue: state.permissionQueue.filter(
-          (request) => request.sessionId !== invalidation.sessionId,
-        ),
-        askUserQueue: state.askUserQueue.filter(
-          (request) => request.sessionId !== invalidation.sessionId,
-        ),
-      };
-    }),
-
-  setPendingProviderId: (id) => set({ pendingProviderId: id }),
-  setPendingReasoningMode: (mode) => {
-    lsSet(LS_KEY_PENDING_REASONING, mode);
-    set({ pendingReasoningMode: mode });
-  },
-  setPendingPermissionMode: (mode) => {
-    lsSet(LS_KEY_PENDING_PERMISSION, mode);
-    set({ pendingPermissionMode: mode });
-  },
-  setPendingAgentMode: (mode) => {
-    lsSet(LS_KEY_PENDING_AGENT, mode);
-    set({ pendingAgentMode: mode });
-  },
-  setPendingModel: (model) => {
-    set({ pendingModel: model });
-  },
-
-  setPendingSend: (sessionId, pending, expectedGeneration) => {
-    let requestGeneration: number | undefined;
-    set((state) => {
-      if (pending) {
-        requestGeneration = ++pendingSendGenerationCounter;
-        const baseline = pendingSendRuntimeBaseline(state, sessionId, requestGeneration);
+          .map((interaction) => interaction.request);
+        const runtimeAskUser = projection.interactions
+          .filter(
+            (interaction): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
+              interaction.kind === 'ask-user' && interaction.state === 'pending',
+          )
+          .map((interaction) => interaction.request);
         return {
-          pendingSendBySession: { ...state.pendingSendBySession, [sessionId]: true as const },
-          pendingSendRuntimeBaselineBySession: {
-            ...state.pendingSendRuntimeBaselineBySession,
-            [sessionId]: baseline,
+          sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection),
+          liveProjectionBySession,
+          runtimeSnapshotRequiredBySession: next.snapshotRequiredBySession,
+          ...(snapshotRun
+            ? {
+                runtimeSnapshotCursorBySession: {
+                  ...state.runtimeSnapshotCursorBySession,
+                  [projection.sessionId]: {
+                    ...projection.cursor,
+                    runId: snapshotRun.runId,
+                    ...(projection.assistantDraft !== undefined
+                      ? { assistantDraftSeq: projection.cursor.seq }
+                      : sameBarrierRun && previousBarrier.assistantDraftSeq !== undefined
+                        ? { assistantDraftSeq: previousBarrier.assistantDraftSeq }
+                        : {}),
+                    ...(projection.thinkingDraft !== undefined
+                      ? { thinkingDraftSeq: projection.cursor.seq }
+                      : sameBarrierRun && previousBarrier.thinkingDraftSeq !== undefined
+                        ? { thinkingDraftSeq: previousBarrier.thinkingDraftSeq }
+                        : {}),
+                  },
+                },
+              }
+            : {}),
+          ...(reconciledEvents !== currentEvents
+            ? {
+                eventsBySession: {
+                  ...state.eventsBySession,
+                  [projection.sessionId]: reconciledEvents,
+                },
+              }
+            : {}),
+          ...(reconciledUsers !== currentUsers
+            ? {
+                userMessagesBySession: {
+                  ...state.userMessagesBySession,
+                  [projection.sessionId]: reconciledUsers,
+                },
+              }
+            : {}),
+          permissionQueue: [
+            ...state.permissionQueue.filter(
+              (request) => request.sessionId !== projection.sessionId,
+            ),
+            ...runtimePermissions,
+          ],
+          askUserQueue: [
+            ...state.askUserQueue.filter((request) => request.sessionId !== projection.sessionId),
+            ...runtimeAskUser,
+          ],
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [projection.sessionId]: deliveredInputs.queuedMessages,
+          },
+          ...pendingSendPatch,
+        };
+      });
+      return accepted;
+    },
+    applySessionLiveProjectionChange: (change) => {
+      let status: ApplySessionLiveChangeStatus = 'ignored';
+      set((state) => {
+        const currentProjection = state.liveProjectionBySession[change.sessionId];
+        const result = applySessionLiveChange(
+          {
+            connection: state.runtimeConnection,
+            profile: state.runtimeProfile,
+            liveBySession: state.liveProjectionBySession,
+            snapshotRequiredBySession: state.runtimeSnapshotRequiredBySession,
+          },
+          change,
+        );
+        status = result.status;
+        if (
+          result.state.liveBySession === state.liveProjectionBySession &&
+          result.state.snapshotRequiredBySession === state.runtimeSnapshotRequiredBySession
+        ) {
+          return state;
+        }
+        const rawProjection = result.state.liveBySession[change.sessionId];
+        const projection =
+          result.status === 'applied' && rawProjection !== undefined
+            ? preserveKnownProjectionRunTurnIdentity(currentProjection, rawProjection)
+            : rawProjection;
+        const liveProjectionBySession =
+          projection !== undefined && projection !== rawProjection
+            ? {
+                ...result.state.liveBySession,
+                [change.sessionId]: projection,
+              }
+            : result.state.liveBySession;
+        const appliesRunIdentity =
+          result.status === 'applied' &&
+          projection !== undefined &&
+          (change.change.domain === 'run' || change.change.domain === 'terminal');
+        const appliesDeliveredInputs =
+          result.status === 'applied' &&
+          projection !== undefined &&
+          (appliesRunIdentity || change.change.domain === 'queue');
+        const appliesSidecar =
+          result.status === 'applied' &&
+          projection !== undefined &&
+          change.change.domain === 'sidecar';
+        const currentEvents =
+          liveTailBySession.get(change.sessionId)?.events ??
+          state.eventsBySession[change.sessionId] ??
+          [];
+        const currentUsers =
+          liveTailBySession.get(change.sessionId)?.userMessages ??
+          state.userMessagesBySession[change.sessionId] ??
+          [];
+        const currentQueued = state.queuedUserMessagesBySession[change.sessionId] ?? [];
+        const queuedInputs =
+          appliesDeliveredInputs && projection !== undefined
+            ? reconcileRuntimeQueuedMessages(currentUsers, currentQueued, projection)
+            : { userMessages: currentUsers, queuedMessages: currentQueued };
+        const startedAfterTurnInputs =
+          appliesDeliveredInputs && projection !== undefined
+            ? reconcileRuntimeStartedAfterTurnInputs(
+                currentEvents,
+                queuedInputs.userMessages,
+                queuedInputs.queuedMessages,
+                projection,
+              )
+            : { events: currentEvents, ...queuedInputs };
+        const deliveredInputs =
+          appliesDeliveredInputs && projection !== undefined
+            ? reconcileRuntimeDeliveredInputs(
+                startedAfterTurnInputs.events,
+                startedAfterTurnInputs.userMessages,
+                startedAfterTurnInputs.queuedMessages,
+                projection,
+              )
+            : {
+                events: currentEvents,
+                userMessages: currentUsers,
+                queuedMessages: currentQueued,
+              };
+        const sidecarHydratedEvents =
+          (appliesRunIdentity || appliesSidecar) && projection !== undefined
+            ? hydrateProjectedSidecarMessages(deliveredInputs.events, projection)
+            : deliveredInputs.events;
+        const hydratedEvents = appliesRunIdentity
+          ? hydrateSessionEventsFromLiveSnapshot(sidecarHydratedEvents, projection)
+          : sidecarHydratedEvents;
+        const snapshotOwnedUsers = appliesRunIdentity
+          ? reconcileSnapshotInitialTurnOwners(
+              change.sessionId,
+              deliveredInputs.userMessages,
+              hydratedEvents,
+              projection,
+              change.change.domain === 'terminal' ? 'terminal' : 'active',
+            )
+          : deliveredInputs.userMessages;
+        const operationClaimedUsers =
+          appliesRunIdentity && projection !== undefined
+            ? claimUserMessagesByOriginOperation(snapshotOwnedUsers, projection)
+            : snapshotOwnedUsers;
+        const reconciledUsers = operationClaimedUsers;
+        const reconciledEvents = hydratedEvents;
+        const liveBaseline = liveTailBySession.get(change.sessionId);
+        if ((appliesDeliveredInputs || appliesSidecar) && liveBaseline !== undefined) {
+          liveBaseline.userMessages = operationClaimedUsers;
+          liveBaseline.events = hydratedEvents;
+        }
+        const clearsPendingSend =
+          result.status === 'applied' &&
+          projection !== undefined &&
+          Boolean(state.pendingSendBySession[change.sessionId]) &&
+          liveProjectionClearsPendingSend(
+            projection,
+            state.pendingSendRuntimeBaselineBySession[change.sessionId],
+          );
+        const pendingSendPatch = clearsPendingSend
+          ? (() => {
+              const { [change.sessionId]: _drop, ...rest } = state.pendingSendBySession;
+              const { [change.sessionId]: _dropBaseline, ...restBaselines } =
+                state.pendingSendRuntimeBaselineBySession;
+              return {
+                pendingSendBySession: rest,
+                pendingSendRuntimeBaselineBySession: restBaselines,
+              };
+            })()
+          : {};
+        const interactionPatch =
+          (change.change.domain === 'interaction' ||
+            (change.change.domain === 'run' && change.change.resetRunScopedState === true)) &&
+          projection
+            ? {
+                permissionQueue: [
+                  ...state.permissionQueue.filter(
+                    (request) => request.sessionId !== change.sessionId,
+                  ),
+                  ...projection.interactions
+                    .filter(
+                      (
+                        interaction,
+                      ): interaction is Extract<typeof interaction, { kind: 'permission' }> =>
+                        interaction.kind === 'permission' && interaction.state === 'pending',
+                    )
+                    .map((interaction) => interaction.request),
+                ],
+                askUserQueue: [
+                  ...state.askUserQueue.filter((request) => request.sessionId !== change.sessionId),
+                  ...projection.interactions
+                    .filter(
+                      (
+                        interaction,
+                      ): interaction is Extract<typeof interaction, { kind: 'ask-user' }> =>
+                        interaction.kind === 'ask-user' && interaction.state === 'pending',
+                    )
+                    .map((interaction) => interaction.request),
+                ],
+              }
+            : {};
+        const settingsPatch =
+          change.change.domain === 'settings' && projection
+            ? { sessions: mergeRuntimeSettingsIntoSessions(state.sessions, projection) }
+            : {};
+        const queuePatch =
+          result.status === 'applied' &&
+          projection !== undefined &&
+          (change.change.domain === 'run' || change.change.domain === 'queue')
+            ? {
+                queuedUserMessagesBySession: {
+                  ...state.queuedUserMessagesBySession,
+                  [change.sessionId]: deliveredInputs.queuedMessages,
+                },
+              }
+            : {};
+        return {
+          liveProjectionBySession,
+          runtimeSnapshotRequiredBySession: result.state.snapshotRequiredBySession,
+          ...(reconciledEvents !== currentEvents
+            ? {
+                eventsBySession: {
+                  ...state.eventsBySession,
+                  [change.sessionId]: reconciledEvents,
+                },
+              }
+            : {}),
+          ...(reconciledUsers !== currentUsers
+            ? {
+                userMessagesBySession: {
+                  ...state.userMessagesBySession,
+                  [change.sessionId]: reconciledUsers,
+                },
+              }
+            : {}),
+          ...interactionPatch,
+          ...settingsPatch,
+          ...queuePatch,
+          ...pendingSendPatch,
+        };
+      });
+      return status;
+    },
+    invalidateSessionLiveProjection: (invalidation) =>
+      set((state) => {
+        if (
+          state.runtimeConnection.runtimeId !== invalidation.runtimeId &&
+          state.liveProjectionBySession[invalidation.sessionId]?.cursor.runtimeId !==
+            invalidation.runtimeId
+        ) {
+          return state;
+        }
+        const { [invalidation.sessionId]: _live, ...remainingLive } = state.liveProjectionBySession;
+        const { [invalidation.sessionId]: _cursor, ...remainingCursors } =
+          state.runtimeSnapshotCursorBySession;
+        return {
+          liveProjectionBySession: remainingLive,
+          runtimeSnapshotCursorBySession: remainingCursors,
+          runtimeSnapshotRequiredBySession: {
+            ...state.runtimeSnapshotRequiredBySession,
+            [invalidation.sessionId]: true,
+          },
+          permissionQueue: state.permissionQueue.filter(
+            (request) => request.sessionId !== invalidation.sessionId,
+          ),
+          askUserQueue: state.askUserQueue.filter(
+            (request) => request.sessionId !== invalidation.sessionId,
+          ),
+        };
+      }),
+
+    setPendingProviderId: (id) => set({ pendingProviderId: id }),
+    setPendingReasoningMode: (mode) => {
+      lsSet(LS_KEY_PENDING_REASONING, mode);
+      set({ pendingReasoningMode: mode });
+    },
+    setPendingPermissionMode: (mode) => {
+      lsSet(LS_KEY_PENDING_PERMISSION, mode);
+      set({ pendingPermissionMode: mode });
+    },
+    setPendingAgentMode: (mode) => {
+      lsSet(LS_KEY_PENDING_AGENT, mode);
+      set({ pendingAgentMode: mode });
+    },
+    setPendingModel: (model) => {
+      set({ pendingModel: model });
+    },
+
+    setPendingSend: (sessionId, pending, expectedGeneration) => {
+      let requestGeneration: number | undefined;
+      set((state) => {
+        if (pending) {
+          requestGeneration = ++pendingSendGenerationCounter;
+          const baseline = pendingSendRuntimeBaseline(state, sessionId, requestGeneration);
+          return {
+            pendingSendBySession: { ...state.pendingSendBySession, [sessionId]: true as const },
+            pendingSendRuntimeBaselineBySession: {
+              ...state.pendingSendRuntimeBaselineBySession,
+              [sessionId]: baseline,
+            },
+          };
+        }
+        if (!state.pendingSendBySession[sessionId]) return state;
+        if (
+          expectedGeneration !== undefined &&
+          state.pendingSendRuntimeBaselineBySession[sessionId]?.requestGeneration !==
+            expectedGeneration
+        ) {
+          return state;
+        }
+        const { [sessionId]: _drop, ...rest } = state.pendingSendBySession;
+        const { [sessionId]: _dropBaseline, ...restBaselines } =
+          state.pendingSendRuntimeBaselineBySession;
+        return {
+          pendingSendBySession: rest,
+          pendingSendRuntimeBaselineBySession: restBaselines,
+        };
+      });
+      return requestGeneration;
+    },
+
+    setRightSidebarOpen: (open) => {
+      set({ rightSidebarOpen: open });
+    },
+
+    setLeftSidebarOpen: (open) => {
+      lsSet('kodax-space.leftSidebarOpen', open ? '1' : '0');
+      set({ leftSidebarOpen: open });
+    },
+
+    setLeftSidebarWidth: (px) => {
+      const clamped = clampSidebarWidth(px, 260);
+      lsSet('kodax-space.leftSidebarWidth', String(clamped));
+      set({ leftSidebarWidth: clamped });
+    },
+
+    setRightSidebarWidth: (px) => {
+      const clamped = clampSidebarWidth(px, 320);
+      lsSet('kodax-space.rightSidebarWidth', String(clamped));
+      set({ rightSidebarWidth: clamped });
+    },
+
+    setActivePopoutKind: (kind) => set({ activePopoutKind: kind }),
+
+    setSmartPopoutEnabled: (enabled) => {
+      lsSet(LS_KEY_SMART_POPOUT, enabled ? '1' : '0');
+      set({ smartPopoutEnabled: enabled });
+    },
+
+    setMascotMode: (mode) => {
+      persistMascotMode(mode);
+      set({ mascotMode: mode, mascotEnabled: mode !== 'off' });
+    },
+
+    cycleMascotMode: () =>
+      set((state) => {
+        const mode = nextMascotMode(state.mascotMode);
+        persistMascotMode(mode);
+        return { mascotMode: mode, mascotEnabled: mode !== 'off' };
+      }),
+
+    setMascotEnabled: (enabled) => {
+      const mode: MascotMode = enabled ? 'legacy' : 'off';
+      persistMascotMode(mode);
+      set({ mascotMode: mode, mascotEnabled: enabled });
+    },
+
+    setNativeCompletionNotificationsEnabled: (enabled) => {
+      lsSet(LS_KEY_NATIVE_COMPLETION_NOTIFICATIONS, enabled ? '1' : '0');
+      set({ nativeCompletionNotificationsEnabled: enabled });
+    },
+
+    markPopoutPromoted: (sessionId, kind) =>
+      set((state) => {
+        const prev = state.promotedPopoutsBySession[sessionId];
+        // 已有同 kind 就 short-circuit,避免无谓 setState 触发 selector re-fire
+        if (prev && prev.has(kind)) return state;
+        const next = new Set(prev ?? []);
+        next.add(kind);
+        return {
+          promotedPopoutsBySession: {
+            ...state.promotedPopoutsBySession,
+            [sessionId]: next,
           },
         };
+      }),
+
+    reorderProjects: (srcCanonPath, targetCanonPath) =>
+      set((state) => {
+        if (srcCanonPath === targetCanonPath) return state;
+        // 当前激活的 active projects (canon 形态),archived 不参与排序
+        const allCanon = state.projects
+          .filter((p) => p.archived !== true)
+          .map((p) => canonProjectRootShared(p.path, IS_WIN_RENDERER));
+
+        // 现有 order 把 archived/已不存在的 canon path 过滤掉,跟新 active 列表对齐
+        const validSet = new Set(allCanon);
+        const filteredOrder = state.projectOrder.filter((p) => validSet.has(p));
+        // 不在 filteredOrder 里的 active project (新加 / 之前不在 order) 按 store 顺序追加
+        const inOrder = new Set(filteredOrder);
+        const tail = allCanon.filter((p) => !inOrder.has(p));
+        const combined = [...filteredOrder, ...tail];
+
+        // 把 src 拿出来,插到 target 之前
+        const srcIdx = combined.indexOf(srcCanonPath);
+        const tgtIdx = combined.indexOf(targetCanonPath);
+        if (srcIdx === -1 || tgtIdx === -1) return state;
+        const without = combined.filter((_, i) => i !== srcIdx);
+        // 拿掉 src 后 target 位置变化:若原 target 在 src 之后,index 不变;否则减 1
+        const newTgt = tgtIdx > srcIdx ? tgtIdx - 1 : tgtIdx;
+        const next = [...without.slice(0, newTgt), srcCanonPath, ...without.slice(newTgt)];
+        lsSet('kodax-space.projectOrder', JSON.stringify(next));
+        return { projectOrder: next };
+      }),
+
+    setArchivedProjectsExpanded: (expanded) => {
+      lsSet('kodax-space.archivedProjectsExpanded', expanded ? '1' : '0');
+      set({ archivedProjectsExpanded: expanded });
+    },
+
+    appendInputHistory: (sessionId, prompt) =>
+      set((state) => {
+        const trimmed = prompt.trim();
+        if (trimmed === '') return state;
+        const bucket = state.inputHistoryBySession[sessionId] ?? [];
+        // 去重：连续两次同 prompt 只留一条，跟 shell history 行为对齐
+        if (bucket.length > 0 && bucket[bucket.length - 1] === trimmed) return state;
+        const next = [...bucket, trimmed].slice(-200); // 上限 200 条
+        return {
+          inputHistoryBySession: { ...state.inputHistoryBySession, [sessionId]: next },
+        };
+      }),
+
+    setRecentsFilter: (filter) => set({ recentsFilter: filter }),
+    setTheme: (theme) => {
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem('kodax-space.theme', theme);
+        } catch {
+          /* SSR / private mode */
+        }
       }
-      if (!state.pendingSendBySession[sessionId]) return state;
-      if (
-        expectedGeneration !== undefined &&
-        state.pendingSendRuntimeBaselineBySession[sessionId]?.requestGeneration !==
-          expectedGeneration
-      ) {
-        return state;
+      set({ theme });
+    },
+    setVisualQuality: (q) => {
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(VISUAL_QUALITY_KEY, q);
+        } catch {
+          /* private mode */
+        }
+        applyVisualQualityToDocument(q);
       }
-      const { [sessionId]: _drop, ...rest } = state.pendingSendBySession;
-      const { [sessionId]: _dropBaseline, ...restBaselines } =
-        state.pendingSendRuntimeBaselineBySession;
-      return {
-        pendingSendBySession: rest,
-        pendingSendRuntimeBaselineBySession: restBaselines,
-      };
-    });
-    return requestGeneration;
-  },
+      set({ visualQuality: q });
+    },
+    setTranscriptView: (v) => set({ transcriptView: v }),
+    setTranscriptFontSize: (s) => set({ transcriptFontSize: s }),
 
-  setRightSidebarOpen: (open) => {
-    set({ rightSidebarOpen: open });
-  },
+    toggleSessionFlag: (sessionId, flag) =>
+      set((state) => {
+        const cur = state.sessionFlags[sessionId] ?? {};
+        return {
+          sessionFlags: setSessionFlagValue(state.sessionFlags, sessionId, flag, !cur[flag]),
+        };
+      }),
+    setSessionFlag: (sessionId, flag, value) =>
+      set((state) => {
+        const sessionFlags = setSessionFlagValue(state.sessionFlags, sessionId, flag, value);
+        if (sessionFlags === state.sessionFlags) return state;
+        return { sessionFlags };
+      }),
 
-  setLeftSidebarOpen: (open) => {
-    lsSet('kodax-space.leftSidebarOpen', open ? '1' : '0');
-    set({ leftSidebarOpen: open });
-  },
+    clearLastDiffPath: () => set({ lastDiffPath: null }),
+    setLastDiffPath: (path) => set({ lastDiffPath: path }),
 
-  setLeftSidebarWidth: (px) => {
-    const clamped = clampSidebarWidth(px, 260);
-    lsSet('kodax-space.leftSidebarWidth', String(clamped));
-    set({ leftSidebarWidth: clamped });
-  },
-
-  setRightSidebarWidth: (px) => {
-    const clamped = clampSidebarWidth(px, 320);
-    lsSet('kodax-space.rightSidebarWidth', String(clamped));
-    set({ rightSidebarWidth: clamped });
-  },
-
-  setActivePopoutKind: (kind) => set({ activePopoutKind: kind }),
-
-  setSmartPopoutEnabled: (enabled) => {
-    lsSet(LS_KEY_SMART_POPOUT, enabled ? '1' : '0');
-    set({ smartPopoutEnabled: enabled });
-  },
-
-  setMascotMode: (mode) => {
-    persistMascotMode(mode);
-    set({ mascotMode: mode, mascotEnabled: mode !== 'off' });
-  },
-
-  cycleMascotMode: () =>
-    set((state) => {
-      const mode = nextMascotMode(state.mascotMode);
-      persistMascotMode(mode);
-      return { mascotMode: mode, mascotEnabled: mode !== 'off' };
-    }),
-
-  setMascotEnabled: (enabled) => {
-    const mode: MascotMode = enabled ? 'legacy' : 'off';
-    persistMascotMode(mode);
-    set({ mascotMode: mode, mascotEnabled: enabled });
-  },
-
-  setNativeCompletionNotificationsEnabled: (enabled) => {
-    lsSet(LS_KEY_NATIVE_COMPLETION_NOTIFICATIONS, enabled ? '1' : '0');
-    set({ nativeCompletionNotificationsEnabled: enabled });
-  },
-
-  markPopoutPromoted: (sessionId, kind) =>
-    set((state) => {
-      const prev = state.promotedPopoutsBySession[sessionId];
-      // 已有同 kind 就 short-circuit,避免无谓 setState 触发 selector re-fire
-      if (prev && prev.has(kind)) return state;
-      const next = new Set(prev ?? []);
-      next.add(kind);
-      return {
-        promotedPopoutsBySession: {
-          ...state.promotedPopoutsBySession,
-          [sessionId]: next,
-        },
-      };
-    }),
-
-  reorderProjects: (srcCanonPath, targetCanonPath) =>
-    set((state) => {
-      if (srcCanonPath === targetCanonPath) return state;
-      // 当前激活的 active projects (canon 形态),archived 不参与排序
-      const allCanon = state.projects
-        .filter((p) => p.archived !== true)
-        .map((p) => canonProjectRootShared(p.path, IS_WIN_RENDERER));
-
-      // 现有 order 把 archived/已不存在的 canon path 过滤掉,跟新 active 列表对齐
-      const validSet = new Set(allCanon);
-      const filteredOrder = state.projectOrder.filter((p) => validSet.has(p));
-      // 不在 filteredOrder 里的 active project (新加 / 之前不在 order) 按 store 顺序追加
-      const inOrder = new Set(filteredOrder);
-      const tail = allCanon.filter((p) => !inOrder.has(p));
-      const combined = [...filteredOrder, ...tail];
-
-      // 把 src 拿出来,插到 target 之前
-      const srcIdx = combined.indexOf(srcCanonPath);
-      const tgtIdx = combined.indexOf(targetCanonPath);
-      if (srcIdx === -1 || tgtIdx === -1) return state;
-      const without = combined.filter((_, i) => i !== srcIdx);
-      // 拿掉 src 后 target 位置变化:若原 target 在 src 之后,index 不变;否则减 1
-      const newTgt = tgtIdx > srcIdx ? tgtIdx - 1 : tgtIdx;
-      const next = [...without.slice(0, newTgt), srcCanonPath, ...without.slice(newTgt)];
-      lsSet('kodax-space.projectOrder', JSON.stringify(next));
-      return { projectOrder: next };
-    }),
-
-  setArchivedProjectsExpanded: (expanded) => {
-    lsSet('kodax-space.archivedProjectsExpanded', expanded ? '1' : '0');
-    set({ archivedProjectsExpanded: expanded });
-  },
-
-  appendInputHistory: (sessionId, prompt) =>
-    set((state) => {
-      const trimmed = prompt.trim();
-      if (trimmed === '') return state;
-      const bucket = state.inputHistoryBySession[sessionId] ?? [];
-      // 去重：连续两次同 prompt 只留一条，跟 shell history 行为对齐
-      if (bucket.length > 0 && bucket[bucket.length - 1] === trimmed) return state;
-      const next = [...bucket, trimmed].slice(-200); // 上限 200 条
-      return {
-        inputHistoryBySession: { ...state.inputHistoryBySession, [sessionId]: next },
-      };
-    }),
-
-  setRecentsFilter: (filter) => set({ recentsFilter: filter }),
-  setTheme: (theme) => {
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem('kodax-space.theme', theme);
-      } catch {
-        /* SSR / private mode */
-      }
-    }
-    set({ theme });
-  },
-  setVisualQuality: (q) => {
-    if (typeof window !== 'undefined') {
-      try {
-        localStorage.setItem(VISUAL_QUALITY_KEY, q);
-      } catch {
-        /* private mode */
-      }
-      applyVisualQualityToDocument(q);
-    }
-    set({ visualQuality: q });
-  },
-  setTranscriptView: (v) => set({ transcriptView: v }),
-  setTranscriptFontSize: (s) => set({ transcriptFontSize: s }),
-
-  toggleSessionFlag: (sessionId, flag) =>
-    set((state) => {
-      const cur = state.sessionFlags[sessionId] ?? {};
-      return {
-        sessionFlags: setSessionFlagValue(state.sessionFlags, sessionId, flag, !cur[flag]),
-      };
-    }),
-  setSessionFlag: (sessionId, flag, value) =>
-    set((state) => {
-      const sessionFlags = setSessionFlagValue(state.sessionFlags, sessionId, flag, value);
-      if (sessionFlags === state.sessionFlags) return state;
-      return { sessionFlags };
-    }),
-
-  clearLastDiffPath: () => set({ lastDiffPath: null }),
-  setLastDiffPath: (path) => set({ lastDiffPath: path }),
-
-  resetSessionView: () => {
-    resetSessionViewLifecycles();
-    set({
-      currentSessionId: null,
-      eventsBySession: {},
-      compactingBySession: {},
-      transientArtifactsBySession: {},
-      userMessagesBySession: {},
-      queuedUserMessagesBySession: {},
-      localNoticesBySession: {},
-      workflowNoticesBySession: {},
-      permissionQueue: [],
-      askUserQueue: [],
-      workBudgetBySession: {},
-      harnessProfileBySession: {},
-      tokensBySession: {},
-      contextBudgetBySession: {},
-      providerCacheDiagnosticBySession: {},
-      todoListBySession: {},
-      managedTaskStatusBySession: {},
-      agentActorSnapshotBySession: {},
-      runtimeSnapshotCursorBySession: {},
-      sessions: [],
-      lastDiffPath: null,
-      pendingToolPaths: {},
-    });
-  },
-
-  resetSessionMessages: (sessionId) => {
-    clearHistoryLiveBaseline(sessionId);
-    set((state) => {
-      // 同步剥掉本 session 在 pendingToolPaths 中暂存的 tool_id → path 记录
-      // 否则 /clear 后若一个迟来的 tool_result 带相同 toolId，会触发 FilePanel
-      // 跳到一个用户刚清掉的 diff（F031+F009 交互回归 — reviewer batch HIGH-1）。
-      const events = state.eventsBySession[sessionId] ?? [];
-      const toolIdsInThisSession = new Set<string>();
-      for (const ev of events) {
-        if (ev.kind === 'tool_start') toolIdsInThisSession.add(ev.toolId);
-      }
-      const nextPending: Record<string, string> = {};
-      for (const [tid, path] of Object.entries(state.pendingToolPaths)) {
-        if (!toolIdsInThisSession.has(tid)) nextPending[tid] = path;
-      }
-      return {
-        eventsBySession: { ...state.eventsBySession, [sessionId]: [] },
-        transientArtifactsBySession: { ...state.transientArtifactsBySession, [sessionId]: [] },
-        userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: [] },
-        queuedUserMessagesBySession: { ...state.queuedUserMessagesBySession, [sessionId]: [] },
-        localNoticesBySession: { ...state.localNoticesBySession, [sessionId]: [] },
-        workflowNoticesBySession: { ...state.workflowNoticesBySession, [sessionId]: [] },
-        contextBudgetBySession: {
-          ...state.contextBudgetBySession,
-          [sessionId]: undefined,
-        },
-        providerCacheDiagnosticBySession: {
-          ...state.providerCacheDiagnosticBySession,
-          [sessionId]: undefined,
-        },
-        runtimeSnapshotCursorBySession: {
-          ...state.runtimeSnapshotCursorBySession,
-          [sessionId]: undefined,
-        },
-        pendingToolPaths: nextPending,
-      };
-    });
-    persistLocalNoticeReplace(sessionId, []);
-  },
-
-  // FEATURE_033: fork = clone source buffer through the selected absolute turn.
-  // Disk is authoritative, but the optimistic renderer copy must use the same cut or the child
-  // briefly shows source-only turns that do not exist in its persisted transcript.
-  //
-  // **pendingToolPaths 不复制到 fork**（reviewer batch HIGH-2 的 follow-up）：
-  // toolId 是 per-invocation UUID 全局唯一，永不复用——source 的 in-flight 工具 tool_result
-  // 会路由回 source session（不是 fork），让 source 的 pending 自己清。fork 的"pending tool"
-  // 概念只对 fork 自己产生的新 tool_start 才有意义。所以 fork 启动时 pendingToolPaths 自然为空。
-  forkSessionBuffers: (srcSessionId, newSessionId, forkPointTurnIdx) => {
-    let copiedLocalNotices: readonly LocalNoticeMessage[] | null = null;
-    set((state) => {
-      const srcEvents = state.eventsBySession[srcSessionId] ?? [];
-      const srcMsgs = state.userMessagesBySession[srcSessionId] ?? [];
-      const srcLocalNotices = state.localNoticesBySession[srcSessionId] ?? [];
-      const srcNotices = state.workflowNoticesBySession[srcSessionId] ?? [];
-      const cut = transcriptCutForSelectorTurn(srcMsgs, srcEvents, forkPointTurnIdx);
-      // Never populate a child with a demonstrably different branch when the requested selector
-      // is absent from the bounded renderer window. The authoritative child history can hydrate it.
-      if (!cut) return state;
-      // Every row before the fork boundary is inherited history in the child, even when that row
-      // was still a live renderer projection in the source. The successful main-process fork has
-      // already made this prefix durable for the child; retaining the source's live classification
-      // would append the optimistic clone again when canonical child history hydrates.
-      const copiedMsgs = srcMsgs
-        .slice(0, cut.userEnd)
-        .map((message) => ({ ...message, restoredFromHistory: true as const }));
-      const copiedEvents = srcEvents.slice(0, cut.eventEnd);
-      const firstRemovedSentAt = srcMsgs[cut.userEnd]?.sentAt ?? Number.POSITIVE_INFINITY;
-      const copiedNotices = srcLocalNotices.filter((notice) => notice.sentAt < firstRemovedSentAt);
-      const copiedWorkflowNotices = srcNotices.filter(
-        (notice) => notice.sentAt < firstRemovedSentAt,
-      );
-      copiedLocalNotices = copiedNotices;
-      // events 里的 sessionId 字段是 source 的——为新 session 重建 events 时需要改 sessionId，
-      // 否则 ConversationStreamV2 按 sessionId 过滤会读不到。这里直接做映射。
-      const remapped = copiedEvents.map((event) => {
-        const copy = { ...event, sessionId: newSessionId } as SessionEvent;
-        // History/live ownership is tracked by object identity. All optimistic fork-prefix events
-        // are inherited history in the child, regardless of whether they were restored or live in
-        // the source; otherwise canonical hydration can replay the copied prefix as child-live.
-        restoredHistoryEvents.add(copy);
-        return copy;
+    resetSessionView: () => {
+      resetSessionViewLifecycles();
+      set({
+        currentSessionId: null,
+        eventsBySession: {},
+        compactingBySession: {},
+        transientArtifactsBySession: {},
+        userMessagesBySession: {},
+        queuedUserMessagesBySession: {},
+        localNoticesBySession: {},
+        workflowNoticesBySession: {},
+        permissionQueue: [],
+        askUserQueue: [],
+        workBudgetBySession: {},
+        harnessProfileBySession: {},
+        tokensBySession: {},
+        contextBudgetBySession: {},
+        providerCacheDiagnosticBySession: {},
+        todoListBySession: {},
+        managedTaskStatusBySession: {},
+        agentActorSnapshotBySession: {},
+        runtimeSnapshotCursorBySession: {},
+        sessions: [],
+        lastDiffPath: null,
+        pendingToolPaths: {},
       });
-      return {
-        eventsBySession: { ...state.eventsBySession, [newSessionId]: remapped },
-        transientArtifactsBySession: {
-          ...state.transientArtifactsBySession,
-          [newSessionId]: collectTransientArtifactsFromEvents(remapped),
-        },
-        userMessagesBySession: { ...state.userMessagesBySession, [newSessionId]: copiedMsgs },
-        queuedUserMessagesBySession: {
-          ...state.queuedUserMessagesBySession,
-          [newSessionId]: [],
-        },
-        localNoticesBySession: {
-          ...state.localNoticesBySession,
-          [newSessionId]: copiedNotices,
-        },
-        workflowNoticesBySession: {
-          ...state.workflowNoticesBySession,
-          [newSessionId]: copiedWorkflowNotices,
-        },
-      };
-    });
-    if (copiedLocalNotices !== null) persistLocalNoticeReplace(newSessionId, copiedLocalNotices);
-  },
+    },
 
-  // FEATURE_033 rewind: 截断 userMessages 与 events buffer 到 rewindPastTurnIdx (含)。
-  //   - userMessages 保留前 idx+1 条
-  //   - events 按 session_complete / session_error 分 turn：保留前 idx+1 个 turn 的全部 events
-  //   - idx >= 现有 turn 数 → silent no-op (renderer 校验，main 不持有 events)
-  //
-  // **同时清空 derived state maps**（reviewer F033 HIGH-1）：
-  // todoList / workBudget / managedTaskStatus / harnessProfile 都是 per-session 派生状态，
-  // 由 appendEvent 累积。rewind 跨过 turn 边界后，这些值不再对应剩余 events——若不重置会
-  // 在 UI 上显示 stale 数据（如已被截掉那轮的 todo list、过高的 work budget 计数）。
-  // 重置后用户继续 send 时自然由新 events 重新填充。
-  rewindSessionBuffers: (sessionId, rewindPastTurnIdx) => {
-    clearHistoryLiveBaseline(sessionId);
-    set((state) => {
-      const msgs = state.userMessagesBySession[sessionId] ?? [];
-      const localNotices = state.localNoticesBySession[sessionId] ?? [];
-      const notices = state.workflowNoticesBySession[sessionId] ?? [];
-      const events = state.eventsBySession[sessionId] ?? [];
-      const cut = transcriptCutForSelectorTurn(msgs, events, rewindPastTurnIdx);
-      // selector idx 不在当前可见窗口 → 啥都不做
-      if (!cut) return state;
-      const newMsgs = msgs.slice(0, cut.userEnd);
-      const firstRemovedSentAt = msgs[cut.userEnd]?.sentAt ?? Number.POSITIVE_INFINITY;
-      const newLocalNotices = localNotices.filter((notice) => notice.sentAt < firstRemovedSentAt);
-      const newNotices = notices.filter((notice) => notice.sentAt < firstRemovedSentAt);
-      // A user with historyNoAssistantSegment does not consume an event segment. Use the same
-      // user→event projection as compose/history reconciliation instead of a raw user-array index.
-      const sliceEnd = cut.eventEnd;
-      // 同步清掉 derived state（不区分 turn 边界——简单一致，让 events 重新驱动）
-      const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
-      const { [sessionId]: _bud, ...restBudgets } = state.workBudgetBySession;
-      const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
-      const { [sessionId]: _actors, ...restActorSnapshots } = state.agentActorSnapshotBySession;
-      const { [sessionId]: _prof, ...restProfiles } = state.harnessProfileBySession;
-      const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
-      const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
-      const { [sessionId]: _providerCache, ...restProviderCacheDiagnostics } =
-        state.providerCacheDiagnosticBySession;
-      return {
-        userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: newMsgs },
-        queuedUserMessagesBySession: { ...state.queuedUserMessagesBySession, [sessionId]: [] },
-        localNoticesBySession: {
-          ...state.localNoticesBySession,
-          [sessionId]: newLocalNotices,
-        },
-        workflowNoticesBySession: {
-          ...state.workflowNoticesBySession,
-          [sessionId]: newNotices,
-        },
-        eventsBySession: { ...state.eventsBySession, [sessionId]: events.slice(0, sliceEnd) },
-        transientArtifactsBySession: {
-          ...state.transientArtifactsBySession,
-          [sessionId]: collectTransientArtifactsFromEvents(events.slice(0, sliceEnd)),
-        },
-        todoListBySession: restTodos,
-        workBudgetBySession: restBudgets,
-        managedTaskStatusBySession: restMts,
-        agentActorSnapshotBySession: restActorSnapshots,
-        harnessProfileBySession: restProfiles,
-        tokensBySession: restTokens,
-        contextBudgetBySession: restContextBudgets,
-        providerCacheDiagnosticBySession: restProviderCacheDiagnostics,
-      };
-    });
-  },
-}));
+    resetSessionMessages: (sessionId) => {
+      clearLiveTranscriptTail(sessionId);
+      set((state) => {
+        // 同步剥掉本 session 在 pendingToolPaths 中暂存的 tool_id → path 记录
+        // 否则 /clear 后若一个迟来的 tool_result 带相同 toolId，会触发 FilePanel
+        // 跳到一个用户刚清掉的 diff（F031+F009 交互回归 — reviewer batch HIGH-1）。
+        const events = state.eventsBySession[sessionId] ?? [];
+        const toolIdsInThisSession = new Set<string>();
+        for (const ev of events) {
+          if (ev.kind === 'tool_start') toolIdsInThisSession.add(ev.toolId);
+        }
+        const nextPending: Record<string, string> = {};
+        for (const [tid, path] of Object.entries(state.pendingToolPaths)) {
+          if (!toolIdsInThisSession.has(tid)) nextPending[tid] = path;
+        }
+        return {
+          eventsBySession: { ...state.eventsBySession, [sessionId]: [] },
+          transientArtifactsBySession: { ...state.transientArtifactsBySession, [sessionId]: [] },
+          userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: [] },
+          queuedUserMessagesBySession: { ...state.queuedUserMessagesBySession, [sessionId]: [] },
+          localNoticesBySession: { ...state.localNoticesBySession, [sessionId]: [] },
+          workflowNoticesBySession: { ...state.workflowNoticesBySession, [sessionId]: [] },
+          contextBudgetBySession: {
+            ...state.contextBudgetBySession,
+            [sessionId]: undefined,
+          },
+          providerCacheDiagnosticBySession: {
+            ...state.providerCacheDiagnosticBySession,
+            [sessionId]: undefined,
+          },
+          runtimeSnapshotCursorBySession: {
+            ...state.runtimeSnapshotCursorBySession,
+            [sessionId]: undefined,
+          },
+          pendingToolPaths: nextPending,
+        };
+      });
+      persistLocalNoticeReplace(sessionId, []);
+    },
+
+    // FEATURE_033: fork = clone source buffer through the selected absolute turn.
+    // Disk is authoritative, but the optimistic renderer copy must use the same cut or the child
+    // briefly shows source-only turns that do not exist in its persisted transcript.
+    //
+    // **pendingToolPaths 不复制到 fork**（reviewer batch HIGH-2 的 follow-up）：
+    // toolId 是 per-invocation UUID 全局唯一，永不复用——source 的 in-flight 工具 tool_result
+    // 会路由回 source session（不是 fork），让 source 的 pending 自己清。fork 的"pending tool"
+    // 概念只对 fork 自己产生的新 tool_start 才有意义。所以 fork 启动时 pendingToolPaths 自然为空。
+    forkSessionBuffers: (srcSessionId, newSessionId, forkPointTurnIdx) => {
+      let copiedLocalNotices: readonly LocalNoticeMessage[] | null = null;
+      set((state) => {
+        const srcEvents = state.eventsBySession[srcSessionId] ?? [];
+        const srcMsgs = state.userMessagesBySession[srcSessionId] ?? [];
+        const srcLocalNotices = state.localNoticesBySession[srcSessionId] ?? [];
+        const srcNotices = state.workflowNoticesBySession[srcSessionId] ?? [];
+        const cut = transcriptCutForSelectorTurn(srcMsgs, srcEvents, forkPointTurnIdx);
+        // Never populate a child with a demonstrably different branch when the requested selector
+        // is absent from the bounded renderer window. The authoritative child history can hydrate it.
+        if (!cut) return state;
+        // Every row before the fork boundary is inherited history in the child, even when that row
+        // was still a live renderer projection in the source. The successful main-process fork has
+        // already made this prefix durable for the child; retaining the source's live classification
+        // would append the optimistic clone again when canonical child history hydrates.
+        const copiedMsgs = srcMsgs
+          .slice(0, cut.userEnd)
+          .map((message) => ({ ...message, restoredFromHistory: true as const }));
+        const copiedEvents = srcEvents.slice(0, cut.eventEnd);
+        const firstRemovedSentAt = srcMsgs[cut.userEnd]?.sentAt ?? Number.POSITIVE_INFINITY;
+        const copiedNotices = srcLocalNotices.filter(
+          (notice) => notice.sentAt < firstRemovedSentAt,
+        );
+        const copiedWorkflowNotices = srcNotices.filter(
+          (notice) => notice.sentAt < firstRemovedSentAt,
+        );
+        copiedLocalNotices = copiedNotices;
+        // events 里的 sessionId 字段是 source 的——为新 session 重建 events 时需要改 sessionId，
+        // 否则 ConversationStreamV2 按 sessionId 过滤会读不到。这里直接做映射。
+        const remapped = copiedEvents.map((event) => {
+          const copy = { ...event, sessionId: newSessionId } as SessionEvent;
+          // History/live ownership is tracked by object identity. All optimistic fork-prefix events
+          // are inherited history in the child, regardless of whether they were restored or live in
+          // the source; otherwise canonical hydration can replay the copied prefix as child-live.
+          restoredHistoryEvents.add(copy);
+          return copy;
+        });
+        clearLiveTranscriptTail(newSessionId);
+        canonicalPageBySession.set(newSessionId, {
+          userMessages: copiedMsgs,
+          events: remapped,
+          includeLiveProjection: true,
+          windowSize: copiedMsgs.length + remapped.length,
+          dataChanged: false,
+        });
+        liveTailBySession.set(newSessionId, { userMessages: [], events: [] });
+        return {
+          eventsBySession: { ...state.eventsBySession, [newSessionId]: remapped },
+          transientArtifactsBySession: {
+            ...state.transientArtifactsBySession,
+            [newSessionId]: collectTransientArtifactsFromEvents(remapped),
+          },
+          userMessagesBySession: { ...state.userMessagesBySession, [newSessionId]: copiedMsgs },
+          queuedUserMessagesBySession: {
+            ...state.queuedUserMessagesBySession,
+            [newSessionId]: [],
+          },
+          localNoticesBySession: {
+            ...state.localNoticesBySession,
+            [newSessionId]: copiedNotices,
+          },
+          workflowNoticesBySession: {
+            ...state.workflowNoticesBySession,
+            [newSessionId]: copiedWorkflowNotices,
+          },
+        };
+      });
+      if (copiedLocalNotices !== null) persistLocalNoticeReplace(newSessionId, copiedLocalNotices);
+    },
+
+    // FEATURE_033 rewind: 截断 userMessages 与 events buffer 到 rewindPastTurnIdx (含)。
+    //   - userMessages 保留前 idx+1 条
+    //   - events 按 session_complete / session_error 分 turn：保留前 idx+1 个 turn 的全部 events
+    //   - idx >= 现有 turn 数 → silent no-op (renderer 校验，main 不持有 events)
+    //
+    // **同时清空 derived state maps**（reviewer F033 HIGH-1）：
+    // todoList / workBudget / managedTaskStatus / harnessProfile 都是 per-session 派生状态，
+    // 由 appendEvent 累积。rewind 跨过 turn 边界后，这些值不再对应剩余 events——若不重置会
+    // 在 UI 上显示 stale 数据（如已被截掉那轮的 todo list、过高的 work budget 计数）。
+    // 重置后用户继续 send 时自然由新 events 重新填充。
+    rewindSessionBuffers: (sessionId, rewindPastTurnIdx) => {
+      set((state) => {
+        const msgs = state.userMessagesBySession[sessionId] ?? [];
+        const localNotices = state.localNoticesBySession[sessionId] ?? [];
+        const notices = state.workflowNoticesBySession[sessionId] ?? [];
+        const events = state.eventsBySession[sessionId] ?? [];
+        const cut = transcriptCutForSelectorTurn(msgs, events, rewindPastTurnIdx);
+        // selector idx 不在当前可见窗口 → 啥都不做
+        if (!cut) return state;
+        const newMsgs = msgs.slice(0, cut.userEnd);
+        retainSelectedTranscriptSources(sessionId, newMsgs);
+        const firstRemovedSentAt = msgs[cut.userEnd]?.sentAt ?? Number.POSITIVE_INFINITY;
+        const newLocalNotices = localNotices.filter((notice) => notice.sentAt < firstRemovedSentAt);
+        const newNotices = notices.filter((notice) => notice.sentAt < firstRemovedSentAt);
+        // A user with historyNoAssistantSegment does not consume an event segment. Use the same
+        // user→event projection as compose/history reconciliation instead of a raw user-array index.
+        const sliceEnd = cut.eventEnd;
+        // 同步清掉 derived state（不区分 turn 边界——简单一致，让 events 重新驱动）
+        const { [sessionId]: _todo, ...restTodos } = state.todoListBySession;
+        const { [sessionId]: _bud, ...restBudgets } = state.workBudgetBySession;
+        const { [sessionId]: _mts, ...restMts } = state.managedTaskStatusBySession;
+        const { [sessionId]: _actors, ...restActorSnapshots } = state.agentActorSnapshotBySession;
+        const { [sessionId]: _prof, ...restProfiles } = state.harnessProfileBySession;
+        const { [sessionId]: _tok, ...restTokens } = state.tokensBySession;
+        const { [sessionId]: _contextBudget, ...restContextBudgets } = state.contextBudgetBySession;
+        const { [sessionId]: _providerCache, ...restProviderCacheDiagnostics } =
+          state.providerCacheDiagnosticBySession;
+        return {
+          userMessagesBySession: { ...state.userMessagesBySession, [sessionId]: newMsgs },
+          queuedUserMessagesBySession: { ...state.queuedUserMessagesBySession, [sessionId]: [] },
+          localNoticesBySession: {
+            ...state.localNoticesBySession,
+            [sessionId]: newLocalNotices,
+          },
+          workflowNoticesBySession: {
+            ...state.workflowNoticesBySession,
+            [sessionId]: newNotices,
+          },
+          eventsBySession: { ...state.eventsBySession, [sessionId]: events.slice(0, sliceEnd) },
+          transientArtifactsBySession: {
+            ...state.transientArtifactsBySession,
+            [sessionId]: collectTransientArtifactsFromEvents(events.slice(0, sliceEnd)),
+          },
+          todoListBySession: restTodos,
+          workBudgetBySession: restBudgets,
+          managedTaskStatusBySession: restMts,
+          agentActorSnapshotBySession: restActorSnapshots,
+          harnessProfileBySession: restProfiles,
+          tokensBySession: restTokens,
+          contextBudgetBySession: restContextBudgets,
+          providerCacheDiagnosticBySession: restProviderCacheDiagnostics,
+        };
+      });
+    },
+  };
+});
+
+function openLiveProjectionCoversDurablePrefix(
+  durable: TranscriptTurnSnapshot,
+  live: TranscriptTurnSnapshot,
+): boolean {
+  if (live.closed) return false;
+  const durableSequence = transcriptContentSequence(durable);
+  const liveSequence = transcriptContentSequence(live);
+  if (contentProjectionIsPrefix(durableSequence, liveSequence)) return true;
+  // A notice can split one text stream into two visible runs even though the other projection stores
+  // the same prefix as one assistant entry. Matching the same-kind content stream remains exact;
+  // notice positions are reconciled separately by content offset.
+  return contentProjectionIsPrefix(
+    collapseAdjacentTextContent(durableSequence),
+    collapseAdjacentTextContent(liveSequence),
+  );
+}
+
+function durableProjectionCoversOpenLiveContent(
+  durable: TranscriptTurnSnapshot,
+  live: TranscriptTurnSnapshot,
+): boolean {
+  let durableIndex = 0;
+  return live.visibleSequence.every((item, liveIndex) => {
+    const finalCumulativeText =
+      liveIndex === live.visibleSequence.length - 1 &&
+      (item.startsWith('thinking:') || item.startsWith('text:'));
+    while (durableIndex < durable.visibleSequence.length) {
+      const candidate = durable.visibleSequence[durableIndex++]!;
+      if (finalCumulativeText ? candidate.startsWith(item) : candidate === item) return true;
+    }
+    return false;
+  });
+}
+
+function durableProjectionCoversMergedContent(
+  durable: TranscriptTurnSnapshot,
+  mergedEvents: readonly SessionEvent[],
+): boolean {
+  const durableSequence = transcriptContentSequence(durable);
+  const mergedSequence = transcriptSegmentSemantic(mergedEvents).visibleSequence.filter(
+    (item) =>
+      item.startsWith('thinking:') ||
+      item.startsWith('text:') ||
+      item.startsWith('tool-start:') ||
+      item.startsWith('tool-result:'),
+  );
+  return (
+    durableSequence.length === mergedSequence.length &&
+    durableSequence.every((item, index) => item === mergedSequence[index])
+  );
+}

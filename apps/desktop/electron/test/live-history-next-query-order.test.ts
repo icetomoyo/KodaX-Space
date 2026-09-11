@@ -521,7 +521,11 @@ test('a tool-shaped latest turn keeps its canonical answer paired with its own q
 
   const transcript = visibleTranscript();
   const latestQueryCount = transcript.filter((line) => line === 'user:latest query').length;
-  assert.equal(latestQueryCount, 1, `the latest query must render exactly once: ${JSON.stringify(transcript)}`);
+  assert.equal(
+    latestQueryCount,
+    1,
+    `the latest query must render exactly once: ${JSON.stringify(transcript)}`,
+  );
   const canonicalAnswerIndex = transcript.indexOf('assistant:six diagrams inserted');
   const latestQueryIndex = transcript.indexOf('user:latest query');
   const firstAnswerIndex = transcript.indexOf('assistant:first answer');
@@ -535,7 +539,7 @@ test('a tool-shaped latest turn keeps its canonical answer paired with its own q
   );
 });
 
-test('a live turn matched by a later canonical row folds once while an older live turn relocates', () => {
+test('a later canonical match preserves live admission order despite contradictory wall clocks', () => {
   const store = useAppStore.getState();
   appendCompletedLiveTurn({
     prompt: 'B query',
@@ -613,12 +617,17 @@ test('a live turn matched by a later canonical row folds once while an older liv
 
   const transcript = visibleTranscript();
   const bQueryCount = transcript.filter((line) => line === 'user:B query').length;
-  assert.equal(bQueryCount, 1, `the matched live turn must fold, not duplicate: ${JSON.stringify(transcript)}`);
+  assert.equal(
+    bQueryCount,
+    1,
+    `the matched live turn must fold, not duplicate: ${JSON.stringify(transcript)}`,
+  );
   const order = transcript.filter((line) => line.startsWith('user:'));
   assert.deepEqual(order, [
-    'user:old query',
     'user:A query',
     'user:B query',
+    // This input was admitted after B. Its wall clock cannot move it before B or A.
+    'user:old query',
   ]);
   assert.ok(
     transcript.some((line) => line.startsWith('assistant:B canonical answer')),
@@ -626,7 +635,7 @@ test('a live turn matched by a later canonical row folds once while an older liv
   );
 });
 
-test('a second older page keeps the relocated live order', () => {
+test('a second older page preserves canonical order and the independent unmatched live tail', () => {
   const store = useAppStore.getState();
   appendCompletedLiveTurn({
     prompt: 'old query',
@@ -731,10 +740,11 @@ test('a second older page keeps the relocated live order', () => {
   assert.deepEqual(visibleTranscript(), [
     'user:Z query',
     'assistant:Z canonical answer',
-    'user:old query',
-    'assistant:old answer',
     'user:A query',
     'assistant:A canonical answer',
+    // No identity relates these live inputs to A. Preserve the source orders; clocks are footer data.
+    'user:old query',
+    'assistant:old answer',
     'user:new query',
     'assistant:new answer',
   ]);
