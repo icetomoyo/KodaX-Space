@@ -6,7 +6,7 @@
 
 > 当前发布精确锁定 KodaX `0.7.95`，要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。同一 boot 的临时 `unconfirmed-owner` 会自动重试；Space 不要求用户删除标记，且只在缺少安全证明时阻断有竞争风险的 sandbox/owner 操作。
 >
-> 当前源码候选为 Space `0.1.46-alpha.9`，精确锁定 KodaX `0.7.96-beta.4`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
+> 当前源码候选为 Space `0.1.46-alpha.10`，精确锁定 KodaX `0.7.96-beta.6`，并要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5`、`sharedSessionSettings:2`、`providerCredentialBroker:2` 与 `effectiveConfig:1`。
 > Windows 既有安装首次迁移可能需要用户在 Settings → Runtime 明确执行一次 Sandbox Setup；
 > 普通启动、Refresh 和工具调用不会隐式提升权限。正式发布版的 0.7.95 说明保留为历史事实。
 >
@@ -262,7 +262,7 @@ flowchart LR
 
 多个受信任的 KodaX 客户端可以观察同一 Coder 会话；Space 会同步 provider/model/effort/mode 等共享设置，并通过 Runtime 处理权限 grant、AskUser、队列、Workflow 观察/暂停/恢复/停止、Learning Center 命令、MCP 工具发现/reload 和已配置 External Agent 的 Actor/Turn。当前发布版要求 `conversationHistory:2`、`runtimeExitSettlement:2`、`sandboxRuntime:5`、`crashOutcomeModel:2`、`daemonOrphanExit:1`、`managedRunDurability:1`、`actorSettlementConvergence:2`、`sessionEventJournal:1`、`liveOutputSegments:1`、`integrationConfigResilience:1`、`runtimeAutoModeGuardrail:4`、`skillLearningLoop:1`、`interruptInput:1`、`actorControlPlane:1`、`contextCompaction:3`、`transcriptPaging:1` 与 `transcriptSearch:1`；Runtime 不可用或能力不足时 Coder fail closed，不会在背后重放到 inline owner。`conversationHistory:2` 下 Space 只消费 SDK 返回的 canonical conversation 顺序与稳定身份，不按时间戳重排、不按正文猜测去重；`sandboxRuntime:5` 的过期 coordinator ticket 与已记录释放事实收敛由 SDK 独占，普通权限执行仍须取得同一个 filesystem-effect fence；`crashOutcomeModel:2` 要求 canonical Session 提交先于 managed terminal。Space 不删除锁、不按错误文本选择 native shell，也不把 Stop unknown 强制改成 idle。Partner 不受 daemon 可用性影响。
 
-Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少必需契约的长驻 daemon 会被拒绝并提示安全重启。当前源码要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5` 与 `sharedSessionSettings:2`。Alpha.6/alpha.7 的 Windows native host 使用 protocol/setup generation 10：宽 profile ACL 只在显式 setup 中收敛，逐命令 Temp 相互隔离，64 端口范围支持最多 32 个精确网络 authority，explicit doctor/setup 必须证明一次无副作用的 target start/exit。空闲旧 daemon 可安全替换，繁忙、未知或更新版本保持不动。`sessionEventJournal:1` 仍按 `(sessionId, journalEpoch, seq)` 隔离 observation；compaction v3 与 revision-bound page/chunk/search 继续保护 root/child 历史边界。
+Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 npm 包版本：缺少必需契约的长驻 daemon 会被拒绝并提示安全重启。当前源码要求 `sandboxRuntime:11`、`runtimeAutoModeGuardrail:5` 与 `sharedSessionSettings:2`。当前源码的 Windows native host 使用 wire protocol 10 与 setup generation 11（beta.5 对齐 Codex 的 profile/SSH 依赖 ACL 排除，旧 generation-10 SSH ACE 清理只在 setup 中进行）：宽 profile ACL 只在显式 setup 中收敛，逐命令 Temp 相互隔离，64 端口范围支持最多 32 个精确网络 authority，explicit doctor/setup 必须证明一次无副作用的 target start/exit。空闲旧 daemon 可安全替换，繁忙、未知或更新版本保持不动。`sessionEventJournal:1` 仍按 `(sessionId, journalEpoch, seq)` 隔离 observation；compaction v3 与 revision-bound page/chunk/search 继续保护 root/child 历史边界。
 
 权限档位统一为 Plan、Edits、Auto[LLM]、Full Access。旧 `auto-in-project`、Auto Rules、engine、timeout 和 speculative window 只作为迁移输入，归一为 Auto[LLM] 后不再持久化或暴露。Auto 先尝试 sandbox；只有可证明命令尚未启动的宿主边界才进入 Exec Policy 与固定 LLM reviewer，已启动或结果不确定的命令绝不重放。Full Access 跳过 sandbox 与 Auto review，直接在宿主执行，但管理员和用户 Exec Policy 仍然生效。沙箱默认继承宿主环境，固定执行控制变量继续禁止；旧 `sandbox.envPass` 已失效，Space 不再编辑或投影它。
 
@@ -276,7 +276,7 @@ Daemon 模式还会核对 daemon 的实际能力，而不只看已经安装的 n
 
 beta.3 的安装包同时携带 SDK 内置的 Windows WFP 探针端口分配修复。Space 直接复制该运行库及其依赖，构建时跳过安装脚本也不会丢失修复；Windows native protocol/setup generation 和公开能力版本均不变。
 
-当前源码候选继续接入 KodaX 0.7.96-beta.4 的凭据安全
+当前源码候选继续接入 KodaX 0.7.96 beta 线的凭据安全
 `RuntimeFailureDetail`。真实 Run 失败时，错误条优先显示 SDK 固定且有界的
 `safeMessage`；展开“Runtime 失败详情”可以查看稳定 KodaX 错误码、失败阶段、
 Run/Request ID、HTTP 状态、上游短错误码、建议等待时间和上下文容量数据（仅在
@@ -438,7 +438,7 @@ Settings 有四个主标签：Preferences、Providers、Runtime、License。
 
 内置 Provider 和自定义 OpenAI-compatible/Anthropic-compatible Provider 都从 Providers 管理。环境变量也可提供凭据；UI 会尽量说明凭据来源。自定义 Provider 的 Base URL、协议和模型名必须与服务端实际兼容。如果端点模型确实支持视觉输入，可显式勾选“启用图片输入”；KodaX 会据此放行并转发图片 Artifact，但不会替你验证上游模型的真实视觉能力，纯文本模型不要启用。
 
-当前版本还会从 KodaX 目录展示 DeepSeek 的视觉专用模型 `deepseek-v4-flash-vision-exp`，以及 `zhipu`、`zhipu-coding`、`zai-coding` 三条路由上的多模态 `glm-5.3-flash`。DeepSeek 的 `deepseek-v4-flash` / `deepseek-v4-pro` 仍是纯文本；GLM Flash 的目录元数据为 1M 上下文、131072 最大输出且不能关闭思考。已有默认模型不因此改变。
+v0.1.46-alpha.10 起，KodaX 目录中的 DeepSeek 默认模型为 `deepseek-flash`（DeepSeek-V4.1-Flash，1M 上下文、384000 最大输出、原生图片输入，走官方 Anthropic 兼容端点），`deepseek-v4-pro` 保持纯文本可选；`zhipu`、`zhipu-coding`、`zai-coding` 三条路由上仍提供多模态 `glm-5.3-flash`。GLM Flash 的目录元数据为 1M 上下文、131072 最大输出且不能关闭思考。除 DeepSeek 的默认模型更名外，已有默认模型不因此改变。
 
 KodaX 0.7.77 会为确认兼容的内置 Provider 建立稳定的提示词缓存路由：同一逻辑 Session 在连续 run、retry、fallback、resume 和 compaction 后保持稳定，子 Agent 按其规范路径隔离。自定义兼容端点默认不启用；只有确认网关接受相应协议字段时，才在 Provider 表单勾选“启用稳定的提示词缓存路由”。严格兼容网关可能拒绝未知字段，因此这个开关不会自动推断。
 
@@ -480,6 +480,8 @@ Compact 只缩减下一次模型请求使用的活动上下文，不等于删除
 v0.1.46-alpha.8 的手动 `/compact` 会立即显示命令，等待回显及已在途的失败补写完成后再开始压缩，以避免同一会话的读写锁冲突。自动压缩仍由 Runtime 管理。beta.3 修复了凭据连接被替代后旧连接不退出的问题，Space 可通过现有重连流程恢复；回显持久化失败仍会显示原有提示。`Request timed out` 表示 Provider 请求超时，不能据此判断上下文超容或确定是网关故障，应结合端点状态排查。
 
 v0.1.46-alpha.9 起使用 KodaX 0.7.96-beta.4：手动与自动压缩共用同一条摘要思考策略（与主 turn 的推理强度相互独立，默认在支持的模型上关闭摘要思考）；成功的压缩会记录有界的摘要请求指标与持久化提交耗时，Space 只在上下文量规的最近压缩信息中显示摘要请求次数——map/reduce 展开为多次摘要调用时可见，单次调用不显示。
+
+v0.1.46-alpha.10 起使用 KodaX 0.7.96-beta.6：内置 deepseek 别名改走 DeepSeek 官方 Anthropic 兼容端点（api.deepseek.com/anthropic），默认模型为 `deepseek-flash`（DeepSeek-V4.1-Flash，1M 上下文、384000 最大输出、原生图片输入）；纯文本的 `deepseek-v4-pro` 仍可在 /model 中选择，视觉实验模型 `deepseek-v4-flash-vision-exp` 从目录移除（其图片能力并入 deepseek-flash）。恢复的会话历史重放到严格端点不再报 400：被打断的孤儿工具调用会以显式中断标记补答，而不是悄悄丢弃。Windows 沙箱 setup generation 升到 11，profile 与 SSH 依赖的 ACL 排除对齐 Codex 语义；公开能力版本不变。
 
 底部“上下文窗口”显示压缩影响的当前主 Agent 活动输入；“会话 Token 用量”是已经发生的根/子 Agent Provider 调用累计值，不会因 Compact 回退。两者的完整区别见[上下文窗口与会话 Token 用量](#52-上下文窗口与会话-token-用量)。
 

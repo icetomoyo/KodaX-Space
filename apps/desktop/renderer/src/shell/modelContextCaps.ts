@@ -12,7 +12,8 @@
 
 type CapRule = { match: RegExp; cap: number };
 
-// 数值与 SDK 0.7.96-beta.4 provider-capabilities.json 对齐（beta.4 与 beta.3 逐字节一致，2026-09-08 复核）。
+// 数值与 SDK 0.7.96-beta.6 provider-capabilities.json 对齐（beta.5 把 deepseek 默认模型改为
+// deepseek-flash、上下文窗口维持 1M，2026-09-11 复核）。
 // **过报(over-claim)是危险方向**——会让用户误以为"还有大把空间"却提前压缩；这里逐条按 SDK 真值订正。
 // 顺序敏感：更具体的规则必须在通配前面（first-match wins）。
 const RULES: readonly CapRule[] = [

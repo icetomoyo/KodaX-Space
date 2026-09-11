@@ -1179,7 +1179,7 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   /** Opt-in lifecycle policy for Space-managed daemons. */
   readonly daemonOrphanExitMs?: number;
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
-    /** Sandbox-first Auto and Windows setup-generation-10 admission use the v11 contract. */
+    /** Sandbox-first Auto and Windows setup-generation-11 admission use the v11 contract. */
     readonly sandboxRuntime?: 11;
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;

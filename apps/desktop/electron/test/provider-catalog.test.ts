@@ -142,10 +142,23 @@ test('KodaX 0.7.96 catalog exposes the new flash and vision model routes', () =>
   for (const providerId of ['zhipu', 'zhipu-coding', 'zai-coding']) {
     assert.ok(getBuiltin(providerId)?.models?.includes('glm-5.3-flash'), providerId);
   }
-  assert.ok(
-    getBuiltin('deepseek')?.models?.includes('deepseek-v4-flash-vision-exp'),
-    'deepseek',
+});
+
+test('KodaX 0.7.96-beta.6 deepseek catalog moves to the official Anthropic-compatible route', () => {
+  const deepseek = getBuiltin('deepseek');
+  assert.ok(deepseek);
+  // beta.5 renamed the default to deepseek-flash (DeepSeek-V4.1-Flash, native image
+  // input) and folded the vision experiment into it; deepseek-v4-pro stays text-only.
+  assert.equal(deepseek.defaultModel, 'deepseek-flash');
+  assert.deepEqual(deepseek.models, ['deepseek-flash', 'deepseek-v4-pro']);
+  assert.equal(
+    deepseek.models?.includes('deepseek-v4-flash-vision-exp'),
+    false,
+    'the vision-exp experiment left the SDK catalog in beta.5',
   );
+  // api.deepseek.com/anthropic speaks the Anthropic wire — the Space UI override
+  // must not keep advertising the old OpenAI-compatible protocol.
+  assert.equal(deepseek.protocol, 'anthropic');
 });
 
 test('zhipu-coding disaster fallback tracks the KodaX 0.7.89 GLM-5.3 default', () => {
