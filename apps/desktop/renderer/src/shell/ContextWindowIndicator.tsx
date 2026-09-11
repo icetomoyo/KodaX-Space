@@ -210,6 +210,11 @@ export function ContextWindowIndicator({
     lastCompaction?.elapsedMs !== undefined
       ? `${(lastCompaction.elapsedMs / 1_000).toFixed(1)}s`
       : null;
+  // map/reduce 展开时一次压缩含多次物理摘要调用；full_prefix 恒为 1，不值得占位。
+  const compactionSummaryRequests =
+    lastCompaction?.summaryRequestCount !== undefined && lastCompaction.summaryRequestCount > 1
+      ? t('contextWindow.compactionSummaryRequests', { count: lastCompaction.summaryRequestCount })
+      : null;
   const isEstimate = isEstimatedContextInput(
     inputReading.source,
     tokenInfo?.source,
@@ -406,11 +411,16 @@ export function ContextWindowIndicator({
         <span
           aria-hidden
           aria-busy={compacting}
-          className="context-liquid-gauge h-7 w-7 flex items-center justify-center"
+          className="context-liquid-gauge h-7 w-7"
           style={gaugeStyle}
         >
           {compacting ? (
-            <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+            // .context-liquid-gauge 的 display:block 按源序覆盖 Tailwind flex，居中必须
+            // 用绝对定位包裹层（与 __fill/__surface/__wave 的定位方式一致），不能依赖
+            // 量规容器自身的 flex。
+            <span className="absolute inset-0 flex items-center justify-center">
+              <LoaderCircle className="h-4 w-4 animate-spin motion-reduce:animate-none" />
+            </span>
           ) : (
             <>
               <span className="context-liquid-gauge__fill" />
@@ -603,10 +613,12 @@ export function ContextWindowIndicator({
                   : t('contextWindow.lastCompactionUnchanged', {
                       tokens: formatTokens(lastCompaction.tokensAfter),
                     })}
-                {(compactionSourceLabel || compactionDuration) && (
+                {(compactionSourceLabel || compactionDuration || compactionSummaryRequests) && (
                   <span className="text-fg-muted">
                     {' · '}
-                    {[compactionSourceLabel, compactionDuration].filter(Boolean).join(' · ')}
+                    {[compactionSourceLabel, compactionDuration, compactionSummaryRequests]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </span>
                 )}
               </div>

@@ -14,6 +14,101 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.46-alpha.10] - 2026-09-11
+
+### Changed
+
+- **KodaX 0.7.96-beta.6 integration** — Root/Desktop manifests and the lockfile pin the exact
+  published prerelease (beta.5 + beta.6 retained). Every public capability version is unchanged:
+  the SDK startup gate still requires `sandboxRuntime:11`, `runtimeAutoModeGuardrail:5`,
+  `sharedSessionSettings:2`, and `effectiveConfig:1`, with `providerCredentialBroker:2` verified
+  at daemon admission and after connection.
+- **DeepSeek moves to the official Anthropic-compatible wire (beta.5)** — the built-in `deepseek`
+  alias now speaks `api.deepseek.com/anthropic`; the SDK default model is `deepseek-flash`
+  (DeepSeek-V4.1-Flash, 1M context, 384,000 max output tokens, native image input,
+  `deepseek-v4-anthropic` reasoning preset), text-only `deepseek-v4-pro` stays selectable via
+  `/model`, and the vision-only `deepseek-v4-flash-vision-exp` experiment leaves the SDK catalog.
+  Space's provider catalog override follows the SDK truth: the DeepSeek protocol metadata becomes
+  `anthropic` and the disaster-fallback default model becomes `deepseek-flash`.
+- **Windows sandbox setup generation 11 (beta.5, Issue 333)** — profile and SSH dependency ACL
+  exclusions now match Codex semantics on read and write roots; generation-10 SSH ACE cleanup is
+  setup-only and preserves the old SID/nonce/roots across interrupted retries. Wire protocol 10,
+  public capability versions, and Space's doctor/setup host boundary are unchanged.
+- **Prompt-cache diagnostics mirror the provider wire (beta.6)** — diagnostic hashes now describe
+  the messages actually sent: retained orphan `tool_use` calls are answered with the shared
+  interrupted-tool marker inside their pairing scope, real non-adjacent answers are hoisted, and
+  foreign or duplicate results are dropped. SDK-internal; no Space surface changes.
+- **Restored-session replay repair (beta.5)** — replayed histories no longer 400 on strict
+  endpoints: orphaned `tool_use` calls are answered with the explicit interrupted-tool marker
+  instead of being dropped, and typed `AbortError` cancellation takes precedence over provider
+  message matching. No Space control path changes.
+
+---
+
+## [0.1.46-alpha.9] - 2026-09-08
+
+### Fixed
+
+- **Composer clears at submit during slash commands (v0.1.45 regression)** — `/compact` and
+  other slash commands now clear the input box at submit time instead of after the command
+  finishes, so the command text no longer lingers across the whole compaction. Attachment
+  cleanup uses a submit-time snapshot, so images or file refs attached while a slow command
+  runs belong to the next submission and are not wiped.
+- **Compacting spinner stays centered in the context gauge** — the liquid gauge's
+  `display:block` rule overrode Tailwind flex centering and pinned the spinner to the top-left;
+  the spinner now uses an absolutely positioned wrapper consistent with the gauge's
+  fill/surface/wave layers.
+
+### Changed
+
+- **KodaX 0.7.96-beta.4 integration** — Root/Desktop manifests and the lockfile pin the exact
+  published prerelease. Manual and automatic compaction share one `compaction.reasoning` summary
+  policy, independent of the main turn's effort: the Runtime persists it through shared Session
+  settings, and Space keeps the SDK default without adding a new control. `provider-capabilities.json`
+  is byte-identical to beta.3 and public capability versions are unchanged.
+- **Bounded compaction summary telemetry** — successful compactions now surface the physical
+  summary-request count and the durable commit duration through Space's `compact_stats`
+  contract (Runtime `context.compaction.finished` events and the embedded manual-compact path).
+  The context gauge shows the request count when map/reduce fans out into multiple summary
+  calls; per-request provider/model/timing detail stays SDK-owned and never crosses IPC.
+
+---
+
+## [0.1.46-alpha.8] - 2026-09-08
+
+### Fixed
+
+- **Compaction echo ordering (Issue 210)** — Manual `/compact` now waits for its local echo and
+  outstanding notice retries to finish persistence before the Session preflight reads history.
+  The command remains visible immediately; Session identity and permission checks remain in place.
+- **KodaX 0.7.96-beta.3 integration** — Root/Desktop and the lockfile pin the published SDK. Its
+  superseded credential-connection fix enables Space's existing disconnect/reconnect recovery.
+  Public capability versions are unchanged. Provider timeout causes remain unclassified.
+- **Packaged Windows sandbox repair** — Physical ASRT resources and their dependencies now come from
+  the SDK's bundled dependency tree, preserving beta.3's WFP probe port-allocation fix even after
+  an `--ignore-scripts` install. Packaging smoke rejects nested ASRT code inside ASAR and compares
+  the physical WFP probe byte-for-byte against the locked SDK copy.
+
+---
+
+## [0.1.46-alpha.7] - 2026-09-07
+
+### Changed
+
+- **KodaX 0.7.96-beta.2 compaction credential fix** - Root and Desktop pin the exact published
+  prerelease and Registry integrity. The Issue 199 scoped-credential resolution had shipped with an
+  incomplete daemon-side half: the compaction summarizer resolved its Provider key through the
+  environment-variable path, which returns nothing inside a credential lease scope, so keychain-only
+  Providers failed manual `/compact` and run-internal managed compaction with `<ENV> not set` while
+  the registered broker was never consulted (Issue 209). KodaX 0.7.96-beta.2 routes the summarizer's
+  Provider request through the compaction-purpose lease acquire. Verified end to end against a live
+  beta.2 daemon: the Space-side broker receives exactly one `purpose='compaction'` operation-target
+  request whose `operationId` matches the compact envelope, the keychain key reaches the provider
+  call, and a real OpenAI-compatible provider completes the compaction (`compacted: true`, 88409 →
+  39071 tokens). The SDK capability contract is unchanged.
+
 ## [0.1.46-alpha.6] - 2026-09-05
 
 ### Fixed

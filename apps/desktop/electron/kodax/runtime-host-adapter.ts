@@ -1148,6 +1148,11 @@ export function projectRuntimeContextSessionEvent(
       ...(typeof payload?.queryLedgerTokens === 'number'
         ? { queryLedgerTokens: payload.queryLedgerTokens }
         : {}),
+      // KodaX 0.7.96-beta.4 bounded summary metrics: only the count crosses the IPC boundary.
+      ...(Array.isArray(payload?.summaryRequests) && payload.summaryRequests.length > 0
+        ? { summaryRequestCount: payload.summaryRequests.length }
+        : {}),
+      ...(typeof payload?.commitMs === 'number' ? { commitMs: payload.commitMs } : {}),
       ...(typeof payload?.beforeRevision === 'number'
         ? { beforeRevision: payload.beforeRevision }
         : {}),
@@ -1174,7 +1179,7 @@ type SpaceRuntimeConnectOptions = Omit<ConnectKodaXRuntimeOptions, 'requirements
   /** Opt-in lifecycle policy for Space-managed daemons. */
   readonly daemonOrphanExitMs?: number;
   readonly requirements?: NonNullable<ConnectKodaXRuntimeOptions['requirements']> & {
-    /** Sandbox-first Auto and Windows setup-generation-10 admission use the v11 contract. */
+    /** Sandbox-first Auto and Windows setup-generation-11 admission use the v11 contract. */
     readonly sandboxRuntime?: 11;
     /** The current daemon host actually has Space's orphan idle-exit policy enabled. */
     readonly daemonOrphanExit?: 1;

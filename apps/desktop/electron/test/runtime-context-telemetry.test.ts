@@ -410,6 +410,94 @@ test('daemon unchanged compaction outcomes remain visible instead of being disca
   );
 });
 
+test('daemon compaction summary-request metrics survive the Space telemetry contract', () => {
+  // KodaX 0.7.96-beta.4: successful compaction optionally carries bounded summary-request
+  // records plus the durable commit duration. Space projects only the count and commit
+  // duration; per-request records never contain prompt or output text but stay SDK-owned.
+  assert.deepEqual(
+    projectRuntimeContextSessionEvent(
+      runtimeEvent('context.compaction.finished', {
+        contextId: 's_1',
+        contextKind: 'root',
+        contextRevision: 3,
+        tokensBefore: 300_000,
+        tokensAfter: 60_000,
+        committed: true,
+        source: 'manual',
+        elapsedMs: 9_500,
+        strategy: 'map_reduce',
+        summaryRequests: [
+          {
+            provider: 'zhipu-coding',
+            model: 'glm-5.3',
+            reasoning: false,
+            prepareMs: 12,
+            credentialMs: 4,
+            providerMs: 4_200,
+            retryCount: 0,
+            retryWaitMs: 0,
+            outcome: 'succeeded',
+          },
+          {
+            provider: 'zhipu-coding',
+            model: 'glm-5.3',
+            reasoning: false,
+            prepareMs: 9,
+            credentialMs: 3,
+            providerMs: 3_800,
+            retryCount: 1,
+            retryWaitMs: 250,
+            outcome: 'succeeded',
+          },
+        ],
+        commitMs: 480,
+      }),
+    ),
+    {
+      kind: 'compact_stats',
+      sessionId: 's_1',
+      tokensBefore: 300_000,
+      tokensAfter: 60_000,
+      contextId: 's_1',
+      contextKind: 'root',
+      contextRevision: 3,
+      source: 'manual',
+      committed: true,
+      elapsedMs: 9_500,
+      strategy: 'map_reduce',
+      summaryRequestCount: 2,
+      commitMs: 480,
+    },
+  );
+});
+
+test('daemon compaction finished without summary metrics projects without them', () => {
+  assert.deepEqual(
+    projectRuntimeContextSessionEvent(
+      runtimeEvent('context.compaction.finished', {
+        contextId: 's_1',
+        contextKind: 'root',
+        contextRevision: 5,
+        tokensBefore: 120_000,
+        tokensAfter: 40_000,
+        committed: true,
+        source: 'automatic_threshold',
+      }),
+    ),
+    {
+      kind: 'compact_stats',
+      sessionId: 's_1',
+      tokensBefore: 120_000,
+      tokensAfter: 40_000,
+      contextId: 's_1',
+      contextKind: 'root',
+      contextRevision: 5,
+      source: 'automatic_threshold',
+      committed: true,
+    },
+  );
+});
+
 test('all Runtime compaction sources survive the Space telemetry contract', () => {
   for (const source of ['manual', 'automatic_threshold', 'physical_capacity'] as const) {
     const projected = projectRuntimeContextSessionEvent(

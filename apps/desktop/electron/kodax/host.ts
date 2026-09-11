@@ -872,6 +872,12 @@ class KodaXHost {
     // Runtime-backed sessions emit their own revisioned lifecycle. The compatibility events below
     // are retained only for embedded/legacy sessions, which do not have a daemon observation.
     if (!usesRuntime) pushToRenderer('session.event', { kind: 'compact_start', sessionId });
+    // Test-only hold (e2e): keep the compaction in-flight so the compacting UI state and the
+    // composer-clear timing become deterministic. Never set outside the e2e fixtures.
+    const compactTestHoldMs = Number.parseInt(process.env.SPACE_TEST_COMPACT_DELAY_MS ?? '', 10);
+    if (Number.isInteger(compactTestHoldMs) && compactTestHoldMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, compactTestHoldMs));
+    }
     try {
       const compactInput = {
         provider: s.provider,
@@ -891,6 +897,9 @@ class KodaXHost {
             compactPersistedSession(sessionId, compactInput),
           );
       if (!usesRuntime && result.compacted) {
+        // KodaX 0.7.96-beta.4: mirror the Runtime finished event's bounded summary metrics
+        // (count + durable commit duration) on the embedded path's compatibility event.
+        const report = 'report' in result ? result.report : undefined;
         pushToRenderer('session.event', {
           kind: 'compact_stats',
           sessionId,
@@ -898,6 +907,10 @@ class KodaXHost {
           tokensAfter: result.tokensAfter,
           source: 'manual',
           committed: true,
+          ...(Array.isArray(report?.summaryRequests) && report.summaryRequests.length > 0
+            ? { summaryRequestCount: report.summaryRequests.length }
+            : {}),
+          ...(typeof report?.commitMs === 'number' ? { commitMs: report.commitMs } : {}),
         });
       }
       return {

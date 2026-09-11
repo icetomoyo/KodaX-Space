@@ -2,11 +2,11 @@
 
 > **2026-08-24 当前发布基线**：v0.1.45 使用 root/Desktop/lockfile 精确锁定的 npm Registry KodaX `0.7.95`，并要求 `conversationHistory:2`、`runtimeExitSettlement:2` 与 `sandboxRuntime:5`。Space 在 SDK 启动门、daemon 协商、IPC status 与打包 smoke 四个边界保持同一版本；同一 boot 的临时 `unconfirmed-owner` 自动重试，等待会在应用退出时取消。
 >
-> **2026-09-04 当前源码候选**：Space package 为 `0.1.46-alpha.6`，root/Desktop/lockfile 精确锁定 KodaX
-> `0.7.96-beta.1`。SDK 包启动门要求 `effectiveConfig:1`、`sandboxRuntime:11`、`runtimeAutoModeGuardrail:5` 与 `sharedSessionSettings:2`；`providerCredentialBroker:2` 由 daemon 准入 requirements 和连接后 Runtime capability
+> **2026-09-11 当前源码候选**：Space package 为 `0.1.46-alpha.10`，root/Desktop/lockfile 精确锁定 KodaX
+> `0.7.96-beta.6`。SDK 包启动门要求 `effectiveConfig:1`、`sandboxRuntime:11`、`runtimeAutoModeGuardrail:5` 与 `sharedSessionSettings:2`；`providerCredentialBroker:2` 由 daemon 准入 requirements 和连接后 Runtime capability
 > 两层门禁验证，因为 SDK 的静态 capability 常量不发布该字段。`dist/native` 整体位于 `app.asar.unpacked`；dependency gate
 > 验证 universal native 集合，packaged smoke 按每个 manifest 的 SHA-256 验证物理 sidecar。
-> Space 只投影 Plan、Edits、Auto[LLM]、Full Access 四个 canonical profile。Alpha.6/alpha.7 把 Windows native protocol/setup 提升到 generation 10，并把真实 target-start doctor 证明、setup-only profile ACL 收敛、逐命令私有 Temp 与扩大后的网络 broker 边界纳入 v11；Space
+> Space 只投影 Plan、Edits、Auto[LLM]、Full Access 四个 canonical profile。Beta.5 把 Windows setup generation 提升到 11（profile/SSH ACL 排除对齐 Codex 语义），真实 target-start doctor 证明、setup-only profile ACL 收敛、逐命令私有 Temp 与扩大后的网络 broker 边界仍由 v11 隔离；Space
 > 直接消费完整性锁定的 Registry 字节，不补丁依赖。Daemon 与 embedded 根 Run 的
 > SDK lease 只列出无密钥的已知 Provider 身份，并在 wire call 时按需解析凭据；独立 detached Workflow 使用带 workflowRunId
 > 归属的 derived lease，并在 managed handle 终态显式关闭。

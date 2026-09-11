@@ -72,9 +72,11 @@ const SPACE_OVERRIDES: Record<string, SpaceOverride> = {
   },
   deepseek: {
     displayName: 'DeepSeek',
-    protocol: 'openai',
+    // KodaX 0.7.96-beta.5 moved the built-in deepseek alias to the official
+    // api.deepseek.com/anthropic wire — the UI protocol follows the SDK truth.
+    protocol: 'anthropic',
     fallbackApiKeyEnv: 'DEEPSEEK_API_KEY',
-    fallbackDefaultModel: 'deepseek-v4-flash',
+    fallbackDefaultModel: 'deepseek-flash',
   },
   kimi: {
     displayName: 'Kimi (Moonshot)',
