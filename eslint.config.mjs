@@ -14,6 +14,8 @@ export default [
       '**/.agent/**',
       '**/.tmp/**',
       '**/tmp/**',
+      // Local diagnostics and scratch runs; gitignored, never shipped.
+      'scratch/**',
       '**/dist/**',
       '**/dist-electron/**',
       '**/out/**',
