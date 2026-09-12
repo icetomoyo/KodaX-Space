@@ -2284,6 +2284,8 @@ export class RuntimeHostAdapter {
         liveOutputSegments: 1,
         integrationConfigResilience: 1,
         runtimeAutoModeGuardrail: 6,
+        sessionCancellation: 1,
+        toolInvocation: 1,
       },
     };
   }

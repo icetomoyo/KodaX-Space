@@ -1249,6 +1249,8 @@ function daemonRequirements() {
     integrationConfigResilience: 1,
     skillLearningLoop: 1,
     runtimeAutoModeGuardrail: 6,
+    sessionCancellation: 1,
+    toolInvocation: 1,
   };
 }
 function createDaemonProbeRuntime(clientName) {

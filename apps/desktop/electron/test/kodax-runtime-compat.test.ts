@@ -359,6 +359,8 @@ const SHARED_DAEMON_REQUIREMENTS = {
   sessionEventJournal: 1,
   integrationConfigResilience: 1,
   runtimeAutoModeGuardrail: 6,
+  sessionCancellation: 1,
+  toolInvocation: 1,
 } as const;
 
 const PUBLISHED_SHARED_DAEMON_PEER_PROBE = String.raw`
