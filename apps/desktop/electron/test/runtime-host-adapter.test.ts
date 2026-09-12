@@ -54,6 +54,122 @@ import { encodeRuntimeActorTaskId } from '../kodax/runtime/runtime-agent-project
 
 await initializeCoderDaemonProjectionSdk();
 
+test('terminal Stop retries require evidence of owner acceptance and never invent a new frontier', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  fake.runtime.runs.get = async (runId) => ({
+    runId,
+    sessionId: 's_1',
+    phase: 'completed',
+    provider: 'mock',
+    startedAt: '2026-09-12T00:00:00.000Z',
+  });
+  let calls = 0;
+  fake.runtime.sessions.cancel = async (input) => {
+    calls += 1;
+    return {
+      ...input,
+      frontier: 1,
+      receipts: [
+        {
+          sessionId: 's_1',
+          runId: input.expectedRunId,
+          accepted: false,
+          state: 'confirmed',
+          outcome: 'completed',
+          phase: 'completed',
+          revision: 1,
+        },
+      ],
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+  try {
+    assert.equal(await adapter.cancelSessionRuns('s_1', 'old-run', 'fresh-request'), undefined);
+    await assert.rejects(
+      adapter.cancelSessionRuns('s_1', 'old-run', 'lost-response', 'unconfirmed'),
+      /replay-only/,
+    );
+    assert.equal(calls, 0);
+    const repaired = await adapter.cancelSessionRuns(
+      's_1',
+      'old-run',
+      'accepted-request',
+      'accepted',
+    );
+    assert.equal(repaired?.sessionCancellation?.frontier, 1);
+    assert.equal(calls, 1);
+  } finally {
+    await adapter.close();
+  }
+});
+
+test('Session Stop uses one durable queue frontier and retries the same request after transport loss', async () => {
+  const fake = createFakeRuntime();
+  const requests: unknown[] = [];
+  fake.sessions.add('s_1');
+  fake.runtime.sessions.cancel = async (input) => {
+    requests.push(input);
+    if (requests.length === 1) throw new Error('transport disconnected after acceptance');
+    return {
+      ...input,
+      frontier: 3,
+      receipts: [
+        {
+          runId: 'queued-before',
+          sessionId: 's_1',
+          accepted: false,
+          state: 'confirmed',
+          outcome: 'cancelled',
+          phase: 'cancelled',
+          revision: 2,
+        },
+        {
+          runId: input.expectedRunId,
+          sessionId: 's_1',
+          accepted: false,
+          state: 'unknown',
+          outcome: 'unknown',
+          phase: 'unknown',
+          revision: 2,
+        },
+      ],
+    };
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+  try {
+    await assert.rejects(
+      adapter.cancelSessionRuns('s_1', 'visible-run', 'stop-request'),
+      /transport/,
+    );
+    const receipt = await adapter.cancelSessionRuns('s_1', 'visible-run', 'stop-request');
+    assert.deepEqual(requests, [
+      { sessionId: 's_1', expectedRunId: 'visible-run', requestId: 'stop-request' },
+      { sessionId: 's_1', expectedRunId: 'visible-run', requestId: 'stop-request' },
+    ]);
+    assert.equal(receipt?.state, 'unknown');
+    assert.equal(receipt?.sessionCancellation?.frontier, 3);
+    assert.equal(receipt?.sessionCancellation?.receipts[0]?.runId, 'queued-before');
+    assert.deepEqual(fake.calls.aborted, []);
+  } finally {
+    await adapter.close();
+  }
+});
+
 afterEach(() => {
   setSessionStoreImpl(null);
   setSessionRuntimeStoreForTesting(null);
@@ -485,6 +601,8 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         backend: 'unsupported',
       },
       runtimeAutoModeGuardrail: { version: 6, owner: 'session-runtime' },
+      sessionCancellation: { version: 1, durableFrontier: true },
+      toolInvocation: { version: 1 },
     },
     grantedScopes: [
       'session:observe',
@@ -14007,7 +14125,8 @@ test('Runtime external Agent mutations validate session Actor/Turn ownership bef
 test('initialization rejects permission authority v5 even when the daemon otherwise matches', async () => {
   const fake = createFakeRuntime();
   (fake.runtime.capabilities as Record<string, unknown>).runtimeAutoModeGuardrail = {
-    version: 5, owner: 'session-runtime',
+    version: 5,
+    owner: 'session-runtime',
   };
   const adapter = new RuntimeHostAdapter({
     mode: 'runtime',
@@ -14017,6 +14136,38 @@ test('initialization rejects permission authority v5 even when the daemon otherw
   });
   await assert.rejects(adapter.initialize(), /runtimeAutoModeGuardrail v6/);
   await adapter.close();
+});
+
+test('identity repair forwards explicit delivery proof and never retries a changed revision', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  const requests: unknown[] = [];
+  fake.runtime.sessions.confirmIdentityAlias = async (input) => {
+    requests.push(input);
+    throw Object.assign(new Error('reload and revalidate'), { code: 'data_changed' });
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+  const input = {
+    sessionId: 's_1',
+    sourceEntryId: 'delivered',
+    targetEntryId: 'canonical',
+    expectedSourceRevision: 'revision-1',
+    confirmationReference: 'support-review-1',
+    delivery: { runId: 'run-1', inputId: 'input-1', eventId: 'event-1' },
+  };
+  try {
+    await assert.rejects(adapter.confirmSessionIdentityAlias(input), /reload and revalidate/);
+    assert.deepEqual(requests, [input]);
+  } finally {
+    await adapter.close();
+  }
 });
 
 test('daemon capability upgrade failures explain restart and active blockers', async () => {

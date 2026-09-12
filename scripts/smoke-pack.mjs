@@ -1448,6 +1448,11 @@ try {
     throw new Error('packaged lifecycle probe did not enable daemon ownership');
   }
   daemonRuntime = await createDaemonProbeRuntime('kodax-space-pack-lifecycle-smoke');
+  for (const name of ['sessionCancellation', 'toolInvocation']) {
+    if (daemonRuntime.capabilities?.[name]?.version !== 1) {
+      throw new Error('packaged daemon does not support ' + name + ' v1');
+    }
+  }
   const daemonOrphanExit = daemonRuntime.capabilities?.daemonOrphanExit;
   if (
     typeof daemonOrphanExit !== 'object' ||

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 
 import type {
@@ -9,6 +9,7 @@ import type {
   RuntimeAppendNoticeInput,
   RuntimeCompactSessionInput,
   RuntimeCompactSessionResult,
+  RuntimeConfirmIdentityAliasInput,
   RuntimeConfigPatch,
   RuntimeCredentialBinding,
   RuntimeConversationHistory,
@@ -30,6 +31,7 @@ import type {
   RuntimeObservationInvalidation,
   RuntimeReadOptions,
   RuntimeSessionDiagnostics,
+  RuntimeSessionCancelInput,
   RuntimeSessionDiagnosticsInput,
   RuntimeSessionObservation,
   RuntimeSessionObservationSnapshot,
@@ -54,6 +56,7 @@ import type {
 import type { KodaXOutputSegmentProjection } from '@kodax-ai/kodax/coding';
 export type { RuntimeExitSettlement, RuntimeExitSettlementInput } from '@kodax-ai/kodax/runtime';
 import { effortToReasoningMode } from './reasoning-effort.js';
+import { resolveRuntimeToolInvocation } from './runtime-command.js';
 import { getKodaxRuntimeDir } from './data-paths.js';
 import { stopCoderDaemonWhenSafe, type SafeDaemonStopResult } from './runtime-daemon-control.js';
 import {
@@ -106,6 +109,7 @@ import {
   type ExternalAgentTaskEventT,
   type ExternalAgentTaskT,
   type SessionEvent,
+  type SpaceRuntimeRunStopReceiptT,
   type SpaceCoderConnectionProjectionT,
   type SpaceRuntimeProfileProjectionT,
   type SpaceSessionLiveProjectionT,
@@ -1951,6 +1955,7 @@ export class RuntimeHostAdapter {
   /** Exact Runtime Agent turn identities started through this Space process. */
   private readonly spaceOwnedAgentTurns = new Set<string>();
   private readonly activeRuns = new Map<string, string>();
+  private readonly pendingSessionStops = new Map<string, RuntimeSessionCancelInput>();
   private readonly observations = new Map<string, RuntimeSessionObservationState>();
   private readonly observationPromises = new Map<string, Promise<void>>();
   private readonly observationOpenQueues = new WeakMap<KodaXDaemonRuntime, Promise<void>>();
@@ -3654,6 +3659,16 @@ export class RuntimeHostAdapter {
     const result = await runtime.sessions.fork(input);
     if (result !== null) invalidatePersistedSessionCache(result.id);
     return result;
+  }
+
+  async confirmSessionIdentityAlias(input: RuntimeConfirmIdentityAliasInput): Promise<void> {
+    const runtime = await this.requireRuntime();
+    await this.assertCoderSession(runtime, input.sessionId);
+    // Never infer aliases or automatically retry CAS conflicts with a newer revision.
+    await runtime.sessions.confirmIdentityAlias(input);
+    invalidatePersistedSessionCache(input.sessionId);
+    this.invalidateTranscriptBoundary(input.sessionId);
+    this.scheduleProfileRefresh(this.currentProfileCursor());
   }
 
   async rewindSession(input: RuntimeRewindSessionInput) {
@@ -5549,6 +5564,14 @@ export class RuntimeHostAdapter {
 
   async startManagedRun(input: RuntimeDaemonStartRunInput): Promise<RuntimeRunHandle> {
     const runtime = await this.requireRuntime();
+    if (
+      input.options?.toolInvocation &&
+      runtimeCapabilityVersion(runtime, 'toolInvocation') !== 1
+    ) {
+      throw new Error(
+        'Explicit tool execution requires toolInvocation v1; upgrade the Runtime owner.',
+      );
+    }
     // Every Space start path calls ensureSession() before reaching this method. Do not put a
     // second history-grade persisted read between factual admission and runs.start(): normal
     // Session writers may make that read report data_changed even though Runtime can safely
@@ -5960,6 +5983,87 @@ export class RuntimeHostAdapter {
     return receipt;
   }
 
+  /** User Stop cancels the owner's durable queue frontier, independently of history locks. */
+  private async prepareSessionStopRequest(
+    runtime: KodaXDaemonRuntime,
+    sessionId: string,
+    runId: string,
+    requestId?: string,
+    retry?: 'accepted' | 'unconfirmed',
+  ): Promise<RuntimeSessionCancelInput | undefined> {
+    const stableId = createHash('sha256').update(`${sessionId}:${runId}`).digest('hex');
+    const input = {
+      sessionId,
+      expectedRunId: runId,
+      requestId: requestId ?? `space-stop-${stableId}`,
+    };
+    const pending = this.pendingSessionStops.get(input.requestId);
+    if (pending) {
+      if (!isDeepStrictEqual(input, pending))
+        throw new Error('Session Stop request identity was reused for another Run.');
+      return pending;
+    }
+    const status = await runtime.runs.get(runId);
+    if (!status) return undefined;
+    if (status.sessionId !== sessionId || status.runId !== runId) {
+      throw new Error('Session Stop Run belongs to a different Session.');
+    }
+    if (!EXACT_STOP_ACTIVE_PHASES.has(status.phase) && !(retry === 'accepted' && requestId)) {
+      if (retry === 'unconfirmed')
+        throw new Error(
+          'Stop acceptance is unknown and its Run is terminal. The SDK needs a replay-only cancellation API before this request can be retried safely.',
+        );
+      return undefined;
+    }
+    return input;
+  }
+
+  async cancelSessionRuns(
+    sessionId: string,
+    expectedRunId?: string,
+    requestId?: string,
+    retry?: 'accepted' | 'unconfirmed',
+  ): Promise<SpaceRuntimeRunStopReceiptT | undefined> {
+    const runtime = await this.requireRuntime();
+    if (runtimeCapabilityVersion(runtime, 'sessionCancellation') !== 1) {
+      throw new Error('Session Stop requires sessionCancellation v1; upgrade the Runtime owner.');
+    }
+    const runId = expectedRunId ?? (await this.findActiveRunId(sessionId));
+    if (!runId) return undefined;
+    if (this.runtime !== runtime || this.state !== 'ready') {
+      throw new Error('Coder Runtime changed before Session Stop.');
+    }
+    // Legacy/internal callers have no renderer request identity. The exact Run binding gives
+    // those retries a stable identity too; user requests supply their own UUID through IPC.
+    const input = await this.prepareSessionStopRequest(runtime, sessionId, runId, requestId, retry);
+    if (!input) return undefined;
+    const receipt = await runtime.sessions.cancel(input);
+    if (
+      receipt.sessionId !== sessionId ||
+      receipt.expectedRunId !== runId ||
+      receipt.requestId !== input.requestId ||
+      receipt.receipts.some((item) => item.sessionId !== sessionId)
+    ) {
+      throw new Error('Coder daemon returned a Session Stop receipt for a different request.');
+    }
+    const active = receipt.receipts.find((item) => item.runId === runId);
+    if (!active) throw new Error('Session Stop receipt is missing the bound Run.');
+    if (receipt.receipts.every((item) => item.state === 'confirmed')) {
+      this.pendingSessionStops.delete(input.requestId);
+    } else {
+      this.pendingSessionStops.set(input.requestId, input);
+    }
+    this.scheduleProfileRefresh(this.currentProfileCursor());
+    return {
+      ...active,
+      sessionCancellation: {
+        requestId: receipt.requestId,
+        frontier: receipt.frontier,
+        receipts: [...receipt.receipts],
+      },
+    };
+  }
+
   /**
    * Best-effort cancellation used only after the user explicitly confirms a
    * forced Space exit. Session identity is deliberately not used as client
@@ -6293,7 +6397,34 @@ export class RuntimeHostAdapter {
 
   async listRuntimeCommands(projectRoot?: string) {
     const runtime = await this.requireRuntime();
-    return runtime.catalog.commands(projectRoot);
+    const commands = await runtime.catalog.commands(projectRoot);
+    if (!commands.some((command) => command.source === 'extension')) return commands;
+    const extensions = await runtime.catalog.extensions();
+    const tools = new Set(extensions.diagnostics?.tools.map((tool) => tool.name));
+    return commands.filter(
+      (command) =>
+        command.source !== 'extension' || tools.has(`extension_command__${command.name}`),
+    );
+  }
+
+  async resolveToolInvocation(prompt: string, projectRoot: string) {
+    return resolveRuntimeToolInvocation(prompt, async (name) => {
+      const runtime = await this.requireRuntime();
+      const command = await runtime.catalog.resolveCommand({ name, projectRoot });
+      if (command?.source === 'extension') {
+        const extensions = await runtime.catalog.extensions();
+        if (
+          !extensions.diagnostics?.tools.some(
+            (tool) => tool.name === `extension_command__${command.name}`,
+          )
+        ) {
+          throw new Error(
+            'This extension command has no managed execution tool. Configuration-only commands must run in the KodaX CLI owner.',
+          );
+        }
+      }
+      return command;
+    });
   }
 
   async listRuntimeAgentRegistrations(input?: {

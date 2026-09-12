@@ -56,12 +56,7 @@ import { getBuiltin } from '../providers/catalog.js';
 import { memoryGovernanceService } from '../memory/memory-service.js';
 import { runtimeHostAdapter } from '../kodax/runtime-host-adapter.js';
 
-const PERMISSION_MODES: readonly PermissionMode[] = [
-  'plan',
-  'accept-edits',
-  'auto',
-  'full-access',
-];
+const PERMISSION_MODES: readonly PermissionMode[] = ['plan', 'accept-edits', 'auto', 'full-access'];
 const AGENT_MODES: readonly AgentMode[] = ['ama', 'sa'];
 const REASONING_EXAMPLES = ['off', 'auto', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -2954,6 +2949,58 @@ export const BUILTIN_SLASH_COMMANDS: readonly SlashCommandDef[] = [
         return { ok: false, message: 'Usage: /extensions [status|refresh|sdk [load]]' };
       }
       return shellAction('show-extensions');
+    },
+  },
+
+  {
+    name: 'repair-identity',
+    description: 'Confirm a legacy history alias using an audited delivery receipt',
+    argsHint: '<source-entry> <target-entry> <revision> <run> <input> <event> <confirmation-ref>',
+    source: 'builtin',
+    handler: async (ctx) => {
+      const session = kodaxHost.get(ctx.sessionId);
+      if (session?.surface !== 'code' || !runtimeHostAdapter.isRuntimeSelected()) {
+        return { ok: false, message: 'Identity repair requires a Coder Runtime session.' };
+      }
+      const [
+        sourceEntryId,
+        targetEntryId,
+        expectedSourceRevision,
+        runId,
+        inputId,
+        eventId,
+        confirmationReference,
+      ] = ctx.args;
+      if (
+        ctx.args.length !== 7 ||
+        ctx.args.some((arg) => !arg.trim() || arg.length > 1_024) ||
+        !sourceEntryId ||
+        !targetEntryId ||
+        !expectedSourceRevision ||
+        !runId ||
+        !inputId ||
+        !eventId ||
+        !confirmationReference ||
+        sourceEntryId === targetEntryId
+      ) {
+        return {
+          ok: false,
+          message:
+            'Usage: /repair-identity <source-entry> <target-entry> <revision> <run> <input> <event> <confirmation-ref>. Supply verified identities; aliases are never inferred.',
+        };
+      }
+      await runtimeHostAdapter.confirmSessionIdentityAlias({
+        sessionId: ctx.sessionId,
+        sourceEntryId,
+        targetEntryId,
+        expectedSourceRevision,
+        confirmationReference,
+        delivery: { runId, inputId, eventId },
+      });
+      return {
+        ok: true,
+        message: 'History identity confirmed. Reload this session to display the repaired history.',
+      };
     },
   },
 

@@ -1192,7 +1192,8 @@ test('active daemon run preserves interrupt intent and requires explicit after-t
 
   let submittedInput: Record<string, unknown> | undefined;
   let settingsUpdate:
-    { readonly sessionId: string; readonly patch: Record<string, unknown> } | undefined;
+    | { readonly sessionId: string; readonly patch: Record<string, unknown> }
+    | undefined;
   const settingsUpdates: Array<{
     readonly sessionId: string;
     readonly patch: Record<string, unknown>;
@@ -1390,7 +1391,8 @@ test('daemon run refreshes settings and transports trusted Skill context without
   });
 
   let settingsUpdate:
-    { readonly sessionId: string; readonly patch: Record<string, unknown> } | undefined;
+    | { readonly sessionId: string; readonly patch: Record<string, unknown> }
+    | undefined;
   let managedRunInput: Record<string, unknown> | undefined;
   let managedRunCalls = 0;
   patchMethod('initialize', async () => undefined);
@@ -1875,7 +1877,7 @@ test('Runtime cancel without a visible Run ID waits for in-flight admission', as
       result: runResult,
     };
   });
-  patchMethod('abortSessionRun', async (_sessionId: string, runId?: string) => {
+  patchMethod('cancelSessionRuns', async (_sessionId: string, runId?: string) => {
     abortCalls += 1;
     abortedRunId = runId;
     resolveRun({
@@ -1934,7 +1936,7 @@ test('Runtime cancel without a visible Run ID waits for in-flight admission', as
   });
   await waitForTest(() => !session.isRunning());
   assert.equal(abortCalls, 1);
-  assert.equal(abortedRunId, undefined);
+  assert.equal(abortedRunId, 'run_admitted');
   assert.equal(
     events.some((event) => event.kind === 'session_error'),
     false,
@@ -1988,7 +1990,7 @@ test('a stale exact Stop does not cancel a preparing successor admission', async
     await admissionGate;
     return { runId: 'run_successor', result: successorResult };
   });
-  patchMethod('abortSessionRun', async (sessionId: string, runId?: string) => {
+  patchMethod('cancelSessionRuns', async (sessionId: string, runId?: string) => {
     stoppedRunIds.push(runId ?? 'session-fallback');
     return {
       runId: runId ?? 'session-fallback',

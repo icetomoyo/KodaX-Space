@@ -110,7 +110,9 @@ export interface LocalSessionCancelOutcome {
 }
 
 export type ManagedSessionCancelOutcome =
-  SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void;
+  | SpaceRuntimeRunStopReceiptT
+  | LocalSessionCancelOutcome
+  | void;
 
 export interface ManagedSession {
   readonly sessionId: string;
@@ -211,7 +213,11 @@ export interface ManagedSession {
    * authoritative Stop receipt and must not synthesize a terminal event for an
    * unknown outcome.
    */
-  cancel(runId?: string): Promise<ManagedSessionCancelOutcome>;
+  cancel(
+    runId?: string,
+    requestId?: string,
+    retry?: 'accepted' | 'unconfirmed',
+  ): Promise<ManagedSessionCancelOutcome>;
 
   /**
    * 释放 session 持有的所有资源。

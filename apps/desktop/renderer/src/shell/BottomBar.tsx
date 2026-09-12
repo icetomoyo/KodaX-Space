@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUp, FileText, Folder, Plus, X } from 'lucide-react';
+import { readPendingSessionStops, writePendingSessionStops } from './pendingSessionStop';
 import {
   MAX_SOURCE_IMAGE_BYTES,
   type ChannelInput,
@@ -536,6 +537,13 @@ export function BottomBar(): JSX.Element {
   >([]);
   const [draggingFiles, setDraggingFiles] = useState(false);
   const dragDepthRef = useRef(0);
+  const [pendingStops, setPendingStops] = useState(() => readPendingSessionStops(localStorage));
+  const sessionPendingStops = Object.values(pendingStops).filter(
+    (request) => request.sessionId === currentSessionId,
+  );
+  const pendingStop = sessionPendingStops.find(
+    (request) => request.runId === currentRuntimeStopRunId,
+  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // Paste/drop warnings are local to the composer.
   const [imageErr, setImageErr] = useState<string | null>(null);
@@ -2342,19 +2350,46 @@ export function BottomBar(): JSX.Element {
     pointerDownRunId?: string | null,
     pointerDownGeneration?: string,
     pointerDownSessionId?: string | null,
+    pendingRequestId?: string,
   ): void {
     const sid = currentSessionId;
     if (!sid || !window.kodaxSpace) return;
-    const target = resolveComposerStopTarget(
-      pointerDownRunId,
-      currentRuntimeStopRunId,
-      runtimeStopIdentity.requiresExactRunId,
-      pointerDownGeneration,
-      activityGeneration,
-      pointerDownSessionId,
-      sid,
-    );
+    if (pointerDownSessionId && pointerDownSessionId !== sid) return;
+    const recordsAtClick = readPendingSessionStops(localStorage);
+    const pending = pendingRequestId
+      ? recordsAtClick[pendingRequestId]
+      : Object.values(recordsAtClick).find(
+          (request) => request.sessionId === sid && request.runId === currentRuntimeStopRunId,
+        );
+    if (pendingRequestId && !pending) return;
+    if (pending && pending.sessionId !== sid) return;
+    const target =
+      pendingRequestId && pending
+        ? { allowed: true as const, runId: pending.runId }
+        : resolveComposerStopTarget(
+            pointerDownRunId,
+            currentRuntimeStopRunId,
+            runtimeStopIdentity.requiresExactRunId,
+            pointerDownGeneration,
+            activityGeneration,
+            pointerDownSessionId,
+            sid,
+          );
     if (!target.allowed) return;
+    const requestId = pending?.requestId ?? crypto.randomUUID();
+    if (target.runId) {
+      const records = {
+        ...readPendingSessionStops(localStorage),
+        [requestId]: {
+          sessionId: sid,
+          runId: target.runId,
+          requestId,
+          accepted: pending?.accepted ?? false,
+        },
+      };
+      writePendingSessionStops(localStorage, records);
+      setPendingStops(records);
+    }
     // #13 fix: session.cancel 是异步 IPC——结果回来时用户可能已经切到别的 session。之前的
     // toast 只有 "Stop signal sent"/"Cancel failed"，看不出说的是哪个 session，容易被
     // 误当成"当前 session 出错了"。带上 session 标题消歧义。
@@ -2364,6 +2399,10 @@ export function BottomBar(): JSX.Element {
     void window.kodaxSpace
       .invoke('session.cancel', {
         sessionId: sid,
+        requestId,
+        ...(pending
+          ? { retry: pending.accepted ? ('accepted' as const) : ('unconfirmed' as const) }
+          : {}),
         ...(target.runId !== undefined ? { runId: target.runId } : {}),
       })
       .then((r) => {
@@ -2379,7 +2418,24 @@ export function BottomBar(): JSX.Element {
         }
 
         const stop = r.data.stop;
-        if (stop && (stop.state === 'unknown' || stop.outcome === 'unknown')) {
+        const unknown =
+          stop &&
+          (stop.state === 'unknown' ||
+            stop.outcome === 'unknown' ||
+            stop.sessionCancellation?.receipts.some((receipt) => receipt.state === 'unknown'));
+        if (!unknown) {
+          const records = readPendingSessionStops(localStorage);
+          delete records[requestId];
+          writePendingSessionStops(localStorage, records);
+          setPendingStops(records);
+        }
+        if (unknown) {
+          const records = readPendingSessionStops(localStorage);
+          if (records[requestId] && stop?.sessionCancellation) {
+            records[requestId] = { ...records[requestId]!, accepted: true };
+            writePendingSessionStops(localStorage, records);
+            setPendingStops(records);
+          }
           pushToast(t('bottom.stopOutcomeUnknown', { session: sessionTitle }), 'info', 4000);
         } else if (r.data.cancelled) {
           pushToast(t('bottom.stopConfirmed', { session: sessionTitle }), 'info', 2000);
@@ -2754,6 +2810,20 @@ export function BottomBar(): JSX.Element {
             <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
               <ContextWindowIndicator compacting={isCompacting} />
               <ModelEffortSelector />
+              {sessionPendingStops
+                .filter((request) => request.runId !== currentRuntimeStopRunId)
+                .map((request) => (
+                  <button
+                    type="button"
+                    className="text-xs text-danger underline"
+                    key={request.requestId}
+                    onClick={() =>
+                      handleCancel(undefined, undefined, currentSessionId, request.requestId)
+                    }
+                  >
+                    {t('bottom.retryPendingStop')}
+                  </button>
+                ))}
               {runControls.showStop && (
                 <button
                   key={`${currentSessionId ?? 'no-session'}:${
@@ -2801,13 +2871,16 @@ export function BottomBar(): JSX.Element {
                     handleCancel(pointerDownRunId, pointerDownGeneration, pointerDownSessionId);
                   }}
                   disabled={
-                    (runtimeStopIdentity.requiresExactRunId &&
+                    !pendingStop &&
+                    ((runtimeStopIdentity.requiresExactRunId &&
                       currentRuntimeStopRunId === undefined) ||
-                    (!runtimeStopIdentity.requiresExactRunId && activityGeneration === undefined)
+                      (!runtimeStopIdentity.requiresExactRunId && activityGeneration === undefined))
                   }
                   className="ml-1 w-8 h-8 rounded-lg bg-danger hover:brightness-110 text-white flex items-center justify-center shadow-sm transition-[filter]"
-                  title={t('bottom.stopTitle')}
-                  aria-label={t('bottom.stopGeneration')}
+                  title={pendingStop ? t('bottom.retryPendingStop') : t('bottom.stopTitle')}
+                  aria-label={
+                    pendingStop ? t('bottom.retryPendingStop') : t('bottom.stopGeneration')
+                  }
                 >
                   <span aria-hidden className="block w-2.5 h-2.5 bg-white rounded-[2px]" />
                 </button>

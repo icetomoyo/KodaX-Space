@@ -10,7 +10,7 @@
 // 后续 chore：加 RealKodaXSession 实现并由配置开关切换。
 
 import { randomUUID } from 'node:crypto';
-import type { SessionEvent } from '@kodax-space/space-ipc-schema';
+import type { SessionEvent, SpaceRuntimeRunStopReceiptT } from '@kodax-space/space-ipc-schema';
 import { pushToRenderer } from '../ipc/push.js';
 import { permissionBroker } from '../permission/broker.js';
 import { askUserBroker } from '../permission/ask-user-broker.js';
@@ -65,6 +65,18 @@ import { resolveSdkSpaceWireEffort, runtimeSettingEffort } from './reasoning-eff
 // 这跟 user 实际工作流对齐：用户已在本地配好 ZHIPU_API_KEY / KIMI_API_KEY 等 env，
 // 起 provider != 'mock' 就直接接 KodaX runtime；想 demo / 开发 UI 选 'mock' 走脚本流。
 const FORCE_MOCK = process.env.KODAX_FORCE_MOCK === '1';
+
+function runtimeCancelResult(stop?: SpaceRuntimeRunStopReceiptT): SessionCancelResult {
+  if (!stop) return { cancelled: false };
+  return {
+    cancelled:
+      stop.state === 'confirmed' &&
+      (stop.sessionCancellation?.receipts.every((receipt) => receipt.state === 'confirmed') ??
+        true) &&
+      (stop.outcome === 'cancelled' || stop.outcome === 'interrupted'),
+    stop,
+  };
+}
 
 const defaultFactory: SessionFactory = (opts) => {
   if (FORCE_MOCK || opts.provider === 'mock') {
@@ -728,9 +740,21 @@ class KodaXHost {
     return items;
   }
 
-  async cancel(sessionId: string, runId?: string): Promise<SessionCancelResult> {
+  async cancel(
+    sessionId: string,
+    runId?: string,
+    requestId?: string,
+    retry?: 'accepted' | 'unconfirmed',
+  ): Promise<SessionCancelResult> {
     const s = this.sessions.get(sessionId);
-    if (!s) return { cancelled: false };
+    if (!s) {
+      if (retry && runId && requestId && runtimeHostAdapter.isRuntimeSelected()) {
+        return runtimeCancelResult(
+          await runtimeHostAdapter.cancelSessionRuns(sessionId, runId, requestId, retry),
+        );
+      }
+      return { cancelled: false };
+    }
     const cancelSessionInteractions = (): void => {
       // 取消该 session 所有 pending permission 弹窗——否则用户看到的弹窗对的是已死的 session，
       // tool 实际不会再执行，按了"允许"也没用
@@ -743,19 +767,17 @@ class KodaXHost {
       s.surface === 'code' &&
       runtimeHostAdapter.isRuntimeSelected();
     if (runtimeCoder) {
-      const stop = await s.cancel(runId);
+      const stop = await s.cancel(runId, requestId, retry);
       if (!stop) return { cancelled: false };
       if ('kind' in stop) {
         cancelSessionInteractions();
         return { cancelled: true };
       }
-      if (stop.accepted || runId === undefined) cancelSessionInteractions();
-      return {
-        cancelled:
-          stop.state === 'confirmed' &&
-          (stop.outcome === 'cancelled' || stop.outcome === 'interrupted'),
-        stop,
-      };
+      // Atomic Stop owns pending interactions up to its frontier. Clearing all Session
+      // interactions here could cancel a later Run submitted after that frontier.
+      if (!stop.sessionCancellation && (stop.accepted || runId === undefined))
+        cancelSessionInteractions();
+      return runtimeCancelResult(stop);
     }
 
     // Legacy streams have no structured Stop receipt. Main owns their terminal

@@ -744,7 +744,13 @@ export class RealKodaXSession implements ManagedSession {
     // embedded run. Daemon Coder intentionally ignores this snapshot and keeps
     // Runtime settings live for the next concrete tool call.
     const runPermissionMode = this.permissionMode;
-    const explicitSkillReference = await this.resolveExplicitSkillReference(prompt);
+    const toolInvocation =
+      this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()
+        ? await runtimeHostAdapter.resolveToolInvocation(prompt, this.projectRoot)
+        : undefined;
+    const explicitSkillReference = toolInvocation
+      ? undefined
+      : await this.resolveExplicitSkillReference(prompt);
     if (admissionSignal?.aborted || this.disposed) {
       return { accepted: false, reason: 'cancelled_before_admission', queueMode };
     }
@@ -804,6 +810,10 @@ export class RealKodaXSession implements ManagedSession {
         throw error;
       }
       if (this.currentAbort || activeRunId) {
+        if (toolInvocation)
+          throw new Error(
+            'Wait for the current Run to finish before executing an explicit command.',
+          );
         if (explicitSkillReference !== undefined) {
           return { accepted: false, reason: 'skill_requires_idle', queueMode };
         }
@@ -879,6 +889,7 @@ export class RealKodaXSession implements ManagedSession {
         options?.operationId,
         true,
         skillPreparation?.prepared,
+        toolInvocation,
       );
       const outcome = admission ? await admission.promise : 'admitted';
       if (outcome === 'not_admitted' && admission?.rejectionReason !== undefined) {
@@ -975,6 +986,7 @@ export class RealKodaXSession implements ManagedSession {
     operationId?: string,
     restoreDraftOnBoundaryConflict = false,
     explicitSkill?: PreparedExplicitSkillExecution,
+    toolInvocation?: RuntimeDaemonKodaXOptions['toolInvocation'],
   ): RuntimeAdmissionState | null {
     const abort = new AbortController();
     const runtimeAdmission =
@@ -995,6 +1007,7 @@ export class RealKodaXSession implements ManagedSession {
       runPermissionMode,
       operationId,
       explicitSkill,
+      toolInvocation,
     )
       .then((failure) => {
         runFailure = failure;
@@ -1125,9 +1138,10 @@ export class RealKodaXSession implements ManagedSession {
 
   async cancel(
     runId?: string,
+    requestId?: string,
+    retry?: 'accepted' | 'unconfirmed',
   ): Promise<SpaceRuntimeRunStopReceiptT | LocalSessionCancelOutcome | void> {
     const hadPendingAdmission = this.sendAdmissionAborts.size > 0;
-    for (const admissionAbort of this.sendAdmissionAborts) admissionAbort.abort();
     const currentAbort = this.currentAbort;
     const admission =
       currentAbort !== null && this.runtimeAdmission?.abort === currentAbort
@@ -1135,8 +1149,9 @@ export class RealKodaXSession implements ManagedSession {
         : null;
     const runtimeCoder = this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected();
     if (runtimeCoder && runId !== undefined && admission?.runId !== runId) {
-      return runtimeHostAdapter.abortSessionRun(this.sessionId, runId);
+      return runtimeHostAdapter.cancelSessionRuns(this.sessionId, runId, requestId, retry);
     }
+    for (const admissionAbort of this.sendAdmissionAborts) admissionAbort.abort();
     currentAbort?.abort();
     if (runtimeCoder) {
       if (currentAbort === null && hadPendingAdmission) {
@@ -1157,7 +1172,12 @@ export class RealKodaXSession implements ManagedSession {
           return { kind: 'local_cancelled_before_admission' };
         }
       }
-      return runtimeHostAdapter.abortSessionRun(this.sessionId, runId);
+      return runtimeHostAdapter.cancelSessionRuns(
+        this.sessionId,
+        runId ?? admission?.runId,
+        requestId,
+        retry,
+      );
     }
     // Stop should also drop queued follow-up prompts so cancel means
     // "do not continue". Drain failure must not block abort.
@@ -1230,6 +1250,7 @@ export class RealKodaXSession implements ManagedSession {
     admission?: RuntimeAdmissionState | null,
     operationId?: string,
     explicitSkill?: PreparedExplicitSkillExecution,
+    toolInvocation?: RuntimeDaemonKodaXOptions['toolInvocation'],
   ): Promise<Error | undefined> {
     const sid = this.sessionId;
     try {
@@ -1249,6 +1270,7 @@ export class RealKodaXSession implements ManagedSession {
       const selfManual = buildSpaceManual(sdk);
       const workflowPolicy = workflowPolicyStore.get();
       const options: RuntimeDaemonKodaXOptions = {
+        ...(toolInvocation ? { toolInvocation } : {}),
         provider: this.provider,
         ...(wireEffort !== undefined ? { effort: wireEffort } : {}),
         agentMode: this.agentMode,
@@ -1394,6 +1416,7 @@ export class RealKodaXSession implements ManagedSession {
     runPermissionMode: PermissionMode = this.permissionMode,
     operationId?: string,
     explicitSkill?: PreparedExplicitSkillExecution,
+    toolInvocation?: RuntimeDaemonKodaXOptions['toolInvocation'],
   ): Promise<Error | undefined> {
     if (this.surface === 'code' && runtimeHostAdapter.isRuntimeSelected()) {
       return this.runCoderDaemon(
@@ -1404,6 +1427,7 @@ export class RealKodaXSession implements ManagedSession {
         runtimeAdmission,
         operationId,
         explicitSkill,
+        toolInvocation,
       );
     }
     if (this.surface === 'code') {

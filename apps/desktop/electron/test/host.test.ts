@@ -502,14 +502,14 @@ test('permission requests honor the run-scoped mode after the live Session mode 
 test('Runtime cancel preserves unknown and already-confirmed Stop receipts without synthetic terminal events', async (t) => {
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
   const originalIsRuntimeSelected = adapter.isRuntimeSelected;
-  const originalAbortSessionRun = adapter.abortSessionRun;
+  const originalAbortSessionRun = adapter.cancelSessionRuns;
   t.after(() => {
     adapter.isRuntimeSelected = originalIsRuntimeSelected;
-    adapter.abortSessionRun = originalAbortSessionRun;
+    adapter.cancelSessionRuns = originalAbortSessionRun;
   });
 
   adapter.isRuntimeSelected = () => true;
-  adapter.abortSessionRun = async (sessionId: string) =>
+  adapter.cancelSessionRuns = async (sessionId: string) =>
     sessionId.endsWith('unknown')
       ? {
           runId: 'run_unknown',
@@ -584,12 +584,12 @@ test('Runtime cancel preserves unknown and already-confirmed Stop receipts witho
 test('a stale exact Runtime Stop does not clean up interactions owned by the current Run', async (t) => {
   const adapter = runtimeHostAdapter as unknown as Record<string, unknown>;
   const originalIsRuntimeSelected = adapter.isRuntimeSelected;
-  const originalAbortSessionRun = adapter.abortSessionRun;
+  const originalAbortSessionRun = adapter.cancelSessionRuns;
   const originalPermissionCancel = permissionBroker.cancelSession;
   const originalAskUserCancel = askUserBroker.cancelSession;
   t.after(() => {
     adapter.isRuntimeSelected = originalIsRuntimeSelected;
-    adapter.abortSessionRun = originalAbortSessionRun;
+    adapter.cancelSessionRuns = originalAbortSessionRun;
     permissionBroker.cancelSession = originalPermissionCancel;
     askUserBroker.cancelSession = originalAskUserCancel;
   });
@@ -597,7 +597,7 @@ test('a stale exact Runtime Stop does not clean up interactions owned by the cur
   let permissionCancelCalls = 0;
   let askUserCancelCalls = 0;
   adapter.isRuntimeSelected = () => true;
-  adapter.abortSessionRun = async (sessionId: string, runId?: string) => ({
+  adapter.cancelSessionRuns = async (sessionId: string, runId?: string) => ({
     runId: runId ?? 'run_missing',
     sessionId,
     accepted: false,

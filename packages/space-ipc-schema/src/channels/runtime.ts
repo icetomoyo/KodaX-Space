@@ -138,7 +138,7 @@ export const spaceRuntimeRunPhaseSchema = z.enum([
   'interrupted',
 ]);
 
-export const spaceRuntimeRunStopReceiptSchema = z
+const runtimeRunStopReceiptBaseSchema = z
   .object({
     runId: idSchema,
     sessionId: idSchema,
@@ -161,6 +161,17 @@ export const spaceRuntimeRunStopReceiptSchema = z
     revision: z.number().int().nonnegative(),
   })
   .strict();
+
+export const spaceRuntimeRunStopReceiptSchema = runtimeRunStopReceiptBaseSchema.extend({
+  sessionCancellation: z
+    .object({
+      requestId: idSchema,
+      frontier: z.number().int().nonnegative(),
+      receipts: z.array(runtimeRunStopReceiptBaseSchema).max(10_000),
+    })
+    .strict()
+    .optional(),
+});
 
 export const spaceRuntimeRunStageSchema = z.enum([
   'queued',

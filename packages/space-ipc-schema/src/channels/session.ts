@@ -364,6 +364,10 @@ export const sessionCancelChannel = {
     sessionId: z.string().min(1),
     /** Exact visible Runtime Run. When present, Stop must never retarget a successor. */
     runId: z.string().min(1).max(128).optional(),
+    /** Reuse this identity and Run binding after an ambiguous cancellation response. */
+    requestId: z.string().min(1).max(128).optional(),
+    /** Retry an unresolved request with the same identity, even after its Run becomes terminal. */
+    retry: z.enum(['accepted', 'unconfirmed']).optional(),
   }),
   output: z
     .object({

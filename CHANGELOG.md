@@ -16,6 +16,17 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
+- Complete Space adoption of KodaX rc.1 Session Stop frontiers and durable retry identities,
+  managed extension / explicit shell command Runs, and explicit audited history identity repair.
+  Configuration-only extension commands stay with the CLI owner because rc.1 has no remote
+  execution endpoint. Add owner-level cancellation regression coverage and F274 acceptance guidance.
+
+- **Multimodal SDK regression coverage** — Verify the installed KodaX release through
+  direct and managed image reads, `tool_call`, allowing guardrails, native child
+  execution, capacity spill and local failure propagation. PNG blocks reach the
+  next model request intact; child failures retain their local error identity.
+  Current source documentation now matches the rc.1 dependency and permission v6 gate.
+
 - **KodaX 0.7.96-rc.1 permission integration** — Pin the released SDK and require
   Runtime permission authority v6 at startup, daemon negotiation and packaging.
   Embedded runs pass their bound permission mode to SDK text authority and model

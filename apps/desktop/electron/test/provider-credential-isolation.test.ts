@@ -4,9 +4,9 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { rm } from 'node:fs/promises';
 
-import { runWithExactProviderCredential } from '../providers/credential-scope.js';
-import { getDiagnosticRedactionOptions } from '../diagnostics/runtime.js';
-import { redactDiagnosticText } from '../diagnostics/redaction.js';
+// data-paths 是无副作用的叶子模块,可以静态 import;真正会冻结数据目录的
+// providers/config.js 等必须等下面 env 设好后动态 import(见 assertIsolatedTestHome)。
+import { getKodaxDir } from '../kodax/data-paths.js';
 
 const TEST_PROFILE = 'provider-credential-isolation';
 const SHARED_ENV = 'SPACE_SHARED_PROVIDER_KEY';
@@ -16,10 +16,20 @@ process.env.KODAX_TEST_ONBOARDING = TEST_PROFILE;
 process.env.NODE_ENV = 'test';
 delete process.env[SHARED_ENV];
 
-const [{ providerConfigStore }, keychain, providerIpc] = await Promise.all([
+const [
+  { providerConfigStore },
+  keychain,
+  providerIpc,
+  { runWithExactProviderCredential },
+  { getDiagnosticRedactionOptions },
+  { redactDiagnosticText },
+] = await Promise.all([
   import('../providers/config.js'),
   import('../providers/keychain.js'),
   import('../ipc/provider.js'),
+  import('../providers/credential-scope.js'),
+  import('../diagnostics/runtime.js'),
+  import('../diagnostics/redaction.js'),
 ]);
 
 let providerA = '';
@@ -28,6 +38,9 @@ let providerB = '';
 function assertIsolatedTestHome(): void {
   assert.equal(path.dirname(testHome), path.resolve(os.tmpdir()));
   assert.equal(path.basename(testHome), `kodax-test-${TEST_PROFILE}`);
+  // 防"写穿":config.ts 等在模块求值时冻结数据目录。若 app 模块在本文件设置
+  // KODAX_TEST_ONBOARDING 之前被(静态)import,getKodaxDir() 已缓存真实 ~/.kodax。
+  assert.equal(path.resolve(getKodaxDir()), testHome);
 }
 
 before(async () => {

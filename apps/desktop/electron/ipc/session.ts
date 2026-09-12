@@ -1132,7 +1132,7 @@ export function registerSessionChannels(options: SessionChannelsOptions = {}): v
 
   // session.cancel
   registerChannel('session.cancel', async (input) => {
-    return kodaxHost.cancel(input.sessionId, input.runId);
+    return kodaxHost.cancel(input.sessionId, input.runId, input.requestId, input.retry);
   });
 
   // session.list

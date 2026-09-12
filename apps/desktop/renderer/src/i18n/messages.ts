@@ -603,7 +603,8 @@ export const messages = {
     'help.compactContext': 'Compact context now',
     'help.clearConversation': 'Clear conversation',
     'slash.commandsAndSkills': 'Slash commands and skills',
-    'slash.command.mode.desc': 'Show or switch permission profile (plan / accept-edits / auto / full-access)',
+    'slash.command.mode.desc':
+      'Show or switch permission profile (plan / accept-edits / auto / full-access)',
     'slash.command.provider.desc': 'Show or switch provider (must exist in catalog or custom)',
     'slash.command.reasoning.desc': 'Show or switch reasoning mode',
     'slash.command.model.desc':
@@ -2310,6 +2311,7 @@ export const messages = {
     'bottom.attachCommands': 'Attach / Commands',
     'bottom.openAttachMenu': 'Open attach menu',
     'bottom.stopTitle': 'Stop (Esc)',
+    'bottom.retryPendingStop': 'Retry pending Stop request',
     'bottom.stopGeneration': 'Stop generation',
     'bottom.sendMessage': 'Send message',
     'bottom.remove': 'Remove',
@@ -4561,6 +4563,7 @@ export const messages = {
     'bottom.attachCommands': '附件 / 命令',
     'bottom.openAttachMenu': '打开附件菜单',
     'bottom.stopTitle': '停止（Esc）',
+    'bottom.retryPendingStop': '重试尚未确认的停止请求',
     'bottom.stopGeneration': '停止生成',
     'bottom.sendMessage': '发送消息',
     'bottom.remove': '移除',
