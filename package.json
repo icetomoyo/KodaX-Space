@@ -46,7 +46,7 @@
     "link:livecanvas": "node scripts/link-livecanvas.mjs",
     "unlink:livecanvas": "node scripts/link-livecanvas.mjs --unlink",
     "test": "npm run test:release && npm run test --workspaces --if-present",
-    "test:release": "npm run skills:check && node --test scripts/test/*.test.mjs",
+    "test:release": "npm run skills:check && node scripts/test/warm-kodax-native-artifacts.mjs && node --test scripts/test/*.test.mjs",
     "e2e": "npm run build:smoke && npm run e2e:run",
     "e2e:run": "node scripts/ensure-sqlite-native.mjs electron && playwright test",
     "e2e:headed": "playwright test --headed",
