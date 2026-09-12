@@ -486,7 +486,7 @@ v0.1.46-alpha.9 起使用 KodaX 0.7.96-beta.4：手动与自动压缩共用同�
 
 v0.1.46-alpha.10 起使用 KodaX 0.7.96-beta.6：内置 deepseek 别名改走 DeepSeek 官方 Anthropic 兼容端点（api.deepseek.com/anthropic），默认模型为 `deepseek-flash`（DeepSeek-V4.1-Flash，1M 上下文、384000 最大输出、原生图片输入）；纯文本的 `deepseek-v4-pro` 仍可在 /model 中选择，视觉实验模型 `deepseek-v4-flash-vision-exp` 从目录移除（其图片能力并入 deepseek-flash）。恢复的会话历史重放到严格端点不再报 400：被打断的孤儿工具调用会以显式中断标记补答，而不是悄悄丢弃。Windows 沙箱 setup generation 升到 11，profile 与 SSH 依赖的 ACL 排除对齐 Codex 语义；公开能力版本不变。
 
-v0.1.46-alpha.11 起使用 KodaX 0.7.96-rc.1 并把权限 authority 门禁升到 v6：Runtime 与直接 SDK 的文本写权限对齐，Auto 档经审查允许的工作区外写入会真实生效，Full Access 直写，被拒路径保持隔离，会话内切换权限模式立即生效。停止正在运行的会话时，一次停止只会取消该 owner 既有队列边界内的任务，之后发出的新任务不会被误停；结果未知时会保留原样重试入口（沿用原 Session/Run 标识），而从未收到 owner 回执且原 Run 已终态时会拒绝重试，避免误停后继任务。转录可靠性修复（FEATURE_275）：同一 Run 内 settle 一条输入不再误删同 Run 的其他输入，已绘制内容不会因为分页/淘汰竞争而消失；`/repair-identity` 只提交用户核实过的身份映射并经 SDK 审计。SDK 报 `identity_repair_invalid` 时保留可读历史；`local_execution` 失败显示结构化错误，不再误导用户去配置 Provider 或自动重试。
+v0.1.46-alpha.11 起使用 KodaX 0.7.96-rc.1 并把权限 authority 门禁升到 v6：Runtime 与直接 SDK 的文本写权限对齐，Auto 档经审查允许的工作区外写入会真实生效，Full Access 直写，被拒路径保持隔离，会话内切换权限模式立即生效。停止正在运行的会话时，一次停止只会取消该 owner 既有队列边界内的任务，之后发出的新任务不会被误停；结果未知时会保留原样重试入口（沿用原 Session/Run 标识），而从未收到 owner 回执且原 Run 已终态时会拒绝重试，避免误停后继任务。Daemon 模式下 rc.1 的公开取消操作尚不可用于 daemon 客户端，Space 退回为停止绑定的当前 Run（后继任务由 Runtime 保留），与 v0.1.45 的停止行为一致。转录可靠性修复（FEATURE_275）：同一 Run 内 settle 一条输入不再误删同 Run 的其他输入，已绘制内容不会因为分页/淘汰竞争而消失；`/repair-identity` 只提交用户核实过的身份映射并经 SDK 审计。SDK 报 `identity_repair_invalid` 时保留可读历史；`local_execution` 失败显示结构化错误，不再误导用户去配置 Provider 或自动重试。
 
 底部“上下文窗口”显示压缩影响的当前主 Agent 活动输入；“会话 Token 用量”是已经发生的根/子 Agent Provider 调用累计值，不会因 Compact 回退。两者的完整区别见[上下文窗口与会话 Token 用量](#52-上下文窗口与会话-token-用量)。
 

@@ -1249,8 +1249,6 @@ function daemonRequirements() {
     integrationConfigResilience: 1,
     skillLearningLoop: 1,
     runtimeAutoModeGuardrail: 6,
-    sessionCancellation: 1,
-    toolInvocation: 1,
   };
 }
 function createDaemonProbeRuntime(clientName) {
@@ -1450,10 +1448,20 @@ try {
     throw new Error('packaged lifecycle probe did not enable daemon ownership');
   }
   daemonRuntime = await createDaemonProbeRuntime('kodax-space-pack-lifecycle-smoke');
-  for (const name of ['sessionCancellation', 'toolInvocation']) {
-    if (daemonRuntime.capabilities?.[name]?.version !== 1) {
-      throw new Error('packaged daemon does not support ' + name + ' v1');
-    }
+  // rc.1 daemon transports negotiate the Session Stop protocol surface as
+  // runLifecycleControl; the embedded-facade sessionCancellation object is
+  // absent by design here.
+  const lifecycle = daemonRuntime.capabilities?.runLifecycleControl;
+  if (
+    lifecycle?.version !== 1 ||
+    lifecycle?.structuredStopReceipt !== true ||
+    lifecycle?.protocolCancellation !== true ||
+    lifecycle?.responseAcknowledgement !== true
+  ) {
+    throw new Error(
+      'packaged daemon does not support runLifecycleControl v1: ' +
+        JSON.stringify(daemonRuntime.capabilities?.runLifecycleControl),
+    );
   }
   const daemonOrphanExit = daemonRuntime.capabilities?.daemonOrphanExit;
   if (

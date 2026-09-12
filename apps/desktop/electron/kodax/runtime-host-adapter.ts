@@ -1437,6 +1437,29 @@ function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): nu
   return Number.isSafeInteger(version) && Number(version) > 0 ? Number(version) : 0;
 }
 
+/**
+ * rc.1 publishes the durable Session Stop and explicit tool execution surfaces
+ * through the embedded facade's sessionCancellation/toolInvocation capability
+ * objects; daemon transports negotiate the equivalent protocol surface as
+ * runLifecycleControl instead. Space stays fail-closed until one of the two is
+ * negotiated.
+ */
+function runtimeSupportsRequestLifecycle(runtime: KodaXDaemonRuntime): boolean {
+  const control = runtime.capabilities?.runLifecycleControl;
+  if (typeof control !== 'object' || control === null) return false;
+  const flags = control as {
+    structuredStopReceipt?: unknown;
+    protocolCancellation?: unknown;
+    responseAcknowledgement?: unknown;
+  };
+  return (
+    runtimeCapabilityVersion(runtime, 'runLifecycleControl') === 1 &&
+    flags.structuredStopReceipt === true &&
+    flags.protocolCancellation === true &&
+    flags.responseAcknowledgement === true
+  );
+}
+
 function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
   if (runtimeCapabilityVersion(runtime, 'providerCredentialBroker') < 2) {
     throw new Error(
@@ -2284,8 +2307,6 @@ export class RuntimeHostAdapter {
         liveOutputSegments: 1,
         integrationConfigResilience: 1,
         runtimeAutoModeGuardrail: 6,
-        sessionCancellation: 1,
-        toolInvocation: 1,
       },
     };
   }
@@ -5568,7 +5589,8 @@ export class RuntimeHostAdapter {
     const runtime = await this.requireRuntime();
     if (
       input.options?.toolInvocation &&
-      runtimeCapabilityVersion(runtime, 'toolInvocation') !== 1
+      runtimeCapabilityVersion(runtime, 'toolInvocation') !== 1 &&
+      !runtimeSupportsRequestLifecycle(runtime)
     ) {
       throw new Error(
         'Explicit tool execution requires toolInvocation v1; upgrade the Runtime owner.',
@@ -6028,7 +6050,14 @@ export class RuntimeHostAdapter {
   ): Promise<SpaceRuntimeRunStopReceiptT | undefined> {
     const runtime = await this.requireRuntime();
     if (runtimeCapabilityVersion(runtime, 'sessionCancellation') !== 1) {
-      throw new Error('Session Stop requires sessionCancellation v1; upgrade the Runtime owner.');
+      // Published rc.1 daemon transports negotiate runLifecycleControl instead
+      // of the embedded facade's sessionCancellation, and their public
+      // sessions.cancel guard rejects them. Bound-Run abort keeps daemon
+      // owners working; frontier retry bookkeeping stays embedded-only.
+      if (!runtimeSupportsRequestLifecycle(runtime)) {
+        throw new Error('Session Stop requires sessionCancellation v1; upgrade the Runtime owner.');
+      }
+      return this.cancelBoundRunWithRunAbort(runtime, sessionId, expectedRunId, retry);
     }
     const runId = expectedRunId ?? (await this.findActiveRunId(sessionId));
     if (!runId) return undefined;
@@ -6064,6 +6093,44 @@ export class RuntimeHostAdapter {
         receipts: [...receipt.receipts],
       },
     };
+  }
+
+  /**
+   * Daemon-facade Session Stop. The published rc.1 daemon client cannot
+   * negotiate the sessionCancellation frontier operation, so stop the exact
+   * bound Run through runs.abort; the Runtime itself retains successor Runs.
+   * Frontier retry bookkeeping (pendingSessionStops) stays embedded-only.
+   */
+  private async cancelBoundRunWithRunAbort(
+    runtime: KodaXDaemonRuntime,
+    sessionId: string,
+    expectedRunId: string | undefined,
+    retry: 'accepted' | 'unconfirmed' | undefined,
+  ): Promise<SpaceRuntimeRunStopReceiptT | undefined> {
+    const runId = expectedRunId ?? (await this.findActiveRunId(sessionId));
+    if (!runId) return undefined;
+    if (this.runtime !== runtime || this.state !== 'ready') {
+      throw new Error('Coder Runtime changed before Session Stop.');
+    }
+    const status = await runtime.runs.get(runId);
+    if (!status) return undefined;
+    if (status.sessionId !== sessionId || status.runId !== runId) {
+      throw new Error('Session Stop Run belongs to a different Session.');
+    }
+    if (!EXACT_STOP_ACTIVE_PHASES.has(status.phase)) {
+      if (retry === 'unconfirmed') {
+        throw new Error(
+          'Stop acceptance is unknown and its Run is terminal. The SDK needs a replay-only cancellation API before this request can be retried safely.',
+        );
+      }
+      return undefined;
+    }
+    const receipt = await runtime.runs.abort(runId);
+    if (receipt.sessionId !== sessionId || receipt.runId !== runId) {
+      throw new Error('Coder daemon returned a Session Stop receipt for a different request.');
+    }
+    this.scheduleProfileRefresh(this.currentProfileCursor());
+    return receipt;
   }
 
   /**
