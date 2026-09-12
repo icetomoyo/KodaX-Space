@@ -14,29 +14,38 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+---
+
+## [0.1.46-alpha.11] - 2026-09-13
+
 ### Changed
 
-- Complete Space adoption of KodaX rc.1 Session Stop frontiers and durable retry identities,
-  managed extension / explicit shell command Runs, and explicit audited history identity repair.
-  Configuration-only extension commands stay with the CLI owner because rc.1 has no remote
-  execution endpoint. Add owner-level cancellation regression coverage and F274 acceptance guidance.
-
+- **KodaX 0.7.96-rc.1 permission integration** — Pin the exact published SDK candidate in
+  root/Desktop manifests, the lockfile, installed bytes, and packaged smoke, and require
+  Runtime permission authority v6 (`runtimeAutoModeGuardrail:6`) at startup, daemon
+  negotiation, and packaging. Embedded runs pass their bound permission mode to SDK text
+  authority and model context, aligning Runtime and direct-SDK text writes. Real SDK
+  regressions cover approved Auto writes outside the workspace, direct Full Access writes,
+  denial isolation, and live mode changes. Other public capability versions are unchanged
+  (`sandboxRuntime:11`, `sharedSessionSettings:2`, `effectiveConfig:1`,
+  `providerCredentialBroker:2`).
+- **KodaX rc.1 Session Stop frontiers and runtime controls** — One stop cancels the owner's
+  existing queue up to a durable frontier while later Runs survive; result-unknown stops keep
+  the retry entry with the original Session/Run/requestId identity, and retries are refused
+  when no owner receipt ever arrived and the original Run is terminal. Managed extension
+  commands and explicit `!command` Runs execute through the normal Run path; configuration-only
+  extension commands stay with the CLI owner because rc.1 has no remote execution endpoint.
+  `/repair-identity` submits only user-verified identity mappings and delivery credentials for
+  explicit audited history identity repair. Add owner-level cancellation regression coverage
+  and F274 acceptance guidance.
 - **Multimodal SDK regression coverage** — Verify the installed KodaX release through
   direct and managed image reads, `tool_call`, allowing guardrails, native child
   execution, capacity spill and local failure propagation. PNG blocks reach the
   next model request intact; child failures retain their local error identity.
   Current source documentation now matches the rc.1 dependency and permission v6 gate.
-
-- **KodaX 0.7.96-rc.1 permission integration** — Pin the released SDK and require
-  Runtime permission authority v6 at startup, daemon negotiation and packaging.
-  Embedded runs pass their bound permission mode to SDK text authority and model
-  context. Real SDK regressions cover approved Auto writes outside the workspace,
-  direct Full Access writes, denial isolation and live mode changes.
-
-- **KodaX 0.7.96-beta.8 integration** — Root and Desktop now pin the exact published
-  SDK package. Space consumes confirmed legacy input aliases after history reload;
-  the SDK preserves their audit records across saves and restart. Unconfirmed old
-  identities are not automatically inferred or merged by the client.
+- **KodaX 0.7.96-beta.8 legacy input aliases** — Space consumes confirmed legacy input
+  aliases after history reload; the SDK preserves their audit records across saves and
+  restart. Unconfirmed old identities are not automatically inferred or merged by the client.
 
 ### Fixed
 
@@ -51,9 +60,9 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
   inputs in the same Run. Exact retirement receipts reject known journal replay and snapshot
   sidecars without treating a larger cursor as proof that unknown inputs were seen. Receipts and
   overlapping newest pages remain bounded; expired evidence falls back to preserving content.
-  History eviction, delayed
-  attachment updates, fork, and rewind preserve the source distinction. Delivery/canonical entry
-  identity conflicts still require an authoritative SDK alias and are never merged by text or time.
+  History eviction, delayed attachment updates, fork, and rewind preserve the source
+  distinction. Delivery/canonical entry identity conflicts still require an authoritative SDK
+  alias and are never merged by text or time.
 
 ---
 
