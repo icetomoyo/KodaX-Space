@@ -99,3 +99,6 @@ vendor/*
 # (this repo pins dependencies via npm package-lock.json)
 .codex-remote-attachments/
 pnpm-lock.yaml
+
+# Local diagnostics and scratch runs (never shipped)
+/scratch/
