@@ -134,7 +134,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
         managedRunDurability: 1,
         runtimeExitSettlement: 2,
         runtimeEventCoalescing: 1,
-        runtimeAutoModeGuardrail: 5,
+        runtimeAutoModeGuardrail: 6,
         sandboxRuntime: 11,
         sessionEventJournal: 1,
         sharedSessionSettings: 2,
@@ -155,7 +155,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
-          runtimeAutoModeGuardrail: 5,
+          runtimeAutoModeGuardrail: 6,
           sandboxRuntime: 11,
           sessionEventJournal: 1,
           sharedSessionSettings: 2,
@@ -177,7 +177,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
           runtimeEventCoalescing: 1,
-          runtimeAutoModeGuardrail: 5,
+          runtimeAutoModeGuardrail: 6,
           sandboxRuntime: 11,
           sessionEventJournal: 1,
           sharedSessionSettings: 2,
@@ -198,7 +198,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
           liveOutputSegments: 1,
           managedRunDurability: 1,
           runtimeExitSettlement: 2,
-          runtimeAutoModeGuardrail: 5,
+          runtimeAutoModeGuardrail: 6,
           sandboxRuntime: 11,
           sessionEventJournal: 1,
           sharedSessionSettings: 2,
@@ -208,7 +208,7 @@ test('required SDK capabilities are checked before daemon auto-start', () => {
   );
   assert.throws(
     () => assertSpaceRuntimeSdkRequiredCapabilities({}),
-    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*effectiveConfig v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*runtimeAutoModeGuardrail v5.*sandboxRuntime v11.*sessionEventJournal v1.*sharedSessionSettings v2/i,
+    /installed KodaX SDK.*actorSettlementConvergence v2.*conversationHistory v2.*crashOutcomeModel v2.*daemonOrphanExit v1.*daemonShutdownVerification v1.*effectiveConfig v1.*liveOutputSegments v1.*managedRunDurability v1.*runtimeExitSettlement v2.*runtimeEventCoalescing v1.*runtimeAutoModeGuardrail v6.*sandboxRuntime v11.*sessionEventJournal v1.*sharedSessionSettings v2/i,
   );
 });
 
@@ -484,7 +484,7 @@ function createFakeRuntime(runtimeId = 'rt_test') {
         asrtVersion: '0.0.65',
         backend: 'unsupported',
       },
-      runtimeAutoModeGuardrail: { version: 5, owner: 'session-runtime' },
+      runtimeAutoModeGuardrail: { version: 6, owner: 'session-runtime' },
     },
     grantedScopes: [
       'session:observe',
@@ -2100,7 +2100,7 @@ test('runtime selection attaches one Coder daemon with stable identity and requi
   assert.equal(options[0]?.requirements?.sandboxRuntime, 11);
   assert.equal(options[0]?.requirements?.sessionEventJournal, 1);
   assert.equal(options[0]?.requirements?.integrationConfigResilience, 1);
-  assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 5);
+  assert.equal(options[0]?.requirements?.runtimeAutoModeGuardrail, 6);
   assert.equal(adapter.snapshot().state, 'ready');
   assert.equal(adapter.snapshot().identity?.runtimeId, 'rt_test');
   assert.equal(
@@ -14001,6 +14001,21 @@ test('Runtime external Agent mutations validate session Actor/Turn ownership bef
     /does not belong to the selected session/,
   );
   assert.deepEqual(operations, ['detail']);
+  await adapter.close();
+});
+
+test('initialization rejects permission authority v5 even when the daemon otherwise matches', async () => {
+  const fake = createFakeRuntime();
+  (fake.runtime.capabilities as Record<string, unknown>).runtimeAutoModeGuardrail = {
+    version: 5, owner: 'session-runtime',
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+  });
+  await assert.rejects(adapter.initialize(), /runtimeAutoModeGuardrail v6/);
   await adapter.close();
 });
 

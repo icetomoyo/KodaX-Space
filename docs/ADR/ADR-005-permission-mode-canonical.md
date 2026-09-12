@@ -4,7 +4,7 @@
 - **Date**: 2026-09-03
 - **Supersedes**: 本 ADR 的 canonical 3 mode + Auto engine 决策
 - **Companion**: [ADR-003 KodaX 集成模式](ADR-003-kodax-integration-in-process.md)
-- **Source of truth**: `@kodax-ai/kodax@0.7.96-beta.6` public permission and Runtime contracts
+- **Source of truth**: `@kodax-ai/kodax@0.7.96-rc.1` public permission and Runtime contracts
 
 ## Context
 
@@ -42,7 +42,13 @@ export const permissionModeSchema = z.enum([
 
 ### Full Access 不是 bypass-everything
 
-`full-access` 仅表示直接宿主执行。管理员 forbid、用户 prompt 和其他 Exec Policy 规则仍由 KodaX 持有并执行。Space 不复制或弱化该策略。
+`full-access` 直接宿主执行，不经过内置危险命令兜底确认。显式 forbid 仍拒绝；prompt 规则在 Never 审批语义下拒绝执行。Space 不复制或弱化该策略。
+
+### 文本写入与模型权限事实（0.7.96-rc.1）
+
+- Runtime 与直接 SDK 的 Full Access 文本操作可写工作区外普通目标；Auto 审批只授权本次具体调用的精确目标，不向后续调用或整个目录扩权。控制文件保护和原生事务完整性仍由 SDK 持有。
+- Space 启动、daemon 协商和打包验证要求 `runtimeAutoModeGuardrail` v6；旧 daemon 不能继续提供 v5 权限语义。
+- 模型请求中的有效权限事实由 SDK 生成，不从 `config.json` 默认值推断。Runtime 使用实时 Session settings；嵌入式执行显式提供与本次 Run guardrails/broker 一致的模式快照，下一 Run 重新绑定。
 
 ### Sandbox 配置归属
 
@@ -53,7 +59,7 @@ Space 保留 doctor/setup/readiness 界面，但不再编辑、写入或向 Run 
 当前集成要求：
 
 - `sandboxRuntime:11`
-- `runtimeAutoModeGuardrail:5`
+- `runtimeAutoModeGuardrail:6`
 - `sharedSessionSettings:2`
 - `providerCredentialBroker:2`
 - `effectiveConfig:1`

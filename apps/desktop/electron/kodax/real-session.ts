@@ -2456,6 +2456,9 @@ export class RealKodaXSession implements ManagedSession {
         executionCwd: this.projectRoot,
         ...(shellExecution ? { shellExecution } : {}),
         permissionIntent: runPermissionIntent,
+        // Direct SDK text authority and model permission facts must use the same
+        // mode snapshot as this embedded run's guardrails and permission broker.
+        resolveShellPermissionMode: () => runPermissionMode,
         contextDiagnostics: true,
         planModeBlockCheck,
         ...repoIntelCtx,

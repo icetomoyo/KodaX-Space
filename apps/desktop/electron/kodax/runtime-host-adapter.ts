@@ -1452,9 +1452,9 @@ function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): voi
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
-  if (runtimeCapabilityVersion(runtime, 'runtimeAutoModeGuardrail') < 5) {
+  if (runtimeCapabilityVersion(runtime, 'runtimeAutoModeGuardrail') < 6) {
     throw new Error(
-      'KodaX Runtime does not support the required runtimeAutoModeGuardrail v5 capability. ' +
+      'KodaX Runtime does not support the required runtimeAutoModeGuardrail v6 capability. ' +
         'Install a compatible KodaX package and restart the Coder daemon.',
     );
   }
@@ -1649,7 +1649,7 @@ export function assertSpaceRuntimeSdkRequiredCapabilities(sdk: {
     ...(capabilities?.managedRunDurability === 1 ? [] : ['managedRunDurability v1']),
     ...(capabilities?.runtimeExitSettlement === 2 ? [] : ['runtimeExitSettlement v2']),
     ...(capabilities?.runtimeEventCoalescing === 1 ? [] : ['runtimeEventCoalescing v1']),
-    ...((capabilities?.runtimeAutoModeGuardrail ?? 0) >= 5 ? [] : ['runtimeAutoModeGuardrail v5']),
+    ...((capabilities?.runtimeAutoModeGuardrail ?? 0) >= 6 ? [] : ['runtimeAutoModeGuardrail v6']),
     ...((capabilities?.sandboxRuntime ?? 0) >= 11 ? [] : ['sandboxRuntime v11']),
     ...(capabilities?.sessionEventJournal === 1 ? [] : ['sessionEventJournal v1']),
     ...((capabilities?.sharedSessionSettings ?? 0) >= 2 ? [] : ['sharedSessionSettings v2']),
@@ -2278,7 +2278,7 @@ export class RuntimeHostAdapter {
         sessionEventJournal: 1,
         liveOutputSegments: 1,
         integrationConfigResilience: 1,
-        runtimeAutoModeGuardrail: 5,
+        runtimeAutoModeGuardrail: 6,
       },
     };
   }
@@ -2816,14 +2816,14 @@ export class RuntimeHostAdapter {
       {
         id: 'runtime.autoMode.guardrail',
         version: version('runtimeAutoModeGuardrail'),
-        available: version('runtimeAutoModeGuardrail') >= 5,
+        available: version('runtimeAutoModeGuardrail') >= 6,
       },
       {
         id: 'runtime.tools.sandboxObservation',
         version: 1,
         available:
           version('sandboxRuntime') >= 11 &&
-          version('runtimeAutoModeGuardrail') >= 5 &&
+          version('runtimeAutoModeGuardrail') >= 6 &&
           available('typedRuntimeEvents'),
       },
       {

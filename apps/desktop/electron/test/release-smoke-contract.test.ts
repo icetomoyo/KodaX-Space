@@ -16,7 +16,7 @@ test('packaged dependency smoke requires conversationHistory v2 and sandboxRunti
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.conversationHistory\s*!==\s*2/);
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.runtimeExitSettlement\s*!==\s*2/);
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.sandboxRuntime\s*!==\s*11/);
-  assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.runtimeAutoModeGuardrail\s*!==\s*5/);
+  assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.runtimeAutoModeGuardrail\s*!==\s*6/);
   assert.match(source, /KODAX_RUNTIME_SDK_CAPABILITIES\?\.sharedSessionSettings\s*!==\s*2/);
   assert.match(source, /daemonSandboxRuntime\.version\s*!==\s*11/);
   assert.match(source, /result\.daemonSandboxRuntime\s*!==\s*11/);

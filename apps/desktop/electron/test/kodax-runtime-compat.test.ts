@@ -9,7 +9,7 @@ import test from 'node:test';
 
 const PROBE_MARKER = 'KODAX_RUNTIME_PROBE=';
 const PROBE_TIMEOUT_MS = 30_000;
-const EXPECTED_KODAX_VERSION = '0.7.96-beta.8';
+const EXPECTED_KODAX_VERSION = '0.7.96-rc.1';
 const INSTALLED_KODAX_VERSION = (
   createRequire(import.meta.url)('@kodax-ai/kodax/package.json') as { readonly version: string }
 ).version;
@@ -358,7 +358,7 @@ const SHARED_DAEMON_REQUIREMENTS = {
   sandboxRuntime: 11,
   sessionEventJournal: 1,
   integrationConfigResilience: 1,
-  runtimeAutoModeGuardrail: 5,
+  runtimeAutoModeGuardrail: 6,
 } as const;
 
 const PUBLISHED_SHARED_DAEMON_PEER_PROBE = String.raw`
@@ -664,7 +664,7 @@ try {
       ),
       permissionGrantAdmin: runtime.grantedScopes?.includes('permission:grant-admin') === true,
       runtimeAutoModeGuardrail:
-        runtimeAutoModeGuardrailCapability?.version === 5 &&
+        runtimeAutoModeGuardrailCapability?.version === 6 &&
         runtimeAutoModeGuardrailCapability.owner === 'session-runtime',
     },
   };
@@ -1281,6 +1281,8 @@ test(
   { timeout: SHARED_DAEMON_TIMEOUT_MS + 5_000 },
   async () => {
     const homeDir = await mkdtemp(path.join(tmpdir(), 'kodax-space-raw-skill-'));
+    const projectPath = path.join(homeDir, 'workspace');
+    await mkdir(projectPath);
     const credentialName = 'KODAX_SPACE_RAW_SKILL_PROBE_KEY';
     const previousCredential = process.env[credentialName];
     const server = createServer((request, response) => {
@@ -1340,7 +1342,7 @@ test(
       });
       const session = await runtime.sessions.create({
         title: 'Raw explicit Skill probe',
-        projectPath: process.cwd(),
+        projectPath,
         surface: 'code',
         tag: 'code',
       });
@@ -1355,7 +1357,8 @@ test(
           model: 'space-probe-model',
           maxIter: 1,
           agentMode: 'sa',
-          context: { rawUserInput, disableAutoTaskReroute: true },
+          lsp: false,
+          context: { rawUserInput, disableAutoTaskReroute: true, repoIntelligenceMode: 'off' },
         },
       });
       assert.equal((await handle.result).phase, 'completed');
@@ -1503,7 +1506,7 @@ test(`KodaX ${EXPECTED_KODAX_VERSION} exposes fail-closed standalone command con
 
 test(`KodaX ${EXPECTED_KODAX_VERSION} exposes the required Auto[LLM] Runtime capabilities`, async () => {
   const { KODAX_RUNTIME_SDK_CAPABILITIES } = await import('@kodax-ai/kodax/runtime');
-  assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.runtimeAutoModeGuardrail, 5);
+  assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.runtimeAutoModeGuardrail, 6);
   assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sharedSessionSettings, 2);
   assert.equal(KODAX_RUNTIME_SDK_CAPABILITIES.sandboxRuntime, 11);
 });

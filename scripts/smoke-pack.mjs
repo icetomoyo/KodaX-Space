@@ -1248,7 +1248,7 @@ function daemonRequirements() {
     ...(process.platform === 'win32' ? { daemonShutdownVerification: 1 } : {}),
     integrationConfigResilience: 1,
     skillLearningLoop: 1,
-    runtimeAutoModeGuardrail: 5,
+    runtimeAutoModeGuardrail: 6,
   };
 }
 function createDaemonProbeRuntime(clientName) {
@@ -1434,9 +1434,9 @@ try {
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.sandboxRuntime !== 11) {
     throw new Error('packaged SDK does not advertise sandboxRuntime v11 before auto-start');
   }
-  if (KODAX_RUNTIME_SDK_CAPABILITIES?.runtimeAutoModeGuardrail !== 5) {
+  if (KODAX_RUNTIME_SDK_CAPABILITIES?.runtimeAutoModeGuardrail !== 6) {
     throw new Error(
-      'packaged SDK does not advertise runtimeAutoModeGuardrail v5 before auto-start',
+      'packaged SDK does not advertise runtimeAutoModeGuardrail v6 before auto-start',
     );
   }
   if (KODAX_RUNTIME_SDK_CAPABILITIES?.sharedSessionSettings !== 2) {

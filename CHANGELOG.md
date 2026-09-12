@@ -16,6 +16,12 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Changed
 
+- **KodaX 0.7.96-rc.1 permission integration** — Pin the released SDK and require
+  Runtime permission authority v6 at startup, daemon negotiation and packaging.
+  Embedded runs pass their bound permission mode to SDK text authority and model
+  context. Real SDK regressions cover approved Auto writes outside the workspace,
+  direct Full Access writes, denial isolation and live mode changes.
+
 - **KodaX 0.7.96-beta.8 integration** — Root and Desktop now pin the exact published
   SDK package. Space consumes confirmed legacy input aliases after history reload;
   the SDK preserves their audit records across saves and restart. Unconfirmed old
