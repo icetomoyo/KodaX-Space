@@ -29,7 +29,10 @@ async function warmOnce() {
     }
     console.log('sandbox setup ready');
   }
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'space-native-warmup-'));
+  const shortTemp = await fs.mkdtemp(path.join(os.tmpdir(), 'space-native-warmup-'));
+  // Windows protected-write targets reject 8.3-style segments, and CI runner
+  // temp dirs are short paths (C:\Users\RUNNER~1\...). Hand the SDK long paths.
+  const root = await fs.realpath(shortTemp);
   const workspace = path.join(root, 'workspace');
   const target = path.join(workspace, 'warmup.txt');
   await fs.mkdir(workspace);

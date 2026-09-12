@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -12,7 +12,10 @@ import {
 } from '@kodax-ai/kodax/coding';
 
 async function fixture(t) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'space-sdk-control-'));
+  const temp = await mkdtemp(path.join(os.tmpdir(), 'space-sdk-control-'));
+  // SDK protected writes reject 8.3-style segments and CI runner temp dirs are
+  // short paths (C:\Users\RUNNER~1\...), so hand the SDK the resolved long path.
+  const root = await realpath(temp);
   const workspace = path.join(root, 'workspace');
   await mkdir(workspace);
   const runtime = await createKodaXRuntime({
@@ -22,9 +25,9 @@ async function fixture(t) {
   });
   t.after(async () => {
     await runtime.close();
-    assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
+    assert.equal(path.dirname(root), await realpath(os.tmpdir()));
     assert.ok(path.basename(root).startsWith('space-sdk-control-'));
-    await rm(root, { recursive: true, force: true, maxRetries: 3 });
+    await rm(temp, { recursive: true, force: true, maxRetries: 3 });
   });
   const session = await runtime.sessions.create({ projectPath: workspace });
   await runtime.sessions.updateSettings(session.id, { permissionMode: 'full-access' });
