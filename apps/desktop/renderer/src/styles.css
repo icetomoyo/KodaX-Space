@@ -1120,6 +1120,12 @@ html.q-full .aurora-b3 {
   content-visibility: visible;
 }
 
+/* The full-height timeline otherwise wins native scroll-anchor selection: its top never moves
+   when offscreen rows reflow, so the browser cannot preserve the text being read. */
+.conversation-timeline-decoration {
+  overflow-anchor: none;
+}
+
 /* History restoration mounts a large tree in one commit. Keep bulk history visually stable and
    temporarily avoid full-surface recomposition; the class is released after the committed paint. */
 html.visual-history-restore-active .reveal,

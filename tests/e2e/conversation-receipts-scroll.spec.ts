@@ -437,3 +437,127 @@ test('conversation receipt strip stays top-anchored on expand and preserves scro
     await fs.rm(projectDir, { recursive: true, force: true }).catch(() => {});
   }
 });
+
+async function streamScrollbackFixture(space: SpaceInstance, sessionId: string): Promise<void> {
+  const events: SessionEvent[] = [{ kind: 'session_start', sessionId, provider: 'mock' }];
+  for (let index = 0; index < 30; index++) {
+    if (index % 5 === 0) {
+      events.push({
+        kind: 'mid_turn_user_prompt',
+        sessionId,
+        content: `Question ${index}`,
+        entryId: `scrollback-user-${index}`,
+      });
+    }
+    events.push(
+      {
+        kind: 'text_delta',
+        sessionId,
+        text:
+          `Scrollback block ${index}\n\n` +
+          '这是一段用于验证窗口宽度改变后历史内容滚动位置的确定性文本。'.repeat(3 + (index % 4)),
+      },
+      {
+        kind: 'tool_start',
+        sessionId,
+        toolId: `scrollback-${index}`,
+        toolName: 'bash',
+        input: { command: 'fixture' },
+      },
+      {
+        kind: 'tool_result',
+        sessionId,
+        toolId: `scrollback-${index}`,
+        toolName: 'bash',
+        content: 'fixture complete',
+      },
+    );
+  }
+  events.push({ kind: 'text_delta', sessionId, text: fillerParagraphs('Scrollback live tail', 8) });
+  // Incremental creation exercises remembered row sizes; bulk restoration conceals this bug.
+  for (const event of events) {
+    await emitSessionEvents(space, [event]);
+    await space.page.evaluate(
+      () =>
+        new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        }),
+    );
+  }
+}
+
+async function expectStableReadingWhileScrollingBack(page: Page): Promise<void> {
+  const scroller = page.getByTestId('conversation-scroll-container');
+  const bounds = await scroller.boundingBox();
+  if (!bounds) throw new Error('Missing conversation viewport');
+  // Keep the pointer over the transcript, clear of the query navigation rail.
+  await page.mouse.move(bounds.x + bounds.width * 0.6, bounds.y + bounds.height / 2);
+  let checkedAnchors = 0;
+  for (let step = 0; step < 18; step++) {
+    const anchor = await scroller.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const paragraph = [0.25, 0.35, 0.45, 0.55, 0.65]
+        .map((fraction) =>
+          document
+            .elementFromPoint(rect.left + rect.width * 0.6, rect.top + rect.height * fraction)
+            ?.closest('p'),
+        )
+        .find((node) => node instanceof HTMLElement);
+      if (!(paragraph instanceof HTMLElement)) return null;
+      paragraph.dataset.scrollbackAnchor = 'true';
+      return { top: paragraph.getBoundingClientRect().top, scrollTop: element.scrollTop };
+    });
+    await page.mouse.wheel(0, -180);
+    // Measure the entire gesture, including delayed offscreen layout corrections.
+    await page.waitForTimeout(450);
+    if (!anchor) continue;
+    checkedAnchors++;
+    const paragraph = page.locator('[data-scrollback-anchor="true"]');
+    const top = await paragraph.evaluate((node) => node.getBoundingClientRect().top);
+    await paragraph.evaluate((node) => node.removeAttribute('data-scrollback-anchor'));
+    const expectedTop = anchor.top + Math.min(180, anchor.scrollTop);
+    expect(
+      Math.abs(top - expectedTop),
+      `extra text displacement on wheel ${step}`,
+    ).toBeLessThanOrEqual(3);
+  }
+  expect(
+    checkedAnchors,
+    'must sample enough actual text, not empty row gaps',
+  ).toBeGreaterThanOrEqual(12);
+}
+
+for (const scenario of [
+  { label: 'completed', completed: true, quality: 'full' },
+  { label: 'active', completed: false, quality: 'balanced' },
+] as const) {
+  test(`scrollback stays stable after resizing a ${scenario.label} streamed conversation`, async () => {
+    test.setTimeout(90_000);
+    const testId = `conversation-scrollback-${scenario.label}-${Date.now()}`;
+    const projectDir = await createProject(testId);
+    const space = await launchSpace(testId);
+    try {
+      const { page } = space;
+      await page.setViewportSize({ width: 1080, height: 900 });
+      await page.evaluate(
+        (quality) => localStorage.setItem('kodax-space.visualQuality', quality),
+        scenario.quality,
+      );
+      await space.seedProject(projectDir);
+      const sessionId = await createSession(space, 'seed long scrollback audit');
+      await streamScrollbackFixture(space, sessionId);
+      if (scenario.completed)
+        await emitSessionEvents(space, [{ kind: 'session_complete', sessionId }]);
+      await page.waitForTimeout(600);
+      await page.setViewportSize({ width: 1600, height: 900 });
+      await page.waitForTimeout(600);
+      const jump = page.getByLabel('Jump to bottom');
+      if (await jump.isVisible()) await jump.click();
+      await page.waitForTimeout(800);
+      await expectStableReadingWhileScrollingBack(page);
+    } finally {
+      await space.close();
+      await fs.rm(projectDir, { recursive: true, force: true });
+    }
+  });
+}

@@ -2079,7 +2079,7 @@ export function ConversationStreamV2(): JSX.Element {
         <div ref={contentRef} className="relative pl-10 sm:pl-12">
           {renderItems.length > 0 && (
             <div
-              className="absolute left-[20px] top-2 bottom-2 w-px bg-border-default/55 sm:left-[28px]"
+              className="conversation-timeline-decoration absolute left-[20px] top-2 bottom-2 w-px bg-border-default/55 sm:left-[28px]"
               aria-hidden
             />
           )}
@@ -2624,7 +2624,7 @@ function TimelineMarker({
   return (
     <span
       aria-hidden
-      className={`${animate ? 'reveal-marker' : ''} absolute left-[-25px] top-[0.65rem] z-10 h-2.5 w-2.5 rounded-full border border-surface ring-1 ring-border-default/60 ${MARKER_TONE_CLASS[tone]}`}
+      className={`conversation-timeline-decoration ${animate ? 'reveal-marker' : ''} absolute left-[-25px] top-[0.65rem] z-10 h-2.5 w-2.5 rounded-full border border-surface ring-1 ring-border-default/60 ${MARKER_TONE_CLASS[tone]}`}
     />
   );
 }
