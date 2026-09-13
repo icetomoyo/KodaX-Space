@@ -54,7 +54,7 @@ import { encodeRuntimeActorTaskId } from '../kodax/runtime/runtime-agent-project
 
 await initializeCoderDaemonProjectionSdk();
 
-test('terminal Stop retries require evidence of owner acceptance and never invent a new frontier', async () => {
+test('terminal Stop retries delegate acceptance to the owner and never retarget the Run', async () => {
   const fake = createFakeRuntime();
   fake.sessions.add('s_1');
   fake.runtime.runs.get = async (runId) => ({
@@ -92,12 +92,14 @@ test('terminal Stop retries require evidence of owner acceptance and never inven
   });
   await adapter.initialize();
   try {
-    assert.equal(await adapter.cancelSessionRuns('s_1', 'old-run', 'fresh-request'), undefined);
-    await assert.rejects(
-      adapter.cancelSessionRuns('s_1', 'old-run', 'lost-response', 'unconfirmed'),
-      /replay-only/,
+    const replayed = await adapter.cancelSessionRuns(
+      's_1',
+      'old-run',
+      'lost-response',
+      'unconfirmed',
     );
-    assert.equal(calls, 0);
+    assert.equal(replayed?.sessionCancellation?.frontier, 1);
+    assert.equal(calls, 1);
     const repaired = await adapter.cancelSessionRuns(
       's_1',
       'old-run',
@@ -105,7 +107,81 @@ test('terminal Stop retries require evidence of owner acceptance and never inven
       'accepted',
     );
     assert.equal(repaired?.sessionCancellation?.frontier, 1);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
+    fake.runtime.sessions.cancel = async (input) => {
+      assert.equal(input.expectedRunId, 'old-run');
+      throw Object.assign(new Error('Expected Run is terminal'), {
+        code: 'conflict',
+        denialSource: 'stale_run',
+        retryable: false,
+      });
+    };
+    assert.equal(await adapter.cancelSessionRuns('s_1', 'old-run', 'fresh-request'), undefined);
+    fake.runtime.sessions.cancel = async () => {
+      throw new Error('transport unavailable');
+    };
+    await assert.rejects(
+      adapter.cancelSessionRuns('s_1', 'old-run', 'retry-request'),
+      /transport unavailable/,
+    );
+  } finally {
+    await adapter.close();
+  }
+});
+
+test('daemon Stop retry reads the exact terminal Run receipt without retargeting', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  assert.ok(fake.runtime.capabilities);
+  Object.assign(fake.runtime.capabilities, {
+    sessionCancellation: undefined,
+    runLifecycleControl: {
+      version: 1,
+      structuredStopReceipt: true,
+      protocolCancellation: true,
+      responseAcknowledgement: true,
+    },
+  });
+  fake.runtime.runs.get = async (runId) => ({
+    runId,
+    sessionId: 's_1',
+    phase: 'completed',
+    provider: 'mock',
+    startedAt: '2026-09-12T00:00:00.000Z',
+  });
+  fake.runtime.runs.abort = async (runId) => {
+    fake.calls.aborted.push(runId);
+    return {
+      runId,
+      sessionId: 's_1',
+      accepted: false,
+      state: 'confirmed',
+      outcome: 'completed',
+      phase: 'completed',
+      revision: 1,
+    };
+  };
+  fake.runtime.sessions.cancel = async () => {
+    throw new Error('unsupported daemon operation');
+  };
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+  try {
+    const receipt = await adapter.cancelSessionRuns(
+      's_1',
+      'old-run',
+      'lost-response',
+      'unconfirmed',
+    );
+    assert.equal(receipt?.outcome, 'completed');
+    assert.equal(receipt?.sessionCancellation, undefined);
+    assert.deepEqual(fake.calls.aborted, ['old-run']);
   } finally {
     await adapter.close();
   }

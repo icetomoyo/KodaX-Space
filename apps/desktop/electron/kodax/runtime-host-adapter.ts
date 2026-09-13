@@ -32,6 +32,7 @@ import type {
   RuntimeReadOptions,
   RuntimeSessionDiagnostics,
   RuntimeSessionCancelInput,
+  RuntimeSessionCancelReceipt,
   RuntimeSessionDiagnosticsInput,
   RuntimeSessionObservation,
   RuntimeSessionObservationSnapshot,
@@ -1438,11 +1439,9 @@ function runtimeCapabilityVersion(runtime: KodaXDaemonRuntime, name: string): nu
 }
 
 /**
- * rc.1 publishes the durable Session Stop and explicit tool execution surfaces
- * through the embedded facade's sessionCancellation/toolInvocation capability
- * objects; daemon transports negotiate the equivalent protocol surface as
- * runLifecycleControl instead. Space stays fail-closed until one of the two is
- * negotiated.
+ * rc.2 daemon transports expose request lifecycle receipts under
+ * runLifecycleControl. This permits exact-Run abort, but does not advertise
+ * the embedded facade's durable Session cancellation frontier.
  */
 function runtimeSupportsRequestLifecycle(runtime: KodaXDaemonRuntime): boolean {
   const control = runtime.capabilities?.runLifecycleControl;
@@ -1458,6 +1457,30 @@ function runtimeSupportsRequestLifecycle(runtime: KodaXDaemonRuntime): boolean {
     flags.protocolCancellation === true &&
     flags.responseAcknowledgement === true
   );
+}
+
+function projectSessionStopReceipt(
+  input: RuntimeSessionCancelInput,
+  receipt: RuntimeSessionCancelReceipt,
+): SpaceRuntimeRunStopReceiptT {
+  if (
+    receipt.sessionId !== input.sessionId ||
+    receipt.expectedRunId !== input.expectedRunId ||
+    receipt.requestId !== input.requestId ||
+    receipt.receipts.some((item) => item.sessionId !== input.sessionId)
+  ) {
+    throw new Error('Coder daemon returned a Session Stop receipt for a different request.');
+  }
+  const active = receipt.receipts.find((item) => item.runId === input.expectedRunId);
+  if (!active) throw new Error('Session Stop receipt is missing the bound Run.');
+  return {
+    ...active,
+    sessionCancellation: {
+      requestId: receipt.requestId,
+      frontier: receipt.frontier,
+      receipts: [...receipt.receipts],
+    },
+  };
 }
 
 function assertSpaceDaemonRequiredCapabilities(runtime: KodaXDaemonRuntime): void {
@@ -1978,7 +2001,6 @@ export class RuntimeHostAdapter {
   /** Exact Runtime Agent turn identities started through this Space process. */
   private readonly spaceOwnedAgentTurns = new Set<string>();
   private readonly activeRuns = new Map<string, string>();
-  private readonly pendingSessionStops = new Map<string, RuntimeSessionCancelInput>();
   private readonly observations = new Map<string, RuntimeSessionObservationState>();
   private readonly observationPromises = new Map<string, Promise<void>>();
   private readonly observationOpenQueues = new WeakMap<KodaXDaemonRuntime, Promise<void>>();
@@ -6007,57 +6029,20 @@ export class RuntimeHostAdapter {
     return receipt;
   }
 
-  /** User Stop cancels the owner's durable queue frontier, independently of history locks. */
-  private async prepareSessionStopRequest(
-    runtime: KodaXDaemonRuntime,
-    sessionId: string,
-    runId: string,
-    requestId?: string,
-    retry?: 'accepted' | 'unconfirmed',
-  ): Promise<RuntimeSessionCancelInput | undefined> {
-    const stableId = createHash('sha256').update(`${sessionId}:${runId}`).digest('hex');
-    const input = {
-      sessionId,
-      expectedRunId: runId,
-      requestId: requestId ?? `space-stop-${stableId}`,
-    };
-    const pending = this.pendingSessionStops.get(input.requestId);
-    if (pending) {
-      if (!isDeepStrictEqual(input, pending))
-        throw new Error('Session Stop request identity was reused for another Run.');
-      return pending;
-    }
-    const status = await runtime.runs.get(runId);
-    if (!status) return undefined;
-    if (status.sessionId !== sessionId || status.runId !== runId) {
-      throw new Error('Session Stop Run belongs to a different Session.');
-    }
-    if (!EXACT_STOP_ACTIVE_PHASES.has(status.phase) && !(retry === 'accepted' && requestId)) {
-      if (retry === 'unconfirmed')
-        throw new Error(
-          'Stop acceptance is unknown and its Run is terminal. The SDK needs a replay-only cancellation API before this request can be retried safely.',
-        );
-      return undefined;
-    }
-    return input;
-  }
-
   async cancelSessionRuns(
     sessionId: string,
     expectedRunId?: string,
     requestId?: string,
-    retry?: 'accepted' | 'unconfirmed',
+    _retry?: 'accepted' | 'unconfirmed',
   ): Promise<SpaceRuntimeRunStopReceiptT | undefined> {
     const runtime = await this.requireRuntime();
     if (runtimeCapabilityVersion(runtime, 'sessionCancellation') !== 1) {
-      // Published rc.1 daemon transports negotiate runLifecycleControl instead
-      // of the embedded facade's sessionCancellation, and their public
-      // sessions.cancel guard rejects them. Bound-Run abort keeps daemon
-      // owners working; frontier retry bookkeeping stays embedded-only.
+      // rc.2 still omits sessionCancellation from daemon negotiation. Keep the
+      // existing exact-Run fallback; it does not cancel a Session queue frontier.
       if (!runtimeSupportsRequestLifecycle(runtime)) {
         throw new Error('Session Stop requires sessionCancellation v1; upgrade the Runtime owner.');
       }
-      return this.cancelBoundRunWithRunAbort(runtime, sessionId, expectedRunId, retry);
+      return this.cancelBoundRunWithRunAbort(runtime, sessionId, expectedRunId);
     }
     const runId = expectedRunId ?? (await this.findActiveRunId(sessionId));
     if (!runId) return undefined;
@@ -6066,46 +6051,40 @@ export class RuntimeHostAdapter {
     }
     // Legacy/internal callers have no renderer request identity. The exact Run binding gives
     // those retries a stable identity too; user requests supply their own UUID through IPC.
-    const input = await this.prepareSessionStopRequest(runtime, sessionId, runId, requestId, retry);
-    if (!input) return undefined;
-    const receipt = await runtime.sessions.cancel(input);
-    if (
-      receipt.sessionId !== sessionId ||
-      receipt.expectedRunId !== runId ||
-      receipt.requestId !== input.requestId ||
-      receipt.receipts.some((item) => item.sessionId !== sessionId)
-    ) {
-      throw new Error('Coder daemon returned a Session Stop receipt for a different request.');
-    }
-    const active = receipt.receipts.find((item) => item.runId === runId);
-    if (!active) throw new Error('Session Stop receipt is missing the bound Run.');
-    if (receipt.receipts.every((item) => item.state === 'confirmed')) {
-      this.pendingSessionStops.delete(input.requestId);
-    } else {
-      this.pendingSessionStops.set(input.requestId, input);
-    }
-    this.scheduleProfileRefresh(this.currentProfileCursor());
-    return {
-      ...active,
-      sessionCancellation: {
-        requestId: receipt.requestId,
-        frontier: receipt.frontier,
-        receipts: [...receipt.receipts],
-      },
+    const stableId = createHash('sha256').update(`${sessionId}:${runId}`).digest('hex');
+    const input: RuntimeSessionCancelInput = {
+      sessionId,
+      expectedRunId: runId,
+      requestId: requestId ?? `space-stop-${stableId}`,
     };
+    // rc.2 atomically rejects stale first requests and replays accepted ones.
+    // The owner decides acceptance even when the first response was lost.
+    const receipt = await runtime.sessions.cancel(input).catch((error: unknown) => {
+      const detail = runtimeEventRecord(error);
+      if (
+        detail?.code === 'conflict' &&
+        detail.denialSource === 'stale_run' &&
+        detail.retryable === false
+      ) {
+        this.scheduleProfileRefresh(this.currentProfileCursor());
+        return undefined;
+      }
+      throw error;
+    });
+    if (!receipt) return undefined;
+    const stop = projectSessionStopReceipt(input, receipt);
+    this.scheduleProfileRefresh(this.currentProfileCursor());
+    return stop;
   }
 
   /**
-   * Daemon-facade Session Stop. The published rc.1 daemon client cannot
-   * negotiate the sessionCancellation frontier operation, so stop the exact
-   * bound Run through runs.abort; the Runtime itself retains successor Runs.
-   * Frontier retry bookkeeping (pendingSessionStops) stays embedded-only.
+   * The rc.2 daemon client still cannot negotiate sessionCancellation.
+   * Exact-Run abort is repeatable after settlement and retains successor Runs.
    */
   private async cancelBoundRunWithRunAbort(
     runtime: KodaXDaemonRuntime,
     sessionId: string,
     expectedRunId: string | undefined,
-    retry: 'accepted' | 'unconfirmed' | undefined,
   ): Promise<SpaceRuntimeRunStopReceiptT | undefined> {
     const runId = expectedRunId ?? (await this.findActiveRunId(sessionId));
     if (!runId) return undefined;
@@ -6116,14 +6095,6 @@ export class RuntimeHostAdapter {
     if (!status) return undefined;
     if (status.sessionId !== sessionId || status.runId !== runId) {
       throw new Error('Session Stop Run belongs to a different Session.');
-    }
-    if (!EXACT_STOP_ACTIVE_PHASES.has(status.phase)) {
-      if (retry === 'unconfirmed') {
-        throw new Error(
-          'Stop acceptance is unknown and its Run is terminal. The SDK needs a replay-only cancellation API before this request can be retried safely.',
-        );
-      }
-      return undefined;
     }
     const receipt = await runtime.runs.abort(runId);
     if (receipt.sessionId !== sessionId || receipt.runId !== runId) {

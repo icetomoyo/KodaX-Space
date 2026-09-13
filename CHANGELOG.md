@@ -14,6 +14,13 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ## [Unreleased]
 
+### Fixed
+
+- Pin KodaX `0.7.96-rc.2`; verify stale first Session Stop requests reject without
+  cancelling successor Runs. Delegate accepted-request replay to the owner, remove
+  obsolete client acceptance bookkeeping, and settle exact-Run daemon retries from
+  terminal receipts. The daemon fallback remains narrower than Session queue Stop.
+
 ---
 
 ## [0.1.46-alpha.11] - 2026-09-13

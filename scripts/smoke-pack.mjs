@@ -1448,7 +1448,7 @@ try {
     throw new Error('packaged lifecycle probe did not enable daemon ownership');
   }
   daemonRuntime = await createDaemonProbeRuntime('kodax-space-pack-lifecycle-smoke');
-  // rc.1 daemon transports negotiate the Session Stop protocol surface as
+  // rc.2 daemon transports still expose exact-Run lifecycle receipts as
   // runLifecycleControl; the embedded-facade sessionCancellation object is
   // absent by design here.
   const lifecycle = daemonRuntime.capabilities?.runLifecycleControl;

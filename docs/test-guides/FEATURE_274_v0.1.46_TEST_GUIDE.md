@@ -1,16 +1,17 @@
-# Space / KodaX 0.7.96-rc.1 alignment
+# Space / KodaX 0.7.96-rc.2 alignment
 
-Baseline: Space 0.1.46-alpha.10, exact Registry SDK 0.7.96-rc.1. Scope is the
-beta.7–rc.1 increment applicable to Space, not every previously planned SDK UX.
+Baseline: Space 0.1.46-alpha.11 source, exact Registry SDK 0.7.96-rc.2. Scope is the
+beta.7–rc.2 increment applicable to Space, not every previously planned SDK UX.
 
 ## Acceptance requirements
 
-- User Stop uses one `sessions.cancel({ sessionId, expectedRunId, requestId })`
-  operation. The SDK owns its durable queue frontier; later submissions survive.
+- Owners advertising `sessionCancellation:1` use one
+  `sessions.cancel({ sessionId, expectedRunId, requestId })` operation. The SDK owns its durable queue frontier; later submissions survive.
   Transport retries retain the same identity and binding. After the active Run
-  becomes terminal, retry requires a previously received owner receipt; ambiguous
-  acceptance without that evidence is rejected (see SDK boundary below).
-  A fresh Stop already known to be stale must not select a successor.
+  becomes terminal, rc.2 replays accepted requests or atomically rejects a stale
+  first request with `conflict / stale_run / retryable:false`. Space treats that
+  exact rejection as a settled no-op and never substitutes a successor.
+  No client acceptance ledger or preliminary Run-status check is required.
   Preserve every returned receipt, and never present an unknown outcome as stopped.
   Narrow Run cleanup, redirection and forced-exit ownership retain `runs.abort`.
 - Resolve extension commands from the owner catalog. Canonical names and aliases
@@ -20,37 +21,37 @@ beta.7–rc.1 increment applicable to Space, not every previously planned SDK UX
   No model guesses dispatch and no ungoverned local-process fallback is allowed.
   Space currently requires an idle Session for explicit commands, as for Skills;
   the Runtime remains authoritative if another client races admission.
-- Require connected `sessionCancellation:1` / `toolInvocation:1` when using these
-  operations. These facts are absent from the SDK's static capability constant
-  and typed connect requirements; validate the owner rather than inventing flags.
+- Validate connected capabilities. The rc.2 daemon exposes `runLifecycleControl`
+  but still omits `sessionCancellation`; its public Session Stop guard rejects
+  the call. Preserve the existing exact-Run `runs.abort` fallback in this mode,
+  including terminal receipt retries. This fallback does not cancel queued Runs.
 - `/repair-identity <source-entry> <target-entry> <revision> <run> <input> <event>
-  <confirmation-ref>` is an explicit Coder repair operation. Forward the original
+<confirmation-ref>` is an explicit Coder repair operation. Forward the original
   delivery proof and expected revision; the SDK validates and audits them. Never
   infer an alias from text/time or retry a changed revision automatically. Clear
   Space's history cache after success; reloading displays the canonical history.
 - Preserve permission authority v6, native text/image results, local-execution
   error facts, interrupt provenance and large-metadata paging from the SDK.
 
-## Deliberate SDK boundary
+## SDK boundary and corrected scope
 
-rc.1 has no replay-only cancellation or cancellation-request lookup API. If a
-transport fails before Space receives any cancellation receipt and the bound Run
-then becomes terminal, Space cannot prove that the SDK recorded the first frontier.
-It retains the pending request but refuses an unconfirmed terminal retry, because
-an unknown request ID would create a new frontier and include successor Runs.
-SDK follow-up: expose replay-only/request-status or atomically reject a fresh
-terminal expectedRunId. The first-request active-check-to-cancel race also needs
-that owner-side guard; client preflight cannot provide an atomic guarantee.
-Normal current-Run Stop remains separate from the pending-request retry action.
+rc.2 fixes the stale first-request race inside the existing cancellation API.
+The rc.1 proposal to require a new replay-only or request-status API is withdrawn.
+Space persists the original request identity in the renderer for transport retries;
+the owner alone determines whether that request was accepted.
 
-`execution: 'configuration'` extension commands have neither a managed tool nor
-a public daemon command-execution endpoint in rc.1. Space excludes them from its
-executable catalog and rejects manual attempts with a CLI-owner instruction.
-It does not execute configuration handlers in a second extension instance.
-This is an upstream API limitation, not completed desktop execution support.
-SDK-managed extension scopes, drain/reload isolation, MCP multimodal conversion,
-wire-cache diagnostics and metadata paging are inherited runtime behavior.
-Existing planned product features in the capability ledger remain separate.
+A real isolated rc.2 daemon probe reports `sessionCancellation: null` (absent)
+and `runLifecycleControl.version:1`. Calling its public `sessions.cancel` returns
+`client_upgrade_required` before request delivery. Thus the embedded SDK fix is
+verified, but it does not make daemon Session-frontier Stop usable by Space.
+Space retains its exact-Run fallback and does not patch the SDK capability object
+or bypass the public client. This is separate from the stale-run fix.
+
+`execution: 'configuration'` commands deliberately run in their extension host
+without a Session Run. They have no public daemon command-execution endpoint in
+rc.2 and remain excluded from Space's executable catalog. No concrete desktop
+requirement was established for them: the earlier claim that SDK must add such
+an endpoint is withdrawn. Managed extension commands continue to use toolInvocation.
 
 ## Automated verification
 
@@ -66,9 +67,10 @@ Existing planned product features in the capability ledger remain separate.
 
 ## Desktop acceptance
 
-1. Start a Coder task and queue a continuation. Stop; both pre-existing Runs must
-   settle, with unknown cleanup staying visibly pending. Submit a new task after
-   Stop acceptance and verify it survives. Repeat with a disconnected/reconnected UI.
+1. With an owner exposing Session cancellation, start a task and queue a continuation:
+   Stop settles the accepted frontier; later Runs survive. Retry after disconnect.
+   In rc.2 daemon mode, verify the narrower existing behavior: only the bound Run
+   is stopped, and a retry for an already terminal Run returns its terminal receipt.
 2. Load a trusted managed extension command. Invoke its alias with a quoted path;
    verify tool progress/history and permission decisions. Run `!git status --short`.
 3. With reviewed historical delivery IDs, invoke `/repair-identity`. A stale revision
@@ -86,5 +88,27 @@ Existing planned product features in the capability ledger remain separate.
   and `build:smoke` passed. The final pending-request UI also passed its focused
   tests, renderer type checking, lint and renderer build.
 - Standards and Spec reviews completed; the Space findings were corrected.
-  The two upstream API boundaries above remain explicit limitations.
+  This historical review overstated two mandatory API gaps; the corrected scope
+  and the separate daemon capability boundary are recorded above.
 - Live DeepSeek and packaged-desktop acceptance were not executed in this run.
+
+## rc.2 verification (2026-09-13)
+
+- Before upgrade, the original isolated rc.1 probe failed: stopping terminal A
+  with a previously unseen requestId aborted running successor B.
+- With rc.2, the same scenario rejects with `conflict / stale_run / retryable:false`;
+  B completes normally. The published-package regression now locks this behavior.
+- Installed SDK controls and multimodal regressions: 10 passed, including accepted
+  Stop replay, managed extension execution, child PNG delivery and local errors.
+- Space regressions prove unconfirmed terminal retries reach the owner, stale
+  rejection settles without retargeting, unrelated errors propagate, and daemon
+  exact-Run retries return terminal receipts.
+- Real isolated daemon connection confirms version rc.2 and the capability boundary
+  above. Live DeepSeek and packaged-desktop acceptance have not been executed.
+- Full `npm test`: 3374 passed, 5 skipped, 0 failed (61 release contracts,
+  2995 Desktop tests passed, 318 IPC schema tests).
+- Final type checking, source lint, `build:smoke` and the final main-process build
+  passed. Root and Desktop resolve one deduplicated rc.2 package; the installed
+  bytes pass the locked Registry release integrity gate.
+- Standards review: 0 remaining findings after shortening the Stop method and
+  correcting the manual. Spec review: 0 actionable findings.

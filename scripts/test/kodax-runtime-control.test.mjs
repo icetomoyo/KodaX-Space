@@ -139,3 +139,71 @@ test('published managed extension command receives its Run scope and joins neste
     await extensions.dispose();
   }
 });
+
+test(
+  'published owner rejects a fresh Stop bound to a terminal Run without cancelling its successor',
+  { timeout: 20000 },
+  async (t) => {
+    const { runtime, sessionId, workspace } = await fixture(t);
+    const first = await runtime.runs.start({
+      sessionId,
+      prompt: 'offline first',
+      options: {
+        lsp: false,
+        toolInvocation: {
+          name: 'write',
+          input: { path: path.join(workspace, 'first.txt'), content: 'done' },
+        },
+      },
+    });
+    assert.equal((await first.result).phase, 'completed');
+    let entered;
+    const started = new Promise((resolve) => {
+      entered = resolve;
+    });
+    let release;
+    let successorAborted = false;
+    const dispose = registerTool({
+      name: 'space_stale_stop_probe',
+      description: 'Offline successor probe',
+      sideEffect: 'readonly',
+      toClassifierInput: () => '',
+      input_schema: { type: 'object', properties: {} },
+      handler: async (_input, context) =>
+        new Promise((resolve) => {
+          release = () => resolve('done');
+          const onAbort = () => {
+            successorAborted = true;
+            resolve('[Cancelled] Operation cancelled by user');
+          };
+          if (context.abortSignal.aborted) onAbort();
+          else context.abortSignal.addEventListener('abort', onAbort, { once: true });
+          entered();
+        }),
+    });
+    t.after(() => {
+      release?.();
+      dispose();
+    });
+    const next = await runtime.runs.start({
+      sessionId,
+      prompt: 'offline successor',
+      options: {
+        lsp: false,
+        toolInvocation: { name: 'space_stale_stop_probe', input: {} },
+      },
+    });
+    await started;
+    await assert.rejects(
+      runtime.sessions.cancel({
+        sessionId,
+        expectedRunId: first.runId,
+        requestId: 'never-accepted-before',
+      }),
+      { code: 'conflict', denialSource: 'stale_run', retryable: false },
+    );
+    release();
+    assert.equal((await next.result).phase, 'completed');
+    assert.equal(successorAborted, false, 'fresh Stop targeting terminal A aborted successor B');
+  },
+);
