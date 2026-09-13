@@ -16,6 +16,11 @@ KodaX-Space is the Electron desktop client for the [KodaX SDK](https://github.co
 
 ### Fixed
 
+- Packaged live DeepSeek acceptance exercises Stop/retry, successor survival,
+  two native PNG-reading child agents, and renderer reload. Fix Space's incorrect
+  assumption that daemon lifecycle receipts imply explicit tool-invocation support;
+  require the actual capability before admitting an explicit command.
+
 - Pin KodaX `0.7.96-rc.2`; verify stale first Session Stop requests reject without
   cancelling successor Runs. Delegate accepted-request replay to the owner, remove
   obsolete client acceptance bookkeeping, and settle exact-Run daemon retries from

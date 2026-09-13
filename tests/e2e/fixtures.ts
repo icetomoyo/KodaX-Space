@@ -102,6 +102,8 @@ export interface SpaceInstance {
 }
 
 export interface LaunchSpaceOptions {
+  /** Run the same isolated acceptance fixture against a built desktop executable. */
+  readonly executablePath?: string;
   /**
    * Subscribe to renderer console events BEFORE the fixture waits for
    * domcontentloaded. Required for catching synchronous first-render errors
@@ -158,7 +160,8 @@ export async function launchSpace(
   let app: ElectronApplication;
   try {
     app = await _electron.launch({
-      args: [ELECTRON_MAIN],
+      ...(opts?.executablePath ? { executablePath: opts.executablePath } : {}),
+      args: opts?.executablePath ? [] : [ELECTRON_MAIN],
       env: {
         ...baseEnv,
         KODAX_TEST_ONBOARDING: testId,

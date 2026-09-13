@@ -187,6 +187,42 @@ test('daemon Stop retry reads the exact terminal Run receipt without retargeting
   }
 });
 
+test('daemon lifecycle receipts do not authorize explicit tool invocation', async () => {
+  const fake = createFakeRuntime();
+  fake.sessions.add('s_1');
+  assert.ok(fake.runtime.capabilities);
+  Object.assign(fake.runtime.capabilities, {
+    toolInvocation: undefined,
+    runLifecycleControl: {
+      version: 1,
+      structuredStopReceipt: true,
+      protocolCancellation: true,
+      responseAcknowledgement: true,
+    },
+  });
+  const adapter = new RuntimeHostAdapter({
+    mode: 'runtime',
+    profileRoot: path.resolve('C:\\isolated-profile'),
+    runtimeFactory: async () => fake.runtime,
+    identityStore: testIdentityStore,
+    runtimeEventParser: testRuntimeEventParser,
+  });
+  await adapter.initialize();
+  try {
+    await assert.rejects(
+      adapter.startManagedRun({
+        sessionId: 's_1',
+        prompt: '!pwd',
+        options: { toolInvocation: { name: 'bash', input: { command: 'pwd' } } },
+      }),
+      /toolInvocation v1/,
+    );
+    assert.deepEqual(fake.calls.started, []);
+  } finally {
+    await adapter.close();
+  }
+});
+
 test('Session Stop uses one durable queue frontier and retries the same request after transport loss', async () => {
   const fake = createFakeRuntime();
   const requests: unknown[] = [];

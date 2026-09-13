@@ -5611,8 +5611,7 @@ export class RuntimeHostAdapter {
     const runtime = await this.requireRuntime();
     if (
       input.options?.toolInvocation &&
-      runtimeCapabilityVersion(runtime, 'toolInvocation') !== 1 &&
-      !runtimeSupportsRequestLifecycle(runtime)
+      runtimeCapabilityVersion(runtime, 'toolInvocation') !== 1
     ) {
       throw new Error(
         'Explicit tool execution requires toolInvocation v1; upgrade the Runtime owner.',

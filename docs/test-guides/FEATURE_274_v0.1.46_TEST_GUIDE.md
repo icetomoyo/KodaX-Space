@@ -18,6 +18,8 @@ beta.7–rc.2 increment applicable to Space, not every previously planned SDK UX
   route to `extension_command__<name>` using `toolInvocation`; `!command` routes
   to `bash` with the original command text. Both use ordinary Run settings,
   credentials, permissions, events, history, cancellation and operation identity.
+  This requires an advertised `toolInvocation:1`. A real rc.2 daemon omits it
+  and rejects explicit commands; `runLifecycleControl` is not a substitute.
   No model guesses dispatch and no ungoverned local-process fallback is allowed.
   Space currently requires an idle Session for explicit commands, as for Skills;
   the Runtime remains authoritative if another client races admission.
@@ -51,7 +53,8 @@ or bypass the public client. This is separate from the stale-run fix.
 without a Session Run. They have no public daemon command-execution endpoint in
 rc.2 and remain excluded from Space's executable catalog. No concrete desktop
 requirement was established for them: the earlier claim that SDK must add such
-an endpoint is withdrawn. Managed extension commands continue to use toolInvocation.
+an endpoint is withdrawn. Managed extension commands use toolInvocation only
+when the connected owner advertises that capability; rc.2 daemon does not.
 
 ## Automated verification
 
@@ -71,8 +74,10 @@ an endpoint is withdrawn. Managed extension commands continue to use toolInvocat
    Stop settles the accepted frontier; later Runs survive. Retry after disconnect.
    In rc.2 daemon mode, verify the narrower existing behavior: only the bound Run
    is stopped, and a retry for an already terminal Run returns its terminal receipt.
-2. Load a trusted managed extension command. Invoke its alias with a quoted path;
-   verify tool progress/history and permission decisions. Run `!git status --short`.
+2. With an owner exposing `toolInvocation:1`, load a trusted managed extension
+   command. Invoke its alias with a quoted path; verify tool progress/history and
+   permission decisions. Run `!git status --short`. With the rc.2 daemon, verify
+   an explicit command is rejected before admission with no new Run created.
 3. With reviewed historical delivery IDs, invoke `/repair-identity`. A stale revision
    or conflicting claim must fail; a confirmed repair must converge after reload.
 4. Repeat the original DeepSeek image/child task to evaluate live model behavior.
@@ -104,7 +109,8 @@ an endpoint is withdrawn. Managed extension commands continue to use toolInvocat
   rejection settles without retargeting, unrelated errors propagate, and daemon
   exact-Run retries return terminal receipts.
 - Real isolated daemon connection confirms version rc.2 and the capability boundary
-  above. Live DeepSeek and packaged-desktop acceptance have not been executed.
+  above. At this stage live DeepSeek and packaged-desktop acceptance had not yet
+  been executed; the subsequent live acceptance is recorded below.
 - Full `npm test`: 3374 passed, 5 skipped, 0 failed (61 release contracts,
   2995 Desktop tests passed, 318 IPC schema tests).
 - Final type checking, source lint, `build:smoke` and the final main-process build
@@ -112,3 +118,54 @@ an endpoint is withdrawn. Managed extension commands continue to use toolInvocat
   bytes pass the locked Registry release integrity gate.
 - Standards review: 0 remaining findings after shortening the Stop method and
   correcting the manual. Spec review: 0 actionable findings.
+
+## Packaged live acceptance (2026-09-13)
+
+Run `node --import tsx e2e/rc2-live-acceptance.mjs` after building the Windows
+package. The opt-in harness launches the real executable with mock disabled,
+a fresh isolated profile and the existing DeepSeek credential passed only in
+memory. It checks the running daemon version, uses real `deepseek-flash` calls,
+clicks UI Stop and the pending retry button when available, verifies canonical
+Run/Actor state and files, and captures screenshots before profile cleanup.
+
+The first real run exposed an incorrect Space capability inference: daemon
+`runLifecycleControl:1` was treated as sufficient for explicit `toolInvocation`.
+The SDK rejects `!command` before admission. Space now requires the actual
+`toolInvocation:1` capability. This does not make daemon explicit commands
+available; normal model-directed tool use remains the supported path.
+
+Evidence is written to `artifacts/rc2-live-acceptance/report.json` and PNGs in
+that directory. Both native children must have completed `read` and `write`
+activities, and each file must contain `PNG_READ_OK` and identify the blue PNG.
+The checks do not accept a parent's claim or a user-message echo as completion.
+
+Observed results:
+
+- The packaged rc.2 executable completed real DeepSeek calls, UI Stop, and an
+  actual pending-Stop retry button click while a successor was active. The button
+  cleared and the successor completed. Two native children independently executed
+  `read` then `write`, with completed Actor turns and output files.
+- Visual interpretation is not consistently correct: in session
+  `20260913_141339_pbe9b103b3ee61`, `image_a` identified the blue PNG correctly,
+  while `image_b` wrote `green`. That run remains a failed visual acceptance,
+  retained in `artifacts/rc2-live-acceptance/image-color-failure.json`. No child
+  crashed. The evidence does not yet distinguish provider interpretation from
+  image transport; do not infer reliable vision from completed tool calls.
+- The harness still fails on an incorrect color, but checks renderer reload before
+  reporting that failure so a vision error does not hide the persistence result.
+- Full Windows packaging passed native/asar Worker checks, cold boot, two complete
+  product exits and Session history restoration. The dedicated exit smoke covers
+  production shutdown; the live fixture uses its existing isolated cleanup path.
+- Adapter/manual regressions: 261 passed, 0 failed. Type checking and affected-file
+  lint passed. The capability regression failed before the guard fix and passed
+  afterward.
+- Final run `20260913_141644_39378a6cd11d5c`: all five execution/persistence checks
+  passed (real response, UI Stop, retry preserving the successor, two native child
+  read/write turns, renderer reload); no renderer page errors. Explicit-command
+  rejection before admission also passed. Visual acceptance failed again:
+  `image_a` wrote purple and `image_b` wrote green. The retained `sample.png` is
+  blue on independent inspection. Overall `report.passed` remains `false`.
+- A fresh run of the seven installed-SDK multimodal contract tests passed. Those
+  tests prove native image-block fidelity to the Provider interface, not the
+  correctness of real provider wire delivery or visual interpretation. Further
+  attribution of the live vision discrepancy remains open.
